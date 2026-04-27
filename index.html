@@ -2130,7 +2130,7 @@
         {o:below-slDist*.2,  h:below+slDist*.05,  l:below-slDist*.3,  c:below,             bull:true},
         {o:below,            h:below+slDist*.2,   l:below-slDist*.05, c:below+slDist*.15,  bull:true},
         {o:below+slDist*.15, h:below+slDist*.35,  l:below+slDist*.05, c:below+slDist*.25,  bull:true},
-        {o:below+slDipt*.25, h:sweep,             l:below+slDist*.15, c:entry+slDist*.28,  bull:true,  isSweep:true},
+        {o:below+slDist*.25, h:sweep,             l:below+slDist*.15, c:entry+slDist*.28,  bull:true,  isSweep:true},
         {o:entry+slDist*.28, h:entry+slDist*.4,   l:dispBot,          c:entry-slDist*1.55, bull:false, isDisp:true},
         {o:entry-slDist*1.55,h:entry-slDist*1.45, l:entry-slDist*1.75,c:entry-slDist*1.62, bull:false},
         {o:entry-slDist*1.62,h:fvgBot-slDist*.2,  l:entry-slDist*1.65,c:fvgBot-slDist*.25, bull:true},
@@ -3265,32 +3265,16 @@
             const pct = Math.round(v.w/v.t*100);
             const col = pct>=60?'var(--bull)':pct>=45?'var(--liq)':'var(--bear)';
             return `<div style="display:flex;align-items:center;gap:10px;margin:4px 0;">
-              <span style="width:120p`,
-      date: gst.toLocaleDateString('en-GB'),
-      timestamp: Date.now(),
-      symbol: asset.symbol,
-      signal,
-      priceAtCall: asset.price,
-      entry: asset.entry,
-      sl: asset.sl,
-      tp: asset.tp || asset.tp1 || 0,
-      grade: asset.grade,
-      bias: asset.bias,
-      score: asset.checks.reduce((a,b)=>a+b,0),
-      session: getCurrentSession(gst)?.name || 'Off Session',
-      analysis,
-      outcome: null, // 'win'|'loss'|'be'|'pending'
-      outcomeChecks: {}, // { '30': price, '60': price, '240': price, '480': price }
-    };
-    journal.unshift(entry);
-    saveJournal();
-    renderJournal();
-    // Auto-enter paper trade for ARMED signals
-    // Schedule outcome checks
-    scheduleOutcomeChecks(entry);
-  }
-
-  // Non-lay:grid;grid-template-columns:1fr 1fr;gap:20px;padding-top:4px;">
+              <span style="width:120px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text)">${k}</span>
+              <div style="flex:1;background:var(--bg-hot);border-radius:3px;height:6px;max-width:200px;">
+                <div style="width:${pct}%;background:${col};height:6px;border-radius:3px;transition:width .4s;"></div>
+              </div>
+              <span style="color:${col};font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;">${pct}%</span>
+              <span style="color:var(--text-mute);font-size:10px;">${v.t} calls</span>
+            </div>`;
+          }).join('') || '<div style="color:var(--text-mute);font-size:12px;">Need more data (min 2 calls per group)</div>';
+        patterns.innerHTML = `
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;padding-top:4px;">
             <div>
               <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;">By Session</div>
               ${fmtBar(bySession,1)}
@@ -3352,7 +3336,7 @@
       return;
     }
 
-    const outcomeColors = { win:'var(--bull)', loss:'var(--bear)', be='var(--liq)', pending:'var(--text-mute)', null:'var(--text-mute)' };
+    const outcomeColors = { win:'var(--bull)', loss:'var(--bear)', be:'var(--liq)', pending:'var(--text-mute)', null:'var(--text-mute)' };
     const outcomeLabels = { win:'✓ WIN', loss:'✗ LOSS', be:'↔ BE', pending:'⏳ Pend', null:'⏳ Pend' };
 
     table.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px;">
