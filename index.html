@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ahmad · ICT AutoPilot v20</title>
+  <title>Ahmad · ICT AutoPilot v21</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500;600&family=Geist:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -291,9 +291,11 @@
       transition: all 0.25s;
     }
     .signal-card:hover { border-color: var(--gold); transform: translateY(-2px); }
+    .signal-card.enter { border-color: var(--bear); background: rgba(224,93,93,0.07); animation: enterPulse 1.5s infinite; }
     .signal-card.armed { border-color: var(--bull); background: rgba(92,184,138,0.05); }
     .signal-card.watch { border-color: var(--liq); background: rgba(242,179,61,0.05); }
     .signal-card.skip { opacity: 0.5; }
+    @keyframes enterPulse { 0%,100% { box-shadow: 0 0 0 rgba(224,93,93,0); } 50% { box-shadow: 0 0 14px rgba(224,93,93,0.35); } }
 
     .sig-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
     .sig-symbol { font-family: 'Instrument Serif', serif; font-size: 20px; color: var(--gold); }
@@ -304,6 +306,7 @@
       padding: 3px 8px;
       border-radius: 3px;
     }
+    .badge-enter { background: rgba(224,93,93,0.25); color: var(--bear); font-weight:900; letter-spacing:.04em; animation: enterPulse 1.2s infinite; }
     .badge-armed { background: rgba(92,184,138,0.2); color: var(--bull); }
     .badge-watch { background: rgba(242,179,61,0.2); color: var(--liq); }
     .badge-wait { background: rgba(101,101,109,0.2); color: var(--text-mute); }
@@ -374,6 +377,7 @@
       box-shadow: 0 10px 30px -10px rgba(201,169,97,0.3);
       transform: translateY(-4px);
     }
+    .asset-tile.enter-tile { border-color: var(--bear); animation: enterPulse 1.5s infinite; }
     .asset-tile.armed-tile { border-color: var(--bull); }
     .asset-tile.watch-tile { border-color: rgba(242,179,61,0.5); }
 
@@ -427,6 +431,18 @@
 
     /* Inline level editor on asset tiles */
 
+    .enter-indicator {
+      position: absolute;
+      top: 8px; right: 8px;
+      background: var(--bear);
+      color: #fff;
+      font-size: 9px;
+      padding: 2px 7px;
+      border-radius: 9999px;
+      font-weight: 900;
+      letter-spacing: .04em;
+      animation: enterPulse 1.2s infinite;
+    }
     .armed-indicator {
       position: absolute;
       top: 8px; right: 8px;
@@ -1059,7 +1075,7 @@
   <div class="autopilot-bar">
     <div class="ap-brand">
       <div class="logo">ICT AutoPilot</div>
-      <div class="v">v20 · Ahmad</div>
+      <div class="v">v21 · Ahmad</div>
     </div>
     <div class="ap-segment">
       <div class="sync-dot" id="syncDot"></div>
@@ -1084,7 +1100,7 @@
     <nav class="side">
       <div class="brand">
         <div class="logo">Ahmad<br><em style="color:var(--gold-soft);font-size:15px;">AutoPilot</em></div>
-        <div class="sub">ICT · v20</div>
+        <div class="sub">ICT · v21</div>
       </div>
       <div class="side-nav">
         <button class="nav-btn active" onclick="switchTab('autopilot')">⭐ Top Setup</button>
@@ -1101,7 +1117,7 @@
       <div id="autopilot" class="tab-content active">
         <div class="page-header">
           <h1>⭐ Top Setup — New Entry Zones</h1>
-          <p>Assets at or approaching new entry zones — ENTER!!! means price is at entry now, ALMOST ENTRY means getting close. All 10 assets monitored. Prices auto-sync every 30s.</p>
+          <p>Assets at or approaching new entry zones — ENTER NOW 🔴 means price is within 0.05% of entry (execute trade), ALMOST ENTRY POINT means ICT conditions fully met and close, ALMOST ENTRY means approaching. All 10 assets monitored. Prices auto-sync every 30s.</p>
         </div>
 
         <div class="ap-grid">
@@ -1771,12 +1787,15 @@
     const mtf = getMTFAligned(asset);
     const mtfAligned = mtf.score >= 2; // 2 out of 3 timeframes aligned
 
-    // ARMED: tightened to 0.15% + score 9 + Kill Zone + MTF aligned
+    // ENTER NOW: price within 0.05% of entry — fire the trade alert
+    if (pct <= 0.0005) return 'enter';
+
+    // ALMOST ENTRY POINT: within 0.15% + score 9 + Kill Zone + MTF aligned
     if (pct <= 0.0015 && score >= 9 && inKZ && mtfAligned) {
       return 'armed';
     }
     
-    // WATCH: approaching entry zone
+    // ALMOST ENTRY: approaching entry zone
     if (pct <= 0.005 && score >= 7) return 'watch';
     
     if (score < 4 || (session && session.type === 'dead')) return 'skip';
@@ -1795,8 +1814,8 @@
       const dir = a.price > a.entry ? '↑' : a.price < a.entry ? '↓' : '=';
       const priceColor = a.change24h > 0 ? 'var(--bull)' : a.change24h < 0 ? 'var(--bear)' : 'var(--text)';
       const badgeClass = `badge-${sig}`;
-      const cardClass = sig === 'armed' ? 'armed' : sig === 'watch' ? 'watch' : sig === 'skip' ? 'skip' : '';
-      const badgeText = sig === 'armed' ? `${conf}% · ENTER!!!` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+      const cardClass = sig === 'enter' ? 'enter' : sig === 'armed' ? 'armed' : sig === 'watch' ? 'watch' : sig === 'skip' ? 'skip' : '';
+      const badgeText = sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
       const modeTag = a.tradeMode === 'spot' ? ' <span style="font-size:8px;background:rgba(201,169,97,0.15);color:var(--gold);border-radius:3px;padding:1px 4px;">SPOT</span>' : '';
 
       // Feature 1: MTF Badge
@@ -1948,7 +1967,7 @@
       const biasClass = a.bias === 'bear' || a.bias === 'BEARISH' ? 'bias-bear' : a.bias === 'bull' || a.bias === 'BULLISH' ? 'bias-bull' : 'bias-flux';
       const biasLabel = a.bias === 'bull' ? 'BULLISH' : a.bias === 'bear' ? 'BEARISH' : a.bias === 'neutral' ? 'NEUTRAL' : a.bias;
       const changeColor = a.change24h > 0 ? 'var(--bull)' : a.change24h < 0 ? 'var(--bear)' : 'var(--text-mute)';
-      const tileClass = sig === 'armed' ? 'armed-tile' : sig === 'watch' ? 'watch-tile' : '';
+      const tileClass = sig === 'enter' ? 'enter-tile' : sig === 'armed' ? 'armed-tile' : sig === 'watch' ? 'watch-tile' : '';
       const customBadge = a.custom ? `<div class="asset-custom-badge">CUSTOM</div>` : '';
       const removeBtn = a.custom ? `<button class="gw-remove-btn" onclick="event.stopPropagation();removeCustomAsset('${a.symbol}')" title="Remove ${a.symbol}">✕</button>` : '';
       const tp1Val = (a.tp1||a.tp||0);
@@ -1962,7 +1981,7 @@
         <div class="asset-tile ${tileClass}" style="position:relative;" onclick="openSetupModal(ASSETS.find(x=>x.symbol==='${a.symbol}'))">
           ${customBadge}
           ${removeBtn}
-          ${sig === 'armed' ? '<div class="armed-indicator">ENTERING</div>' : ''}
+          ${s${sig === 'enter' ? '<div class="enter-indicator">ENTER NOW 🔴</div>' : sig === 'armed' ? '<div class="armed-indicator">ALMOST ENTRY</div>' : ''}
           <div class="asset-symbol">${a.symbol}</div>
           <div class="asset-platform">${a.platform}</div>
           <div class="asset-price">$${a.price.toLocaleString(undefined,{maximumFractionDigits:6})}</div>
@@ -2222,7 +2241,7 @@
     const _tp = asset.tp || asset.tp1 || 0;
     const rr = asset.entry && asset.sl && _tp ? Math.abs((_tp - asset.entry)/(asset.entry - asset.sl)).toFixed(1) : '—';
     const sigColor = sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
-    const sigLabel = sig === 'armed' ? `${conf}% · ENTER` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+    const sigLabel = sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
     const savedRemark = (() => { try { return JSON.parse(localStorage.getItem('ict_remarks') || '{}')[asset.symbol] || ''; } catch(e) { return ''; } })();
 
     // MTF section — computed before template to avoid nested backtick syntax error
@@ -2541,16 +2560,17 @@
     const pct = Math.abs((asset.price - asset.entry) / asset.entry * 100).toFixed(2);
     const gradeMap = {'a-plus':'A+ · 2% Risk','a':'A · 1.5% Risk','b':'B · 1% Risk'};
     const gradeLabel = gradeMap[asset.grade] || asset.grade.toUpperCase();
+    const isEnter = signal === 'enter';
     const isArmed = signal === 'armed';
-    const color = isArmed ? 'var(--bull)' : 'var(--liq)';
-    const icon = isArmed ? '🎯' : '👁';
-    const label = isArmed ? '🔴 ENTER NOW!!!' : '🟡 ALMOST ENTRY — GET READY';
+    const color = isEnter ? 'var(--bear)' : isArmed ? 'var(--bull)' : 'var(--liq)';
+    const icon = isEnter ? '🔴' : isArmed ? '🎯' : '👁';
+    const label = isEnter ? '🔴 ENTER NOW — EXECUTE TRADE' : isArmed ? '🟡 ALMOST ENTRY POINT — GET READY' : '👁 ALMOST ENTRY — GET READY';
 
     const overlay = document.createElement('div');
     overlay.className = 'alert-overlay';
     overlay.id = 'armedOverlay';
     overlay.innerHTML = `
-      <div class="alert-box" style="border-color:${color}; box-shadow: 0 0 80px ${isArmed ? 'rgba(92,184,138,0.3)' : 'rgba(242,179,61,0.25)'}, 0 32px 80px rgba(0,0,0,0.9);">
+      <div class="alert-box" style="border-color:${color}; box-shadow: 0 0 80px ${isEnter ? 'rgba(224,93,93,0.4)' : isArmed ? 'rgba(92,184,138,0.3)' : 'rgba(242,179,61,0.25)'}, 0 32px 80px rgba(0,0,0,0.9);">
         <div class="alert-beacon" style="background:${color}18; border-color:${color}; animation: beaconPulse 1.2s infinite;">
           ${icon}
         </div>
@@ -2601,7 +2621,7 @@
     let flashCount = 0;
     const origTitle = document.title;
     const flashInterval = setInterval(() => {
-      document.title = flashCount % 2 === 0 ? `${isArmed ? '🔴 ARMED' : '🟡 WATCH'}: ${asset.symbol}` : origTitle;
+      document.title = flashCount % 2 === 0 ? `${isEnter ? '🔴 ENTER NOW' : isArmed ? '🟡 ALMOST ENTRY' : '👁 WATCH'}: ${asset.symbol}` : origTitle;
       flashCount++;
       if (flashCount > 20) { clearInterval(flashInterval); document.title = origTitle; }
     }, 600);
@@ -2620,8 +2640,9 @@
       const prev = prevSignalMap[asset.symbol] || 'wait';
 
       // Fire alert if signal escalated to armed or watch (and wasn't already there)
-      const escalated = (sig === 'armed' && prev !== 'armed') ||
-                        (sig === 'watch' && prev !== 'watch' && prev !== 'armed');
+      const escalated = (sig === 'enter' && prev !== 'enter') ||
+                  (sig === 'armed' && prev !== 'armed' && prev !== 'enter') ||
+                  (sig === 'watch' && prev !== 'watch' && prev !== 'armed' && prev !== 'enter');
 
       if (escalated) {
         const analysis = analyzeAsset(asset, gst);
@@ -2639,38 +2660,44 @@
         // Play sound + overlay
         playAlertSound(sig);
         
-        // ARMED signal: full notifications + vibration
-        if (sig === 'armed') {
+        // ENTER NOW signal: full red overlay + hard vibration
+        if (sig === 'enter') {
           showArmedOverlay(asset, sig, analysis);
-          
-          // Browser push notification
+
           if ('Notification' in window && Notification.permission === 'granted') {
-            const notification = new Notification(`🔴 ENTER NOW — ${asset.symbol}`, {
-              body: `${asset.symbol} is at entry. ICT conditions met. Execute trade.`,
-              icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="%235cb88a"/><text x="50" y="60" text-anchor="middle" font-size="50" fill="white" font-weight="bold">!</text></svg>'
+            new Notification(`🔴 ENTER NOW — ${asset.symbol}`, {
+              body: `Price is AT entry. Execute trade immediately.`,
+              icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="%23e05d5d"/><text x="50" y="65" text-anchor="middle" font-size="55" fill="white" font-weight="bold">!</text></svg>'
             });
           }
-          
-          // Vibration pattern: long-short-long
-          if (navigator.vibrate) {
-            navigator.vibrate([500, 200, 500, 200, 500]);
-          }
-        } 
-        // WATCH signal: lighter notifications
-        else if (sig === 'watch') {
-          showToast(`🟡 ALMOST ENTRY — GET READY: ${asset.symbol} · ${pct}% from entry`, 'warn');
-          
-          // Browser push notification
+
+          // Urgent vibration: long-short-long-short-long
+          if (navigator.vibrate) navigator.vibrate([600, 150, 600, 150, 600]);
+        }
+        // ALMOST ENTRY POINT: full overlay + moderate vibration
+        else if (sig === 'armed') {
+          showArmedOverlay(asset, sig, analysis);
+
           if ('Notification' in window && Notification.permission === 'granted') {
-            const notification = new Notification(`🟡 ALMOST ENTRY — ${asset.symbol}`, {
+            new Notification(`🎯 ALMOST ENTRY POINT — ${asset.symbol}`, {
+              body: `ICT conditions met. Price within 0.15% of entry. Get ready.`
+            });
+          }
+
+          // Moderate vibration
+          if (navigator.vibrate) navigator.vibrate([400, 200, 400]);
+        }
+        // ALMOST ENTRY: light toast
+        else if (sig === 'watch') {
+          showToast(`👁 ALMOST ENTRY — GET READY: ${asset.symbol} · ${pct}% from entry`, 'warn');
+
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification(`👁 ALMOST ENTRY — ${asset.symbol}`, {
               body: `Price approaching entry zone. Get ready.`
             });
           }
-          
-          // Vibration pattern: short-short
-          if (navigator.vibrate) {
-            navigator.vibrate([200, 100, 200]);
-          }
+
+          if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
         }
       }
 
@@ -2835,7 +2862,7 @@
       const color = sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
       const cardCls = sig === 'armed' ? 'armed-analysis' : sig === 'watch' ? 'watch-analysis' : '';
       const badgeBg = sig === 'armed' ? 'rgba(92,184,138,0.2)' : sig === 'watch' ? 'rgba(242,179,61,0.2)' : sig === 'skip' ? 'rgba(224,93,93,0.15)' : 'rgba(101,101,109,0.2)';
-      const badgeLabel = sig === 'armed' ? `${conf}% · ENTER` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+      const badgeLabel = sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
 
       return `
         <div class="analysis-card ${cardCls}">
@@ -3904,7 +3931,7 @@
       pollTVAlerts();
       setInterval(pollTVAlerts, 30000);
     }
-    console.log('%c⚡ ICT AutoPilot v20 ready · open DevTools console (F12) to see any ❌ crash labels', 'color:#c9a961;font-family:monospace');
+    console.log('%c⚡ ICT AutoPilot v21 ready · open DevTools console (F12) to see any ❌ crash labels', 'color:#c9a961;font-family:monospace');
   };
 </script>
 
