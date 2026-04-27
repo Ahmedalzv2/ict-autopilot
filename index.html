@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ahmad · ICT AutoPilot v22</title>
+  <title>Ahmad · ICT AutoPilot v21</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500;600&family=Geist:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -1075,7 +1075,7 @@
   <div class="autopilot-bar">
     <div class="ap-brand">
       <div class="logo">ICT AutoPilot</div>
-      <div class="v">v22 · Ahmad</div>
+      <div class="v">v21 · Ahmad</div>
     </div>
     <div class="ap-segment">
       <div class="sync-dot" id="syncDot"></div>
@@ -1100,7 +1100,7 @@
     <nav class="side">
       <div class="brand">
         <div class="logo">Ahmad<br><em style="color:var(--gold-soft);font-size:15px;">AutoPilot</em></div>
-        <div class="sub">ICT · v22</div>
+        <div class="sub">ICT · v21</div>
       </div>
       <div class="side-nav">
         <button class="nav-btn active" onclick="switchTab('autopilot')">⭐ Top Setup</button>
@@ -1777,22 +1777,9 @@
   // ═══════════════════════════════════════
   // SIGNAL BOARD
   // ═══════════════════════════════════════
-  function getWeightedScore(asset) {
-    const _W = [1,1.5,1.5,1.5,2,1.5,1.5,2,1,1,1];
-    return asset.checks.reduce((s,v,i) => s + v*(_W[i]||1), 0);
-  }
-  function getICTNarrative(asset, gst) {
-    const _L = ['HTF Bias','Kill Zone','FVG','OB','CHoCH','MSS','Displacement','Liq. Sweep','PO3','Macro','P/D'];
-    const session = getCurrentSession(gst);
-    const kzName = session ? session.name : 'Off-Session';
-    const parts = [];
-    asset.checks.forEach((v,i) => { if(v) parts.push(_L[i]+' ✓'); });
-    if (!parts.length) return 'No ICT triggers · ' + kzName;
-    return parts.join(' · ') + ' · ' + kzName;
-  }
   function getSignal(asset, gst) {
     const pct = Math.abs((asset.price - asset.entry) / asset.entry);
-    const ws = getWeightedScore(asset);
+    const score = asset.checks.reduce((a,b)=>a+b,0);
     const session = getCurrentSession(gst);
     const inKZ = session && session.type !== 'dead';
 
@@ -1804,14 +1791,14 @@
     if (pct <= 0.0005) return 'enter';
 
     // ALMOST ENTRY POINT: within 0.15% + score 9 + Kill Zone + MTF aligned
-    if (pct <= 0.0015 && ws >= 9 && inKZ && mtfAligned && (asset.checks[4]||asset.checks[7])) {
+    if (pct <= 0.0015 && score >= 9 && inKZ && mtfAligned) {
       return 'armed';
     }
-    
+
     // ALMOST ENTRY: approaching entry zone
-    if (pct <= 0.005 && ws >= 6) return 'watch';
-    
-    if (ws < 3 || (session && session.type === 'dead')) return 'skip';
+    if (pct <= 0.005 && score >= 7) return 'watch';
+
+    if (score < 4 || (session && session.type === 'dead')) return 'skip';
     return 'wait';
   }
 
@@ -1855,7 +1842,7 @@
           <div class="sig-dist" style="color:${Math.abs(parseFloat(pct)) <= 0.5 ? 'var(--bull)' : Math.abs(parseFloat(pct)) <= 2 ? 'var(--liq)' : 'var(--text-mute)'}">
             ${dir} ${Math.abs(pct)}% from entry
           </div>
-          <div class="sig-reasoning">${getICTNarrative(a, gst)}</div>
+          <div class="sig-reasoning">${a.reason}</div>
           <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:10px;color:${mtfColor};display:flex;gap:6px;justify-content:center;">
             <span>MTF:</span> <span>${mtfH1}1H</span> <span>${mtfH4}4H</span> <span>${mtfD1}D</span>
           </div>
@@ -1876,7 +1863,7 @@
     const gst = getGST();
     const session = getCurrentSession(gst);
     const sessionStr = session ? session.name : 'Off Session';
-    const armedAssets = ASSETS.filter(a => getSignal(a, gst) === 'armed');
+    const armedAssets = ASSETS.filter(a => { const s=getSignal(a,gst); return s==='enter'||s==='armed'; });
     const watchAssets = ASSETS.filter(a => getSignal(a, gst) === 'watch');
 
     el.innerHTML = `
@@ -1994,7 +1981,7 @@
         <div class="asset-tile ${tileClass}" style="position:relative;" onclick="openSetupModal(ASSETS.find(x=>x.symbol==='${a.symbol}'))">
           ${customBadge}
           ${removeBtn}
-          ${s${sig === 'enter' ? '<div class="enter-indicator">ENTER NOW 🔴</div>' : sig === 'armed' ? '<div class="armed-indicator">ALMOST ENTRY</div>' : ''}
+          ${sig === 'enter' ? '<div class="enter-indicator">ENTER NOW 🔴</div>' : sig === 'armed' ? '<div class="armed-indicator">ALMOST ENTRY</div>' : ''}
           <div class="asset-symbol">${a.symbol}</div>
           <div class="asset-platform">${a.platform}</div>
           <div class="asset-price">$${a.price.toLocaleString(undefined,{maximumFractionDigits:6})}</div>
@@ -2253,7 +2240,7 @@
     const isBull = (asset.bias || '').toUpperCase().includes('BULL');
     const _tp = asset.tp || asset.tp1 || 0;
     const rr = asset.entry && asset.sl && _tp ? Math.abs((_tp - asset.entry)/(asset.entry - asset.sl)).toFixed(1) : '—';
-    const sigColor = sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
+    const sigColor = sig === 'enter' ? 'var(--bear)' : sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
     const sigLabel = sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
     const savedRemark = (() => { try { return JSON.parse(localStorage.getItem('ict_remarks') || '{}')[asset.symbol] || ''; } catch(e) { return ''; } })();
 
@@ -2652,10 +2639,10 @@
       const sig = getSignal(asset, gst);
       const prev = prevSignalMap[asset.symbol] || 'wait';
 
-      // Fire alert if signal escalated to armed or watch (and wasn't already there)
+      // Fire alert if signal escalated (and wasn't already at that level or higher)
       const escalated = (sig === 'enter' && prev !== 'enter') ||
-                  (sig === 'armed' && prev !== 'armed' && prev !== 'enter') ||
-                  (sig === 'watch' && prev !== 'watch' && prev !== 'armed' && prev !== 'enter');
+                        (sig === 'armed' && prev !== 'armed' && prev !== 'enter') ||
+                        (sig === 'watch' && prev !== 'watch' && prev !== 'armed' && prev !== 'enter');
 
       if (escalated) {
         const analysis = analyzeAsset(asset, gst);
@@ -2755,14 +2742,14 @@
   }
 
   function getConfidencePct(asset, gst) {
-    const ws = getWeightedScore(asset);
-    const maxWS = 15;
+    const score = asset.checks.reduce((a,b)=>a+b,0);
+    const maxScore = asset.checks.length;
     const pct = Math.abs((asset.price - asset.entry) / asset.entry);
     const session = getCurrentSession(gst);
     const inKZ = session && session.type !== 'dead';
     
     // Score component (0–60), proximity component (0–25), session component (0–15)
-    let scoreComp = (ws / maxWS) * 60;
+    let scoreComp = (score / maxScore) * 60;
     
     // Add CHoCH bonus
     const choch = getCHoCHStatus ? getCHoCHStatus(asset) : null;
@@ -2784,8 +2771,8 @@
 
   function analyzeAsset(asset, gst) {
     const pct = Math.abs((asset.price - asset.entry) / asset.entry * 100);
-    const ws = getWeightedScore(asset);
-    const maxWS = 15;
+    const score = asset.checks.reduce((a,b)=>a+b,0);
+    const maxScore = asset.checks.length;
     const session = getCurrentSession(gst);
     const sig = getSignal(asset, gst);
     const conf = getConfidencePct(asset, gst);
@@ -2872,9 +2859,9 @@
       const score = asset.checks.reduce((a,b)=>a+b,0);
       const maxScore = asset.checks.length;
       const pctFill = Math.round(score / maxScore * 100);
-      const color = sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
-      const cardCls = sig === 'armed' ? 'armed-analysis' : sig === 'watch' ? 'watch-analysis' : '';
-      const badgeBg = sig === 'armed' ? 'rgba(92,184,138,0.2)' : sig === 'watch' ? 'rgba(242,179,61,0.2)' : sig === 'skip' ? 'rgba(224,93,93,0.15)' : 'rgba(101,101,109,0.2)';
+      const color = sig === 'enter' ? 'var(--bear)' : sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
+      const cardCls = sig === 'enter' ? 'armed-analysis' : sig === 'armed' ? 'armed-analysis' : sig === 'watch' ? 'watch-analysis' : '';
+      const badgeBg = sig === 'enter' ? 'rgba(224,93,93,0.2)' : sig === 'armed' ? 'rgba(92,184,138,0.2)' : sig === 'watch' ? 'rgba(242,179,61,0.2)' : sig === 'skip' ? 'rgba(224,93,93,0.15)' : 'rgba(101,101,109,0.2)';
       const badgeLabel = sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
 
       return `
@@ -3944,7 +3931,7 @@
       pollTVAlerts();
       setInterval(pollTVAlerts, 30000);
     }
-    console.log('%c⚡ ICT AutoPilot v22 ready · open DevTools console (F12) to see any ❌ crash labels', 'color:#c9a961;font-family:monospace');
+    console.log('%c⚡ ICT AutoPilot v21 ready · open DevTools console (F12) to see any ❌ crash labels', 'color:#c9a961;font-family:monospace');
   };
 </script>
 
