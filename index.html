@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ahmad · ICT AutoPilot v21</title>
+  <title>Ahmad · ICT AutoPilot v22</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500;600&family=Geist:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -1818,6 +1818,14 @@
       const badgeText = sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
       const modeTag = a.tradeMode === 'spot' ? ' <span style="font-size:8px;background:rgba(201,169,97,0.15);color:var(--gold);border-radius:3px;padding:1px 4px;">SPOT</span>' : '';
 
+      // Sweep tag
+      const sweep = getLiquiditySweep(a);
+      const sweepTag = (!sweep.pending && sweep.swept && sweep.confirmed)
+        ? `<div style="margin-top:5px;font-size:10px;font-weight:800;color:var(--bull);letter-spacing:.05em;">SWEPT ${sweep.type === 'lows' ? 'LOWS' : 'HIGHS'} \u2713</div>`
+        : (!sweep.pending && !sweep.swept
+          ? `<div style="margin-top:5px;font-size:10px;color:var(--text-mute);letter-spacing:.03em;">no sweep \u00b7 wait</div>`
+          : '');
+
       // Feature 1: MTF Badge
       const mtf = getMTFAligned(a);
       const mtfIcon = (tf, bias) => {
@@ -1842,6 +1850,7 @@
           <div class="sig-dist" style="color:${Math.abs(parseFloat(pct)) <= 0.5 ? 'var(--bull)' : Math.abs(parseFloat(pct)) <= 2 ? 'var(--liq)' : 'var(--text-mute)'}">
             ${dir} ${Math.abs(pct)}% from entry
           </div>
+          ${sweepTag}
           <div class="sig-reasoning">${a.reason}</div>
           <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:10px;color:${mtfColor};display:flex;gap:6px;justify-content:center;">
             <span>MTF:</span> <span>${mtfH1}1H</span> <span>${mtfH4}4H</span> <span>${mtfD1}D</span>
@@ -2759,6 +2768,11 @@
     const mtf = getMTFAligned(asset);
     if (mtf.score === 3) scoreComp += 5;
     else if (mtf.score === 0) scoreComp -= 5;
+
+    // Add liquidity sweep bonus
+    const sweep = getLiquiditySweep(asset);
+    if (sweep.swept && sweep.confirmed) scoreComp += 10;
+    else if (!sweep.pending && !sweep.swept) scoreComp -= 5;
     
     let proxComp = 0;
     if (pct <= 0.001) proxComp = 25;
@@ -2818,21 +2832,38 @@
     }
 
     // Main analysis paragraph (ICT language — confirmation not prediction)
+    const sweep = getLiquiditySweep(asset);
+    const sweepMsg = (sweep.swept && sweep.confirmed)
+      ? ` ✓ Liquidity ${sweep.type === 'lows' ? 'lows' : 'highs'} swept & price reclaimed ($${(sweep.swingLevel||0).toLocaleString(undefined,{maximumFractionDigits:4})}).`
+      : (!sweep.pending && !sweep.swept ? ' ⚠ No liquidity sweep detected on 1H.' : '');
+    const sweepWatchHint = (sweep.swept && sweep.confirmed)
+      ? ` Liquidity ${sweep.type} already swept — displacement confirmed. `
+      : (sweep.pending ? '' : ' Waiting for a liquidity sweep before ARMED upgrade. ');
+
     let para = '';
-    if (sig === 'armed') {
+    if (sig === 'enter') {
+      const choch = getCHoCHStatus ? getCHoCHStatus(asset) : {detected: false};
+      const chochMsg = choch.detected ? ' ✓ 1m CHoCH confirmed.' : '';
+      const mtf = getMTFAligned(asset);
+      const mtfMsg = mtf.aligned ? ' ✓ All TF aligned.' : (mtf.score >= 2 ? ' ✓ MTF aligned (2/3).' : '');
+      para = `🔴 ENTER NOW — EXECUTE IMMEDIATELY. ${priceStr} is ${pctStr}% from your ${dir} entry at ${entryStr}. Price is at your level.${chochMsg}${mtfMsg}${sweepMsg} LIMIT ${dir} at ${entryStr}. Stop Loss at ${slStr}. TP1 at ${tpStr} (${rr}:1 R:R).`;
+    } else if (sig === 'armed') {
       const choch = getCHoCHStatus ? getCHoCHStatus(asset) : {detected: false};
       const chochMsg = choch.detected ? ' ✓ 1m CHoCH confirmed.' : '';
       const mtf = getMTFAligned(asset);
       const mtfMsg = mtf.aligned ? ' ✓ All TF aligned.' : (mtf.score >= 2 ? ' ✓ MTF aligned (2/3).' : ' ⚠ MTF misaligned.');
-      para = `PRICE AT ENTRY — EXECUTE. ${priceStr} — ${pctStr}% ${pDir} your confirmed ${dir} entry at ${entryStr}. All ICT conditions met.${chochMsg}${mtfMsg} Kill Zone active. LIMIT ${dir} at ${entryStr}. Stop Loss at ${slStr}. TP1 at ${tpStr} (${rr}:1 R:R). Do not chase. Confirmation, not prediction.`;
+      para = `ALMOST ENTRY POINT — GET READY. ${priceStr} — ${pctStr}% ${pDir} your confirmed ${dir} entry at ${entryStr}. All ICT conditions met.${chochMsg}${mtfMsg}${sweepMsg} Kill Zone active. LIMIT ${dir} at ${entryStr}. Stop Loss at ${slStr}. TP1 at ${tpStr} (${rr}:1 R:R). Do not chase. Confirmation, not prediction.`;
     } else if (sig === 'watch') {
-      para = `Price is at ${priceStr}, approaching your ${dir} entry at ${entryStr} (${pctStr}% away). Setup is forming but not yet at your level. Do not enter early — wait for price to come to ${entryStr}. When it arrives and Kill Zone is active, that is your signal. Confidence: ${conf}%.`;
+      para = `Price is at ${priceStr}, approaching your ${dir} entry at ${entryStr} (${pctStr}% away). Setup is forming but not yet at your level.${sweepWatchHint}Do not enter early — wait for price to come to ${entryStr}. When it arrives and Kill Zone is active, that is your signal. Confidence: ${conf}%.`;
     } else if (sig === 'skip') {
       para = score < 4
         ? `Only ${score}/${maxScore} ICT triggers confirmed — below minimum threshold. No setup here. Stand aside and wait for structure to develop.`
         : `Dead Zone active (19:00–22:00 GST). Algorithmic session — no directional bias. No entries allowed regardless of setup quality. Come back at Silver Bullet PM (22:50 GST).`;
     } else {
-      para = `Price is at ${priceStr}, currently ${pctStr}% from your ${dir} entry level at ${entryStr}. ${score}/${maxScore} ICT triggers confirmed. Wait for price to come to your level — do not anticipate. ICT is confirmation, not prediction. Confidence: ${conf}%.`;
+      const sweepWait = (sweep.swept && sweep.confirmed)
+        ? ` Liquidity sweep confirmed — watch for price to reach ${entryStr}.`
+        : (!sweep.pending ? ` Liquidity sweep not yet confirmed on 1H.` : '');
+      para = `Price is at ${priceStr}, currently ${pctStr}% from your ${dir} entry level at ${entryStr}. ${score}/${maxScore} ICT triggers confirmed.${sweepWait} Wait for price to come to your level — do not anticipate. ICT is confirmation, not prediction. Confidence: ${conf}%.`;
     }
 
     let analysis = `${para}\n`;
@@ -3761,6 +3792,7 @@
     // FEATURE 1: MULTI-TIMEFRAME (MTF) ALIGNMENT CHECKER
   // ═══════════════════════════════════════════════════════
   let mtfCache = {};
+  let sweepCache = {};
 
   async function fetchMTFAlignment(asset) {
     if (NON_BINANCE_ASSETS.includes(asset.symbol)) return null;
@@ -3803,6 +3835,63 @@
   async function fetchAllMTF() {
     const nonBinance = ASSETS.filter(a => !NON_BINANCE_ASSETS.includes(a.symbol));
     await Promise.all(nonBinance.map(a => fetchMTFAlignment(a)));
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // LIQUIDITY SWEEP DETECTOR (v22)
+  // ═══════════════════════════════════════════════════════
+  async function fetchLiquiditySweep(asset) {
+    if (NON_BINANCE_ASSETS.includes(asset.symbol)) return null;
+    const symbol = asset.symbol + 'USDT';
+    try {
+      const host = BINANCE_HOSTS[0];
+      const url = `https://${host}/api/v3/klines?symbol=${symbol}&interval=1h&limit=25`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const klines = await res.json();
+      if (klines.length < 22) return null;
+
+      const isBull = (asset.bias || '').toLowerCase().includes('bull');
+      const completed = klines.slice(0, klines.length - 1);
+      const swingWindow = completed.slice(0, -3);
+      const recentCandles = completed.slice(-3);
+
+      if (isBull) {
+        const swingLow = Math.min(...swingWindow.map(c => parseFloat(c[3])));
+        const sweepCandle = recentCandles.find(c => parseFloat(c[3]) < swingLow);
+        if (sweepCandle) {
+          const confirmed = parseFloat(sweepCandle[4]) > swingLow;
+          sweepCache[asset.symbol] = { swept: true, confirmed, type: 'lows', swingLevel: swingLow, ts: Date.now() };
+        } else {
+          sweepCache[asset.symbol] = { swept: false, type: null, ts: Date.now() };
+        }
+      } else {
+        const swingHigh = Math.max(...swingWindow.map(c => parseFloat(c[2])));
+        const sweepCandle = recentCandles.find(c => parseFloat(c[2]) > swingHigh);
+        if (sweepCandle) {
+          const confirmed = parseFloat(sweepCandle[4]) < swingHigh;
+          sweepCache[asset.symbol] = { swept: true, confirmed, type: 'highs', swingLevel: swingHigh, ts: Date.now() };
+        } else {
+          sweepCache[asset.symbol] = { swept: false, type: null, ts: Date.now() };
+        }
+      }
+      return sweepCache[asset.symbol];
+    } catch(e) {
+      console.warn(`Sweep fetch failed for ${symbol}:`, e.message);
+      return null;
+    }
+  }
+
+  function getLiquiditySweep(asset) {
+    const cached = sweepCache[asset.symbol];
+    if (!cached) return { swept: false, pending: true };
+    if (Date.now() - cached.ts > 15 * 60 * 1000) return { swept: false, pending: true };
+    return cached;
+  }
+
+  async function fetchAllSweeps() {
+    const nonBinance = ASSETS.filter(a => !NON_BINANCE_ASSETS.includes(a.symbol));
+    await Promise.all(nonBinance.map(a => fetchLiquiditySweep(a).catch(() => {})));
   }
 
   // ═══════════════════════════════════════════════════════
@@ -3926,12 +4015,14 @@
     setInterval(renderEconCalendar, 60000);
     fetchAllMTF();
     setInterval(() => fetchAllMTF().catch(()=>{}), 5*60*1000);
+    fetchAllSweeps();
+    setInterval(() => fetchAllSweeps().catch(()=>{}), 15*60*1000);
     if (APPS_SCRIPT_URL) {
       _try('tvWebhookUrl', () => { document.getElementById('tvWebhookUrl').textContent = APPS_SCRIPT_URL; });
       pollTVAlerts();
       setInterval(pollTVAlerts, 30000);
     }
-    console.log('%c⚡ ICT AutoPilot v21 ready · open DevTools console (F12) to see any ❌ crash labels', 'color:#c9a961;font-family:monospace');
+    console.log('%c⚡ ICT AutoPilot v22 ready · open DevTools console (F12) to see any ❌ crash labels', 'color:#c9a961;font-family:monospace');
   };
 </script>
 
