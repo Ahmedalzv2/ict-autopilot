@@ -1749,6 +1749,7 @@
 
     renderSessionTimeline(gst, session);
     try { refreshDailyPnlPill(gst); } catch(e) {}
+    try { maybeRenderEodRecap(gst); } catch(e) {}
 
     // Record signal-state changes once per second for the sparkline. This
     // runs whether or not the WebSocket is connected, so history accrues
@@ -2928,6 +2929,154 @@
         serializeGuardrailState({ lastAlertMs, prevSignalMap, lastLossMs, sessionTradeCounts }),
       );
     } catch(e) {}
+  }
+
+  // ─────────────────────────────────────────
+  // End-of-day recap (STRATEGY.md §10 — daily routine)
+  // ─────────────────────────────────────────
+  // Pure: aggregate today's journal into the shape the EOD modal expects.
+  // Fully tested. `sessionDefs` injected so tests can pin a known set.
+  function summarizeDay(journalEntries, todayKey, sessionDefs) {
+    const defs = sessionDefs || SESSION_DEFS;
+    const todays = journalEntries.filter(j => j.date === todayKey || gstDateKey(j.timestamp) === todayKey);
+
+    const wins   = todays.filter(j => j.outcome === 'win').length;
+    const losses = todays.filter(j => j.outcome === 'loss').length;
+    const bes    = todays.filter(j => j.outcome === 'be').length;
+    const pending = todays.filter(j => !j.outcome).length;
+    const resolved = wins + losses + bes;
+    const winRate = resolved ? wins / resolved : 0;
+
+    const rOf = (j) => Number.isFinite(j.rMultiple) ? j.rMultiple : nominalR(j);
+    const totalR = todays.reduce((s, j) => s + rOf(j), 0);
+    const sortedByR = [...todays].sort((a, b) => rOf(b) - rOf(a));
+    const bestTrade  = sortedByR[0] || null;
+    const worstTrade = sortedByR[sortedByR.length - 1] || null;
+
+    const bySession = {};
+    for (const j of todays) {
+      const name = j.session || 'Off Session';
+      if (!bySession[name]) bySession[name] = { count: 0, totalR: 0, wins: 0, losses: 0 };
+      bySession[name].count++;
+      bySession[name].totalR += rOf(j);
+      if (j.outcome === 'win')  bySession[name].wins++;
+      if (j.outcome === 'loss') bySession[name].losses++;
+    }
+
+    // Tradeable sessions = active KZs and macro windows; Dead Zone excluded
+    // since the strategy says no entries there anyway.
+    const tradeableNames = defs.filter(s => s.type !== 'dead').map(s => s.name);
+    const sessionsHit    = tradeableNames.filter(n => bySession[n]);
+    const sessionsMissed = tradeableNames.filter(n => !bySession[n]);
+
+    return {
+      date: todayKey,
+      total: todays.length,
+      wins, losses, breakEvens: bes, pending,
+      winRate, totalR,
+      bestTrade, worstTrade,
+      bySession, sessionsHit, sessionsMissed,
+    };
+  }
+
+  function renderEodRecapModal(payload) {
+    if (typeof document === 'undefined') return;
+    const existing = document.getElementById('eodModal');
+    if (existing) existing.remove();
+    const fmtPct = (n) => `${(n * 100).toFixed(1)}%`;
+    const fmtR   = (n) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}R`;
+    const winColor = (rate) => rate >= 0.55 ? 'var(--bull)' : rate >= 0.4 ? 'var(--liq)' : 'var(--bear)';
+    const rColor = (r) => r > 0 ? 'var(--bull)' : r < 0 ? 'var(--bear)' : 'var(--text-mute)';
+
+    const sessionRows = Object.entries(payload.bySession || {}).map(([name, s]) => `
+      <tr><td>${name}</td><td>${s.count}</td><td>${s.wins}</td><td>${s.losses}</td><td style="color:${rColor(s.totalR)};font-weight:600;">${fmtR(s.totalR)}</td></tr>
+    `).join('') || '<tr><td colspan="5" style="color:var(--text-mute);font-style:italic;">No trades today.</td></tr>';
+
+    const bestStr = payload.bestTrade ?
+      `<strong style="color:var(--bull);">${payload.bestTrade.symbol}</strong> ${fmtR(Number.isFinite(payload.bestTrade.rMultiple) ? payload.bestTrade.rMultiple : (typeof nominalR === 'function' ? nominalR(payload.bestTrade) : 0))}` : '—';
+    const worstStr = payload.worstTrade ?
+      `<strong style="color:var(--bear);">${payload.worstTrade.symbol}</strong> ${fmtR(Number.isFinite(payload.worstTrade.rMultiple) ? payload.worstTrade.rMultiple : (typeof nominalR === 'function' ? nominalR(payload.worstTrade) : 0))}` : '—';
+
+    const overlay = document.createElement('div');
+    overlay.id = 'eodModal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(8,8,10,0.92);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);padding:20px;';
+    overlay.innerHTML = `
+      <div style="background:var(--bg-elevated);border:1px solid var(--gold);border-radius:14px;padding:24px 28px;max-width:680px;width:100%;max-height:88vh;overflow:auto;box-shadow:0 24px 64px rgba(0,0,0,0.7);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+          <div>
+            <div style="font-family:'Instrument Serif',serif;font-size:22px;color:var(--gold);">📅 End-of-Day Recap · ${payload.date}</div>
+            <div style="font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin-top:2px;">Realized R-PnL only — pending trades excluded from win-rate</div>
+          </div>
+          <button onclick="document.getElementById('eodModal')?.remove();" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:6px 12px;border-radius:6px;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:12px;">✕ Close</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px;font-family:'JetBrains Mono',monospace;">
+          <div style="background:var(--bg-surface);padding:12px 14px;border-radius:10px;">
+            <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.1em;">Trades</div>
+            <div style="font-size:22px;font-weight:600;color:var(--gold);">${payload.total}</div>
+            <div style="font-size:10px;color:var(--text-mute);">${payload.pending} pending</div>
+          </div>
+          <div style="background:var(--bg-surface);padding:12px 14px;border-radius:10px;">
+            <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.1em;">Win Rate</div>
+            <div style="font-size:22px;font-weight:600;color:${winColor(payload.winRate)};">${fmtPct(payload.winRate)}</div>
+            <div style="font-size:10px;color:var(--text-mute);">${payload.wins}W · ${payload.losses}L · ${payload.breakEvens}BE</div>
+          </div>
+          <div style="background:var(--bg-surface);padding:12px 14px;border-radius:10px;">
+            <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.1em;">Total R</div>
+            <div style="font-size:22px;font-weight:600;color:${rColor(payload.totalR)};">${fmtR(payload.totalR)}</div>
+            <div style="font-size:10px;color:var(--text-mute);">vs daily limit ${DAILY_LOSS_LIMIT_R}R</div>
+          </div>
+          <div style="background:var(--bg-surface);padding:12px 14px;border-radius:10px;">
+            <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.1em;">Sessions</div>
+            <div style="font-size:22px;font-weight:600;color:var(--gold);">${payload.sessionsHit.length}/${payload.sessionsHit.length + payload.sessionsMissed.length}</div>
+            <div style="font-size:10px;color:var(--text-mute);">hit / total</div>
+          </div>
+        </div>
+
+        <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:12px;margin-bottom:14px;">
+          <thead><tr style="color:var(--text-mute);text-align:left;border-bottom:1px solid var(--border);">
+            <th style="padding:8px 6px;">Session</th><th style="padding:8px 6px;">N</th><th style="padding:8px 6px;">W</th><th style="padding:8px 6px;">L</th><th style="padding:8px 6px;">R</th>
+          </tr></thead>
+          <tbody>${sessionRows}</tbody>
+        </table>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;font-size:12px;font-family:'JetBrains Mono',monospace;">
+          <div style="background:var(--bg-surface);padding:10px 12px;border-radius:8px;">
+            <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;">Best</div>
+            <div>${bestStr}</div>
+          </div>
+          <div style="background:var(--bg-surface);padding:10px 12px;border-radius:8px;">
+            <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;">Worst</div>
+            <div>${worstStr}</div>
+          </div>
+        </div>
+
+        ${payload.sessionsMissed.length ? `<div style="font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;background:var(--bg-surface);padding:10px 12px;border-radius:8px;line-height:1.6;"><strong style="color:var(--text);">Missed:</strong> ${payload.sessionsMissed.join(' · ')}. ${payload.sessionsMissed.length === payload.sessionsMissed.length + payload.sessionsHit.length ? 'No sessions tradeable today — sit out is correct when no setups confirm.' : 'No setup confirmed in these windows.'}</div>` : ''}
+      </div>`;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+
+  // Fires once per GST day at 23:59. Dedup via localStorage so the modal
+  // doesn't pop every tick of that minute.
+  const EOD_LAST_KEY = 'ict_last_eod_date';
+  function maybeRenderEodRecap(gst) {
+    if (!gst || gst.getHours() !== 23 || gst.getMinutes() !== 59) return;
+    const todayKey = gstDateKey(gst);
+    let last = null;
+    try { last = localStorage.getItem(EOD_LAST_KEY); } catch(e) {}
+    if (last === todayKey) return;
+    const payload = summarizeDay(journal, todayKey);
+    renderEodRecapModal(payload);
+    try { localStorage.setItem(EOD_LAST_KEY, todayKey); } catch(e) {}
+  }
+
+  // DevTools entry: render today's recap (or any historical date) on demand.
+  if (typeof window !== 'undefined') {
+    window.ictEodRecap = (date) => {
+      const key = date || gstDateKey(getGST());
+      renderEodRecapModal(summarizeDay(journal, key));
+    };
   }
 
   function loadGuardrailState() {

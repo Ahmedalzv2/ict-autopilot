@@ -35,6 +35,8 @@ const EXPORTS = [
   'serializeGuardrailState', 'deserializeGuardrailState',
   'saveGuardrailState', 'loadGuardrailState',
   'GUARDRAIL_STATE_KEY', 'GUARDRAIL_STATE_VERSION', 'GUARDRAIL_MAX_AGE_MS',
+  // EOD recap
+  'summarizeDay', 'maybeRenderEodRecap', 'renderEodRecapModal', 'EOD_LAST_KEY',
 ];
 
 function extractScript(html) {
