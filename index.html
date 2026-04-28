@@ -2882,6 +2882,70 @@
     return (now - ts) < REVENGE_COOLDOWN_MS;
   }
 
+  // ─────────────────────────────────────────
+  // Refresh-resilient guardrails
+  // Persist the four in-memory maps that gate alerts so a page refresh
+  // doesn't erase the daily-loss-limit memory, revenge cooldown, session
+  // trade counts, or the prevSignalMap (which would otherwise re-fire a
+  // transition that already alerted).
+  // Storage is invalidated after 24h since none of the timestamps in
+  // these maps are meaningful past a day (cooldowns are minutes, the
+  // session-counter date key is per-day, daily R is per-day).
+  // ─────────────────────────────────────────
+  const GUARDRAIL_STATE_KEY = 'ict_guardrail_state';
+  const GUARDRAIL_STATE_VERSION = 1;
+  const GUARDRAIL_MAX_AGE_MS = 24 * 60 * 60_000;
+
+  // Pure: serialize. Tested directly.
+  function serializeGuardrailState({ lastAlertMs, prevSignalMap, lastLossMs, sessionTradeCounts }, ts = Date.now()) {
+    return JSON.stringify({
+      version: GUARDRAIL_STATE_VERSION,
+      ts,
+      lastAlertMs, prevSignalMap, lastLossMs, sessionTradeCounts,
+    });
+  }
+
+  // Pure: parse. Returns null when the blob is missing, malformed,
+  // wrong version, or older than the staleness threshold. Tested directly.
+  function deserializeGuardrailState(raw, now = Date.now()) {
+    if (!raw) return null;
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch(e) { return null; }
+    if (!parsed || parsed.version !== GUARDRAIL_STATE_VERSION) return null;
+    if (typeof parsed.ts !== 'number' || (now - parsed.ts) > GUARDRAIL_MAX_AGE_MS) return null;
+    return {
+      lastAlertMs: parsed.lastAlertMs || {},
+      prevSignalMap: parsed.prevSignalMap || {},
+      lastLossMs: parsed.lastLossMs || {},
+      sessionTradeCounts: parsed.sessionTradeCounts || {},
+    };
+  }
+
+  function saveGuardrailState() {
+    try {
+      localStorage.setItem(
+        GUARDRAIL_STATE_KEY,
+        serializeGuardrailState({ lastAlertMs, prevSignalMap, lastLossMs, sessionTradeCounts }),
+      );
+    } catch(e) {}
+  }
+
+  function loadGuardrailState() {
+    try {
+      const restored = deserializeGuardrailState(localStorage.getItem(GUARDRAIL_STATE_KEY));
+      if (!restored) return false;
+      lastAlertMs = restored.lastAlertMs;
+      prevSignalMap = restored.prevSignalMap;
+      lastLossMs = restored.lastLossMs;
+      sessionTradeCounts = restored.sessionTradeCounts;
+      // Persisted prevSignalMap means we already KNOW the per-symbol
+      // signal state; flip firstSyncDone so we don't re-prime and lose it.
+      // Refresh now behaves like "tick-N+1" instead of "fresh page load."
+      if (Object.keys(prevSignalMap).length > 0) firstSyncDone = true;
+      return true;
+    } catch(e) { return false; }
+  }
+
   // Staleness threshold for MTF cache. If MTF is older than this when an
   // alert is about to escalate to armed/enter, force a refetch first so the
   // alarm fires only against currently-aligned timeframes, not 4-min-old data.
@@ -3147,6 +3211,9 @@
 
       prevSignalMap[asset.symbol] = sig;
     }
+    // Persist guardrail state once per scan rather than per-asset to
+    // avoid hammering localStorage on every iteration.
+    saveGuardrailState();
   }
 
   function renderAlertLog() {
@@ -3823,7 +3890,10 @@
         else if (mins === 480 && !je.outcome) je.outcome = 'be';
         if (je.outcome) {
           je.rMultiple = nominalR(je);
-          if (je.outcome === 'loss') lastLossMs[je.symbol] = Date.now();
+          if (je.outcome === 'loss') {
+            lastLossMs[je.symbol] = Date.now();
+            saveGuardrailState();
+          }
         }
         saveJournal();
         renderJournal();
@@ -3856,7 +3926,10 @@
     if (!je) return;
     je.outcome = outcome;
     je.rMultiple = nominalR(je);
-    if (outcome === 'loss') lastLossMs[je.symbol] = Date.now();
+    if (outcome === 'loss') {
+      lastLossMs[je.symbol] = Date.now();
+      saveGuardrailState();
+    }
     saveJournal();
     renderJournal();
     showToast(`${je.symbol} marked as ${outcome.toUpperCase()}`, outcome === 'win' ? 'ok' : outcome === 'loss' ? 'err' : 'info');
@@ -5015,6 +5088,7 @@
     _try('loadTradeModes', loadTradeModes);
     _try('loadJournal', loadJournal);
     _try('loadSignalHistory', loadSignalHistory);
+    _try('loadGuardrailState', loadGuardrailState);
     _try('checkPendingOutcomes', checkPendingOutcomes);
     _try('renderAssets', renderAssets);
     _try('renderMethods', renderMethods);

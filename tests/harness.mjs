@@ -31,6 +31,10 @@ const EXPORTS = [
   'DAILY_LOSS_LIMIT_R', 'MAX_TRADES_PER_SESSION', 'REVENGE_COOLDOWN_MS',
   // real CHoCH
   'findSwings', 'detectCHoCH', 'isCHoCHStale', 'fetchCHoCH', 'fetchAllCHoCH',
+  // refresh-resilient guardrails
+  'serializeGuardrailState', 'deserializeGuardrailState',
+  'saveGuardrailState', 'loadGuardrailState',
+  'GUARDRAIL_STATE_KEY', 'GUARDRAIL_STATE_VERSION', 'GUARDRAIL_MAX_AGE_MS',
 ];
 
 function extractScript(html) {
