@@ -29,6 +29,8 @@ const EXPORTS = [
   'gstDateKey', 'nominalR', 'getDailyR', 'getSessionTradeCount',
   'bumpSessionTradeCount', 'isInRevengeCooldown',
   'DAILY_LOSS_LIMIT_R', 'MAX_TRADES_PER_SESSION', 'REVENGE_COOLDOWN_MS',
+  // real CHoCH
+  'findSwings', 'detectCHoCH', 'isCHoCHStale', 'fetchCHoCH', 'fetchAllCHoCH',
 ];
 
 function extractScript(html) {
@@ -180,6 +182,8 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   set lastLossMs(v) { lastLossMs = v; },
   get sessionTradeCounts() { return typeof sessionTradeCounts === 'undefined' ? undefined : sessionTradeCounts; },
   set sessionTradeCounts(v) { sessionTradeCounts = v; },
+  get chochCache() { return typeof chochCache === 'undefined' ? undefined : chochCache; },
+  set chochCache(v) { chochCache = v; },
 });
 `;
 

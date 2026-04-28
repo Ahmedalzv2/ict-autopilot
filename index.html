@@ -1859,9 +1859,20 @@
     // ENTER NOW: price within 0.05% of entry — fire the trade alert
     if (pct <= 0.0005) return 'enter';
 
-    // ALMOST ENTRY POINT: within 0.15% + score 9 + Kill Zone + MTF aligned
+    // ALMOST ENTRY POINT: within 0.15% + score 9 + Kill Zone + MTF aligned.
+    // CHoCH gate per STRATEGY.md §4: "no 1-minute CHoCH = no trade,
+    // regardless of how perfect everything else looks." We respect this
+    // strictly when CHoCH detection has run; if pending (no fetch yet), we
+    // fall through and trust the rest of the gates rather than blocking.
     if (pct <= 0.0015 && score >= 9 && inKZ && mtfAligned) {
-      return 'armed';
+      const choch = getCHoCHStatus(asset);
+      // Pending → no CHoCH data yet, don't block (same convention as MTF).
+      // Detected & supportsBias → confluence, fire ARMED.
+      // Otherwise (detected wrong-direction, or detected==false after a
+      // real fetch) → drop to watch per "no CHoCH = no trade".
+      if (choch.pending || (choch.detected && choch.supportsBias)) {
+        return 'armed';
+      }
     }
 
     // ALMOST ENTRY: approaching entry zone
@@ -3035,18 +3046,19 @@
                         (sig === 'armed' && prev !== 'armed' && prev !== 'enter') ||
                         (sig === 'watch' && prev !== 'watch' && prev !== 'armed' && prev !== 'enter');
 
-      // Force-fresh MTF on escalation to armed/enter. Stale MTF could fire
-      // an ARMED on timeframes that flipped 4 minutes ago. After refetch we
-      // re-evaluate the signal — if MTF flipped against us, the alert
-      // gracefully downgrades and does not fire.
-      if (escalated && (sig === 'armed' || sig === 'enter') && isMTFStale(asset.symbol)) {
-        try { await fetchMTFAlignment(asset); } catch(e) {}
+      // Force-fresh MTF + CHoCH on escalation to armed/enter. Stale MTF
+      // could fire ARMED on timeframes that flipped 4 minutes ago; stale
+      // CHoCH could fire on a break that has since been invalidated by
+      // newer price action. Refresh both in parallel and re-evaluate.
+      if (escalated && (sig === 'armed' || sig === 'enter')) {
+        const refreshes = [];
+        if (isMTFStale(asset.symbol))   refreshes.push(fetchMTFAlignment(asset).catch(()=>{}));
+        if (isCHoCHStale(asset.symbol)) refreshes.push(fetchCHoCH(asset).catch(()=>{}));
+        if (refreshes.length) await Promise.all(refreshes);
         sig = getSignal(asset, gst);
         const stillEscalated = (sig === 'enter' && prev !== 'enter') ||
                                (sig === 'armed' && prev !== 'armed' && prev !== 'enter');
         if (!stillEscalated) {
-          // MTF refresh changed the signal (e.g. dropped to watch). Update
-          // prev so we don't re-evaluate forever, and move on.
           prevSignalMap[asset.symbol] = sig;
           continue;
         }
@@ -3172,9 +3184,29 @@
   // Confidence % — shown instead of "ARMED" label
   // CHoCH detection stub — returns {detected: bool, candles: 1m displacement count}
   function getCHoCHStatus(asset) {
-    // Placeholder: would check real-time 1m chart for CHoCH
-    // Returns {detected: true/false, message: string}
-    return { detected: false, message: 'CHoCH check requires live chart data' };
+    const cache = chochCache[asset.symbol];
+    if (!cache) {
+      // No detection has run yet (or the symbol is non-Binance). Treat as
+      // pending — same convention as MTF — so signals don't get blocked
+      // before we've had a chance to fetch.
+      return { detected: false, supportsBias: false, pending: true, message: 'CHoCH pending' };
+    }
+    if (!cache.detected) {
+      return { detected: false, supportsBias: false, pending: false, message: 'No 1m CHoCH break yet — wait for confirmation' };
+    }
+    const assetBias = (asset.bias || '').toLowerCase().includes('bull') ? 'bull' : 'bear';
+    const supportsBias = cache.direction === assetBias;
+    return {
+      detected: true,
+      supportsBias,
+      pending: false,
+      direction: cache.direction,
+      breakPrice: cache.breakPrice,
+      swingPrice: cache.swingPrice,
+      message: supportsBias
+        ? `✓ ${cache.direction} 1m CHoCH confirmed (broke ${cache.swingPrice})`
+        : `⚠ 1m CHoCH is ${cache.direction} but bias is ${assetBias} — wrong direction`,
+    };
   }
 
   function getConfidencePct(asset, gst) {
@@ -3187,9 +3219,12 @@
     // Score component (0–60), proximity component (0–25), session component (0–15)
     let scoreComp = (score / maxScore) * 60;
     
-    // Add CHoCH bonus
+    // CHoCH grading: +5 when 1m CHoCH confirms our bias direction; small
+    // penalty when CHoCH points the WRONG way (the structure is breaking
+    // against our setup); 0 when pending or no break yet.
     const choch = getCHoCHStatus ? getCHoCHStatus(asset) : null;
-    if (choch && choch.detected) scoreComp += 5;
+    if (choch && choch.detected && choch.supportsBias) scoreComp += 5;
+    else if (choch && choch.detected && !choch.supportsBias) scoreComp -= 3;
     
     // MTF alignment grading. 2/3 is the gate to ARM in getSignal, so it
     // deserves credit too — previously only 3/3 got the bonus and 2/3 got
@@ -3277,7 +3312,11 @@
       para = `🔴 ENTER NOW — ${priceStr} is AT your ${dir} entry (${entryStr}). LIMIT ${dir} at ${entryStr}. Stop Loss at ${slStr}. TP1 at ${tpStr} (${rr}:1 R:R). Execute the plan — do not hesitate, do not chase further.`;
     } else if (sig === 'armed') {
       const choch = getCHoCHStatus ? getCHoCHStatus(asset) : {detected: false};
-      const chochMsg = choch.detected ? ' ✓ 1m CHoCH confirmed.' : '';
+      const chochMsg = choch.detected && choch.supportsBias
+        ? ` ✓ 1m CHoCH confirmed (broke ${choch.swingPrice}).`
+        : choch.detected && !choch.supportsBias
+          ? ` ⚠ 1m CHoCH is ${choch.direction} — wrong direction for this setup.`
+          : choch.pending ? '' : ' ⚠ No 1m CHoCH break yet.';
       const mtf = getMTFAligned(asset);
       const mtfMsg = mtf.aligned ? ' ✓ All TF aligned.' : (mtf.score >= 2 ? ' ✓ MTF aligned (2/3).' : ' ⚠ MTF misaligned.');
       para = `PRICE AT ENTRY — EXECUTE. ${priceStr} — ${pctStr}% ${pDir} your confirmed ${dir} entry at ${entryStr}. All ICT conditions met.${chochMsg}${mtfMsg} Kill Zone active. LIMIT ${dir} at ${entryStr}. Stop Loss at ${slStr}. TP1 at ${tpStr} (${rr}:1 R:R). Do not chase. Confirmation, not prediction.`;
@@ -4741,6 +4780,98 @@
     // FEATURE 1: MULTI-TIMEFRAME (MTF) ALIGNMENT CHECKER
   // ═══════════════════════════════════════════════════════
   let mtfCache = {};
+  // Real CHoCH (Change of Character) detection cache. Per-symbol shape:
+  // { detected, direction: 'bull'|'bear'|null, breakPrice, swingPrice, swingTs, ts }
+  let chochCache = {};
+  const CHOCH_STALE_MS = 60_000;
+  const CHOCH_FRACTAL_WINDOW = 3; // 7-bar fractal: bar must beat 3 on each side
+  const CHOCH_LOOKBACK_BARS = 50;
+
+  function isCHoCHStale(symbol) {
+    const c = chochCache[symbol];
+    if (!c || !c.ts) return true;
+    return Date.now() - c.ts > CHOCH_STALE_MS;
+  }
+
+  // Pure: identify swing highs/lows in a kline series using a fractal
+  // definition (a swing high is a bar whose high beats every bar within
+  // ±window). Excludes the first/last `window` bars where the test can't
+  // be made. Tested directly.
+  function findSwings(klines, window = CHOCH_FRACTAL_WINDOW) {
+    const swingHighs = [];
+    const swingLows = [];
+    for (let i = window; i < klines.length - window; i++) {
+      const high = parseFloat(klines[i][2]);
+      const low = parseFloat(klines[i][3]);
+      let isHigh = true, isLow = true;
+      for (let j = 1; j <= window; j++) {
+        const lH = parseFloat(klines[i - j][2]);
+        const rH = parseFloat(klines[i + j][2]);
+        const lL = parseFloat(klines[i - j][3]);
+        const rL = parseFloat(klines[i + j][3]);
+        if (high <= lH || high <= rH) isHigh = false;
+        if (low  >= lL || low  >= rL) isLow = false;
+        if (!isHigh && !isLow) break;
+      }
+      if (isHigh) swingHighs.push({ idx: i, ts: Number(klines[i][0]), price: high });
+      if (isLow)  swingLows.push({  idx: i, ts: Number(klines[i][0]), price: low });
+    }
+    return { swingHighs, swingLows };
+  }
+
+  // Pure: given a kline series (oldest → newest), returns whether the
+  // most recent CLOSED candle has broken the most recent swing high
+  // (bull CHoCH) or swing low (bear CHoCH). The "previous swing" is the
+  // most recent fractal pivot that occurs strictly before the last bar.
+  function detectCHoCH(klines, opts = {}) {
+    const { fractalWindow = CHOCH_FRACTAL_WINDOW } = opts;
+    if (!Array.isArray(klines) || klines.length < fractalWindow * 2 + 2) {
+      return { detected: false, direction: null, pending: true, ts: 0 };
+    }
+    const { swingHighs, swingLows } = findSwings(klines, fractalWindow);
+    const lastIdx = klines.length - 1;
+    const lastClose = parseFloat(klines[lastIdx][4]);
+    const lastTs = Number(klines[lastIdx][0]);
+    const lastSwingHigh = swingHighs.length ? swingHighs[swingHighs.length - 1] : null;
+    const lastSwingLow  = swingLows.length  ? swingLows[swingLows.length - 1]   : null;
+
+    if (lastSwingHigh && lastClose > lastSwingHigh.price) {
+      return {
+        detected: true, direction: 'bull',
+        breakPrice: lastClose, swingPrice: lastSwingHigh.price, swingTs: lastSwingHigh.ts, ts: lastTs,
+      };
+    }
+    if (lastSwingLow && lastClose < lastSwingLow.price) {
+      return {
+        detected: true, direction: 'bear',
+        breakPrice: lastClose, swingPrice: lastSwingLow.price, swingTs: lastSwingLow.ts, ts: lastTs,
+      };
+    }
+    return { detected: false, direction: null, ts: lastTs };
+  }
+
+  async function fetchCHoCH(asset) {
+    if (NON_BINANCE_ASSETS.includes(asset.symbol)) return null;
+    const sym = asset.symbol + 'USDT';
+    for (const host of BINANCE_HOSTS) {
+      try {
+        const url = `https://${host}/api/v3/klines?symbol=${sym}&interval=1m&limit=${CHOCH_LOOKBACK_BARS}`;
+        const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        if (!r.ok) continue;
+        const data = await r.json();
+        if (!Array.isArray(data) || !data.length) continue;
+        const result = detectCHoCH(data);
+        chochCache[asset.symbol] = result;
+        return result;
+      } catch(e) {}
+    }
+    return null;
+  }
+
+  async function fetchAllCHoCH() {
+    const targets = ASSETS.filter(a => !NON_BINANCE_ASSETS.includes(a.symbol));
+    await Promise.all(targets.map(a => fetchCHoCH(a).catch(() => {})));
+  }
 
   async function fetchMTFAlignment(asset) {
     if (NON_BINANCE_ASSETS.includes(asset.symbol)) return null;
@@ -4912,6 +5043,9 @@
     setInterval(renderEconCalendar, 60000);
     fetchAllMTF();
     setInterval(() => fetchAllMTF().catch(()=>{}), 5*60*1000);
+    fetchAllCHoCH().catch(()=>{});
+    setInterval(() => fetchAllCHoCH().catch(()=>{}), 30_000); // CHoCH is the
+    // most critical confluence trigger — keep it fresh under a minute.
     if (APPS_SCRIPT_URL) {
       _try('tvWebhookUrl', () => { document.getElementById('tvWebhookUrl').textContent = APPS_SCRIPT_URL; });
       pollTVAlerts();

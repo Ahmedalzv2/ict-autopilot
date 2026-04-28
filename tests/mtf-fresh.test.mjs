@@ -54,6 +54,9 @@ describe('checkArmedAlerts: fresh-MTF refetch on escalation', () => {
       },
     });
     ctx.app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull', ts: mtfTs } };
+    // Prime CHoCH cache as fresh + supporting so the new CHoCH refetch
+    // path doesn't trigger; this test is about MTF refetch behavior.
+    ctx.app.chochCache = { BTC: { detected: true, direction: 'bull', breakPrice: 100.5, swingPrice: 100, swingTs: 0, ts: Date.now() } };
     Object.assign(ctx.app.ASSETS[0], makeAsset({ price }));
     ctx.app.ASSETS.length = 1;
     ctx.app.firstSyncDone = true;
