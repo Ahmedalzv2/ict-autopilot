@@ -2819,7 +2819,9 @@
 
     // Main analysis paragraph (ICT language — confirmation not prediction)
     let para = '';
-    if (sig === 'armed') {
+    if (sig === 'enter') {
+      para = `🔴 ENTER NOW — ${priceStr} is AT your ${dir} entry (${entryStr}). LIMIT ${dir} at ${entryStr}. Stop Loss at ${slStr}. TP1 at ${tpStr} (${rr}:1 R:R). Execute the plan — do not hesitate, do not chase further.`;
+    } else if (sig === 'armed') {
       const choch = getCHoCHStatus ? getCHoCHStatus(asset) : {detected: false};
       const chochMsg = choch.detected ? ' ✓ 1m CHoCH confirmed.' : '';
       const mtf = getMTFAligned(asset);
