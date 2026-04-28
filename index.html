@@ -4003,11 +4003,40 @@
   // fetches data and applies them.
   // ═══════════════════════════════════════════════════════
 
+  // Realistic-fill defaults for the backtest. Slippage is the typical spread
+  // a market or stop order actually fills at vs the requested price (5 bps
+  // per side is conservative for liquid Binance pairs). Fee is the Binance
+  // taker fee (4 bps per side). Both directions hurt the trader.
+  const DEFAULT_SLIPPAGE_PCT = 0.0005; // 0.05% per side
+  const DEFAULT_FEE_PCT      = 0.0004; // 0.04% per side
+
   // Walk forward from the bar AFTER entry. Stop on first candle that wicks
-  // TP or SL. If both touched in same candle, default to 'loss' (conservative).
-  // After maxBarsForward with no resolution: 'be'.
-  function simulateTradeOutcome(direction, entry, sl, tp, futureBars, maxBars = 480) {
+  // TP or SL — fills are taken at the slipped price (slippage always hurts:
+  // for a LONG, you buy higher than entry, sell lower than TP, sell lower
+  // than SL). Both touched in same candle defaults to LOSS (conservative).
+  // After maxBars with no resolution: BE, paying only the round-trip fees.
+  // R-multiple is net P&L (after slippage + fees) divided by your INTENDED
+  // risk (entry − sl), so the ratio reflects what your account actually
+  // would have done relative to the planned risk-per-trade.
+  function simulateTradeOutcome(direction, entry, sl, tp, futureBars, opts = {}) {
+    const {
+      maxBars = 480,
+      slippagePct = DEFAULT_SLIPPAGE_PCT,
+      feePct = DEFAULT_FEE_PCT,
+    } = opts;
     const isLong = direction === 'long';
+    const plannedRisk = Math.abs(entry - sl);
+    if (plannedRisk === 0) return { outcome: 'be', barsHeld: 0, exitPrice: entry, rMultiple: 0 };
+
+    // Slippage applied at fill: long buys higher, short sells lower.
+    const effEntry = isLong ? entry * (1 + slippagePct) : entry * (1 - slippagePct);
+
+    const computeR = (effExit) => {
+      const grossPnl = isLong ? (effExit - effEntry) : (effEntry - effExit);
+      const fees = (effEntry + effExit) * feePct;
+      return (grossPnl - fees) / plannedRisk;
+    };
+
     const limit = Math.min(maxBars, futureBars.length);
     for (let i = 0; i < limit; i++) {
       const k = futureBars[i];
@@ -4015,15 +4044,27 @@
       const low = parseFloat(k[3]);
       const hitTP = isLong ? high >= tp : low <= tp;
       const hitSL = isLong ? low <= sl : high >= sl;
-      if (hitTP && hitSL) return { outcome: 'loss', barsHeld: i + 1, exitPrice: sl };
-      if (hitTP) {
-        const rRisk = Math.abs(entry - sl);
-        const rReward = Math.abs(tp - entry);
-        return { outcome: 'win', barsHeld: i + 1, exitPrice: tp, rMultiple: rReward / rRisk };
+      if (hitTP && hitSL) {
+        // Conservative: assume SL filled first.
+        const effExit = isLong ? sl * (1 - slippagePct) : sl * (1 + slippagePct);
+        return { outcome: 'loss', barsHeld: i + 1, exitPrice: effExit, rMultiple: computeR(effExit) };
       }
-      if (hitSL) return { outcome: 'loss', barsHeld: i + 1, exitPrice: sl, rMultiple: -1 };
+      if (hitTP) {
+        // TP fill is slipped against us too — sell lower (long) / buy higher (short).
+        const effExit = isLong ? tp * (1 - slippagePct) : tp * (1 + slippagePct);
+        return { outcome: 'win', barsHeld: i + 1, exitPrice: effExit, rMultiple: computeR(effExit) };
+      }
+      if (hitSL) {
+        const effExit = isLong ? sl * (1 - slippagePct) : sl * (1 + slippagePct);
+        return { outcome: 'loss', barsHeld: i + 1, exitPrice: effExit, rMultiple: computeR(effExit) };
+      }
     }
-    return { outcome: 'be', barsHeld: limit, exitPrice: entry, rMultiple: 0 };
+    // No resolution within window → break-even, but you still paid the fees
+    // on the round trip. Realistic — flat exits aren't free.
+    const fees = (effEntry + effEntry) * feePct;
+    // (0 - x) instead of (-x) avoids producing -0 when fees is exactly zero
+    // (assert.strict's deepStrictEqual treats -0 ≠ 0).
+    return { outcome: 'be', barsHeld: limit, exitPrice: effEntry, rMultiple: 0 - fees / plannedRisk };
   }
 
   // Reconstruct MTF state at a given timestamp by finding the most recent
@@ -4057,7 +4098,12 @@
   // each via simulateTradeOutcome. Returns an array of trade records.
   // Caller supplies a getSignalFn (so we can inject the live function).
   function runBacktestSync(asset, oneMin, h1, h4, d1, getSignalFn, options = {}) {
-    const { cooldownBars = 30 } = options;
+    const {
+      cooldownBars = 30,
+      slippagePct = DEFAULT_SLIPPAGE_PCT,
+      feePct = DEFAULT_FEE_PCT,
+      maxBarsHeld = 480,
+    } = options;
     const trades = [];
     let lastEntryIdx = -Infinity;
     const isLong = asset.sl < asset.entry && (asset.tp1 || asset.tp) > asset.entry;
@@ -4080,7 +4126,9 @@
       const sig = getSignalFn(view, gst);
       if (sig === 'enter') {
         const futureBars = oneMin.slice(i + 1);
-        const outcome = simulateTradeOutcome(direction, asset.entry, asset.sl, tp, futureBars);
+        const outcome = simulateTradeOutcome(direction, asset.entry, asset.sl, tp, futureBars, {
+          slippagePct, feePct, maxBars: maxBarsHeld,
+        });
         trades.push({
           ts: closeTime,
           symbol: asset.symbol,
@@ -4119,7 +4167,7 @@
     return [];
   }
 
-  async function runBacktest({ symbol = 'BTC', hours = 24 } = {}) {
+  async function runBacktest({ symbol = 'BTC', hours = 24, slippagePct, feePct } = {}) {
     if (NON_BINANCE_ASSETS.includes(symbol)) {
       throw new Error(`${symbol} has no Binance data; backtest requires a Binance-listed symbol.`);
     }
@@ -4139,18 +4187,18 @@
     ]);
     if (!oneMin.length) throw new Error('No 1m data returned — Binance unreachable or invalid range.');
 
-    const trades = runBacktestSync(asset, oneMin, h1, h4, d1, getSignal);
+    const trades = runBacktestSync(asset, oneMin, h1, h4, d1, getSignal, { slippagePct, feePct });
     const stats = summarizeBacktest(trades);
-    return { symbol, hours, trades, stats };
+    return { symbol, hours, trades, stats, slippagePct, feePct };
   }
 
   // Run every Binance-listed asset in parallel and aggregate results.
-  async function runBacktestAll({ hours = 24 } = {}) {
+  async function runBacktestAll({ hours = 24, slippagePct, feePct } = {}) {
     const symbols = ASSETS
       .filter(a => !NON_BINANCE_ASSETS.includes(a.symbol))
       .map(a => a.symbol);
     const results = await Promise.allSettled(
-      symbols.map(s => runBacktest({ symbol: s, hours }))
+      symbols.map(s => runBacktest({ symbol: s, hours, slippagePct, feePct }))
     );
     const perAsset = [];
     const allTrades = [];
@@ -4170,6 +4218,9 @@
   function renderBacktestModal(payload, label) {
     const existing = document.getElementById('backtestModal');
     if (existing) existing.remove();
+
+    const slipBps = Math.round((payload.slippagePct ?? DEFAULT_SLIPPAGE_PCT) * 10000);
+    const feeBps = Math.round((payload.feePct ?? DEFAULT_FEE_PCT) * 10000);
 
     const fmtPct = (n) => `${(n * 100).toFixed(1)}%`;
     const fmtR = (n) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}R`;
@@ -4208,7 +4259,7 @@
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
           <div>
             <div style="font-family:'Instrument Serif',serif;font-size:22px;color:var(--gold);">🧪 Backtest · ${label}</div>
-            <div style="font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin-top:2px;">Replay through your live getSignal ladder · ${payload.hours}h window</div>
+            <div style="font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin-top:2px;">Replay through your live getSignal ladder · ${payload.hours}h · slippage ${slipBps}bps + fee ${feeBps}bps per side</div>
           </div>
           <button onclick="document.getElementById('backtestModal')?.remove();" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:6px 12px;border-radius:6px;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:12px;">✕ Close</button>
         </div>
@@ -4235,22 +4286,23 @@
 
   // Convenience: run backtest, render a modal + console table. Pass 'all'
   // to backtest every Binance-listed asset and aggregate.
-  async function runBacktestUI(symbol = 'BTC', hours = 24) {
+  async function runBacktestUI(symbol = 'BTC', hours = 24, opts = {}) {
     const isAll = symbol === 'all' || symbol === 'ALL' || symbol === '*';
+    const { slippagePct, feePct } = opts;
     showToast(`🧪 Backtesting ${isAll ? 'all assets' : symbol} over last ${hours}h…`, 'info');
     try {
       let payload, label;
       if (isAll) {
-        const out = await runBacktestAll({ hours });
-        payload = { hours, perAsset: out.perAsset, overall: out.overall };
+        const out = await runBacktestAll({ hours, slippagePct, feePct });
+        payload = { hours, perAsset: out.perAsset, overall: out.overall, slippagePct, feePct };
         label = 'all assets';
         const s = out.overall;
         showToast(`🧪 ${s.total} trades · ${s.wins}W / ${s.losses}L · ${(s.winRate*100).toFixed(1)}% win · ${s.totalR.toFixed(2)}R`, s.winRate >= 0.5 ? 'ok' : 'warn');
         console.log(`%c🧪 Backtest ALL (last ${hours}h)`, 'color:#c9a961;font-family:monospace;font-weight:bold');
         console.table(out.perAsset);
       } else {
-        const out = await runBacktest({ symbol, hours });
-        payload = { hours, symbol: out.symbol, stats: out.stats, perAsset: [{ symbol: out.symbol, ...out.stats }] };
+        const out = await runBacktest({ symbol, hours, slippagePct, feePct });
+        payload = { hours, symbol: out.symbol, stats: out.stats, perAsset: [{ symbol: out.symbol, ...out.stats }], slippagePct, feePct };
         label = out.symbol;
         const s = out.stats;
         showToast(`${out.symbol} ${hours}h: ${s.total} trades · ${(s.winRate*100).toFixed(1)}% win · ${s.totalR.toFixed(2)}R`, s.winRate >= 0.5 ? 'ok' : 'warn');

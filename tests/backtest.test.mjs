@@ -7,56 +7,124 @@ function k(openTime, open, high, low, close, closeTime) {
   return [openTime, String(open), String(high), String(low), String(close), '0', closeTime ?? openTime + 60_000];
 }
 
-describe('simulateTradeOutcome — wick-aware exit detection', () => {
+describe('simulateTradeOutcome — wick-aware exit detection (perfect-fill mode)', () => {
   const { app } = loadApp();
+  // These tests pass slippagePct=0 + feePct=0 so we can assert exact R math
+  // independent of cost model. The cost model has its own dedicated suite below.
+  const PERFECT = { slippagePct: 0, feePct: 0 };
 
-  test('LONG: TP wick on first future bar → win with R multiple', () => {
+  test('LONG: TP wick on first future bar → win with R = 5 at perfect fill', () => {
     const out = app.simulateTradeOutcome('long', 100, 99, 105, [
-      k(0, 100, 105.5, 99.5, 102), // wick to 105.5 hits TP
-    ]);
+      k(0, 100, 105.5, 99.5, 102),
+    ], PERFECT);
     assert.equal(out.outcome, 'win');
     assert.equal(out.barsHeld, 1);
     assert.ok(Math.abs(out.rMultiple - 5) < 1e-9, `expected R=5, got ${out.rMultiple}`);
   });
 
-  test('LONG: SL wick → loss with R = -1', () => {
+  test('LONG: SL wick → loss with R = -1 at perfect fill', () => {
     const out = app.simulateTradeOutcome('long', 100, 99, 105, [
-      k(0, 100, 100.5, 98.5, 99.7), // wick to 98.5 hits SL
-    ]);
+      k(0, 100, 100.5, 98.5, 99.7),
+    ], PERFECT);
     assert.equal(out.outcome, 'loss');
-    assert.equal(out.rMultiple, -1);
+    assert.ok(Math.abs(out.rMultiple - (-1)) < 1e-9);
   });
 
   test('SHORT: TP below entry, low ≤ TP → win', () => {
     const out = app.simulateTradeOutcome('short', 86, 87, 80, [
       k(0, 86, 86.2, 79.8, 81),
-    ]);
+    ], PERFECT);
     assert.equal(out.outcome, 'win');
   });
 
   test('Both TP and SL hit in same candle → conservative loss', () => {
     const out = app.simulateTradeOutcome('long', 100, 99, 105, [
       k(0, 100, 105.5, 98.5, 100),
-    ]);
+    ], PERFECT);
     assert.equal(out.outcome, 'loss');
   });
 
-  test('Neither hit within range → break-even with R = 0', () => {
+  test('Neither hit within range → break-even with R = 0 at perfect fill', () => {
     const out = app.simulateTradeOutcome('long', 100, 99, 105, [
       k(0, 100, 100.4, 99.7, 100.1),
       k(60_000, 100.1, 100.3, 99.8, 100.0),
-    ], /* maxBars */ 2);
+    ], { ...PERFECT, maxBars: 2 });
     assert.equal(out.outcome, 'be');
     assert.equal(out.rMultiple, 0);
   });
 
   test('First-touch wins: TP candle 1, SL candle 2 → win', () => {
     const out = app.simulateTradeOutcome('long', 100, 99, 105, [
-      k(0, 100, 105.5, 99.5, 102),  // TP first
-      k(60_000, 102, 102.5, 98.5, 99), // SL later, ignored
-    ]);
+      k(0, 100, 105.5, 99.5, 102),
+      k(60_000, 102, 102.5, 98.5, 99),
+    ], PERFECT);
     assert.equal(out.outcome, 'win');
     assert.equal(out.barsHeld, 1);
+  });
+});
+
+describe('simulateTradeOutcome — slippage & fees (realistic-fill costs)', () => {
+  const { app } = loadApp();
+  const SLIP = 0.0005, FEE = 0.0004;
+
+  test('LONG winner: 5R nominal degrades to ~4.82R after 5bps slip + 4bps fee per side', () => {
+    const out = app.simulateTradeOutcome('long', 100, 99, 105, [
+      k(0, 100, 105.5, 99.5, 102),
+    ], { slippagePct: SLIP, feePct: FEE });
+    assert.equal(out.outcome, 'win');
+    // effEntry = 100*1.0005 = 100.05; effTP = 105*0.9995 = 104.9475;
+    // grossPnl = 4.8975; fees = (100.05+104.9475)*0.0004 ≈ 0.082
+    // netPnl ≈ 4.8155; risk = 1; R ≈ 4.8155
+    assert.ok(out.rMultiple < 5, `expected R<5 with costs, got ${out.rMultiple}`);
+    assert.ok(out.rMultiple > 4.7, `R should still be near 5, got ${out.rMultiple}`);
+    assert.ok(Math.abs(out.rMultiple - 4.8155) < 0.01, `expected ~4.8155, got ${out.rMultiple}`);
+  });
+
+  test('LONG loser: -1R nominal degrades past -1R after costs', () => {
+    const out = app.simulateTradeOutcome('long', 100, 99, 105, [
+      k(0, 100, 100.5, 98.5, 99.7),
+    ], { slippagePct: SLIP, feePct: FEE });
+    assert.equal(out.outcome, 'loss');
+    // SL fills lower than 99 by slippage → loss bigger than -1
+    assert.ok(out.rMultiple < -1, `loss should exceed -1R after costs, got ${out.rMultiple}`);
+  });
+
+  test('Break-even still pays fees → small negative R, never positive', () => {
+    const out = app.simulateTradeOutcome('long', 100, 99, 105, [
+      k(0, 100, 100.4, 99.7, 100.1),
+      k(60_000, 100.1, 100.3, 99.8, 100.0),
+    ], { slippagePct: SLIP, feePct: FEE, maxBars: 2 });
+    assert.equal(out.outcome, 'be');
+    assert.ok(out.rMultiple < 0, `BE should be slightly negative after fees, got ${out.rMultiple}`);
+    assert.ok(out.rMultiple > -0.1, `but only marginally — got ${out.rMultiple}`);
+  });
+
+  test('SHORT winner: slippage applied symmetrically (sell lower, buy back higher)', () => {
+    // SHORT entry 86, sl 87 (risk 1), tp 80 (reward 6)
+    const out = app.simulateTradeOutcome('short', 86, 87, 80, [
+      k(0, 86, 86.2, 79.8, 81),
+    ], { slippagePct: SLIP, feePct: FEE });
+    assert.equal(out.outcome, 'win');
+    // effEntry = 86*0.9995 = 85.957; effTP = 80*1.0005 = 80.04
+    // grossPnl = 85.957 - 80.04 = 5.917; fees ≈ (85.957+80.04)*0.0004 ≈ 0.066
+    // netPnl ≈ 5.851; risk = 1; R ≈ 5.851 (vs nominal 6)
+    assert.ok(out.rMultiple < 6, `R<6 with costs, got ${out.rMultiple}`);
+    assert.ok(out.rMultiple > 5.7, `R should still be near 6, got ${out.rMultiple}`);
+  });
+
+  test('higher slippage / higher fees → lower net R (monotonic)', () => {
+    const baseBars = [k(0, 100, 105.5, 99.5, 102)];
+    const cheap = app.simulateTradeOutcome('long', 100, 99, 105, baseBars, { slippagePct: 0.0001, feePct: 0.0001 });
+    const expensive = app.simulateTradeOutcome('long', 100, 99, 105, baseBars, { slippagePct: 0.001, feePct: 0.001 });
+    assert.ok(cheap.rMultiple > expensive.rMultiple, 'higher costs → lower R');
+  });
+
+  test('zero risk (entry === sl) → BE, no division by zero', () => {
+    const out = app.simulateTradeOutcome('long', 100, 100, 105, [
+      k(0, 100, 105.5, 99.5, 102),
+    ]);
+    assert.equal(out.outcome, 'be');
+    assert.equal(out.rMultiple, 0);
   });
 });
 
