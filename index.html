@@ -4680,13 +4680,19 @@
 
   // Pure backtest: walks 1m bars, fires simulated trades on ENTER, resolves
   // each via simulateTradeOutcome. Returns an array of trade records.
-  // Caller supplies a getSignalFn (so we can inject the live function).
+  // Optionally simulates the runtime guardrails (daily loss limit, per-
+  // session quota, revenge cooldown) so you can A/B them via the
+  // comparison tool — pass `null` for any guardrail option to disable it.
   function runBacktestSync(asset, oneMin, h1, h4, d1, getSignalFn, options = {}) {
     const {
       cooldownBars = 30,
       slippagePct = DEFAULT_SLIPPAGE_PCT,
       feePct = DEFAULT_FEE_PCT,
       maxBarsHeld = 480,
+      // Guardrails — set to null/0 to disable that specific gate.
+      dailyLossLimitR     = DAILY_LOSS_LIMIT_R,
+      maxTradesPerSession = MAX_TRADES_PER_SESSION,
+      revengeCooldownMs   = REVENGE_COOLDOWN_MS,
     } = options;
     const trades = [];
     let lastEntryIdx = -Infinity;
@@ -4694,34 +4700,89 @@
     const direction = isLong ? 'long' : 'short';
     const tp = asset.tp1 || asset.tp;
 
-    for (let i = 0; i < oneMin.length; i++) {
-      // Cooldown: don't fire another simulated entry within N bars of the last.
-      if (i - lastEntryIdx < cooldownBars) continue;
+    // Guard state mirrors what live checkArmedAlerts tracks. Daily R is
+    // applied AT RESOLUTION (so a winning trade only counts after its TP
+    // hits, not at entry). Session quota is bumped at ENTRY. Revenge
+    // cooldown timer starts at the LOSS resolution timestamp.
+    const dailyR = {};                  // dateKey → R
+    const sessionCounts = {};           // dateKey|sessionName → count
+    const lastLossTs = {};              // symbol → ms
+    let pendingResolutions = [];        // trades not yet applied to dailyR / lastLossTs
 
+    function applyResolutions(uptoTs) {
+      const stillPending = [];
+      for (const t of pendingResolutions) {
+        if (t.resolvedTs <= uptoTs) {
+          const dk = gstDateKey(t.resolvedTs);
+          dailyR[dk] = (dailyR[dk] || 0) + (Number(t.rMultiple) || 0);
+          if (t.outcome === 'loss') lastLossTs[t.symbol] = t.resolvedTs;
+        } else {
+          stillPending.push(t);
+        }
+      }
+      pendingResolutions = stillPending;
+    }
+
+    for (let i = 0; i < oneMin.length; i++) {
       const bar = oneMin[i];
       const closeTime = Number(bar[6] ?? bar[0]);
       const close = parseFloat(bar[4]);
+
+      // Apply any prior trades whose resolution timestamp is now in the past.
+      applyResolutions(closeTime);
+
+      // Cooldown gate (existing oscillation guard, still useful even with
+      // session quota since cooldownBars is bar-count-based).
+      if (i - lastEntryIdx < cooldownBars) continue;
+
+      // Daily loss limit guard.
+      const dateKey = gstDateKey(closeTime);
+      if (dailyLossLimitR != null && (dailyR[dateKey] || 0) <= dailyLossLimitR) continue;
+
+      // Revenge cooldown guard.
+      const lossTs = lastLossTs[asset.symbol];
+      if (revengeCooldownMs && lossTs && (closeTime - lossTs) < revengeCooldownMs) continue;
+
       // Mutable view of the asset for getSignal — only price moves over time.
       const view = { ...asset, price: close };
-      // Reconstruct MTF at this bar's open and stash on the cache the way
-      // getMTFAligned reads it.
       mtfCache[asset.symbol] = reconstructMTFAt(h1, h4, d1, closeTime);
       const gst = new Date(closeTime + 4 * 3600_000); // GST is UTC+4
+
+      // Per-session trade quota guard. Computed AFTER gst is built so we
+      // can use the live getCurrentSession.
+      const session = getCurrentSession(gst);
+      const sessionName = session ? session.name : null;
+      const sessionKey = sessionName ? `${dateKey}|${sessionName}` : null;
+      if (maxTradesPerSession != null && sessionKey
+          && (sessionCounts[sessionKey] || 0) >= maxTradesPerSession) continue;
+
       const sig = getSignalFn(view, gst);
       if (sig === 'enter') {
         const futureBars = oneMin.slice(i + 1);
         const outcome = simulateTradeOutcome(direction, asset.entry, asset.sl, tp, futureBars, {
           slippagePct, feePct, maxBars: maxBarsHeld,
         });
-        trades.push({
+        const resolvedTs = closeTime + (outcome.barsHeld || 0) * 60_000;
+        const trade = {
           ts: closeTime,
           symbol: asset.symbol,
           direction,
           entry: asset.entry, sl: asset.sl, tp,
           ...outcome,
-        });
+          resolvedTs,
+        };
+        trades.push(trade);
+        pendingResolutions.push(trade);
+        if (sessionKey) sessionCounts[sessionKey] = (sessionCounts[sessionKey] || 0) + 1;
         lastEntryIdx = i;
       }
+    }
+    // Apply any trades that resolved past the last bar (clamped to the
+    // last available timestamp) so dailyR / counts in the trade list are
+    // complete for the caller's debugging.
+    if (oneMin.length > 0) {
+      const finalTs = Number(oneMin[oneMin.length - 1][6] ?? oneMin[oneMin.length - 1][0]);
+      applyResolutions(finalTs);
     }
     return trades;
   }
@@ -4751,7 +4812,8 @@
     return [];
   }
 
-  async function runBacktest({ symbol = 'BTC', hours = 24, slippagePct, feePct } = {}) {
+  async function runBacktest({ symbol = 'BTC', hours = 24, slippagePct, feePct,
+      dailyLossLimitR, maxTradesPerSession, revengeCooldownMs } = {}) {
     if (NON_BINANCE_ASSETS.includes(symbol)) {
       throw new Error(`${symbol} has no Binance data; backtest requires a Binance-listed symbol.`);
     }
@@ -4771,18 +4833,23 @@
     ]);
     if (!oneMin.length) throw new Error('No 1m data returned — Binance unreachable or invalid range.');
 
-    const trades = runBacktestSync(asset, oneMin, h1, h4, d1, getSignal, { slippagePct, feePct });
+    const trades = runBacktestSync(asset, oneMin, h1, h4, d1, getSignal, {
+      slippagePct, feePct, dailyLossLimitR, maxTradesPerSession, revengeCooldownMs,
+    });
     const stats = summarizeBacktest(trades);
-    return { symbol, hours, trades, stats, slippagePct, feePct };
+    return { symbol, hours, trades, stats, slippagePct, feePct,
+             dailyLossLimitR, maxTradesPerSession, revengeCooldownMs };
   }
 
   // Run every Binance-listed asset in parallel and aggregate results.
-  async function runBacktestAll({ hours = 24, slippagePct, feePct } = {}) {
+  async function runBacktestAll({ hours = 24, slippagePct, feePct,
+      dailyLossLimitR, maxTradesPerSession, revengeCooldownMs } = {}) {
     const symbols = ASSETS
       .filter(a => !NON_BINANCE_ASSETS.includes(a.symbol))
       .map(a => a.symbol);
     const results = await Promise.allSettled(
-      symbols.map(s => runBacktest({ symbol: s, hours, slippagePct, feePct }))
+      symbols.map(s => runBacktest({ symbol: s, hours, slippagePct, feePct,
+        dailyLossLimitR, maxTradesPerSession, revengeCooldownMs }))
     );
     const perAsset = [];
     const allTrades = [];
@@ -4838,9 +4905,17 @@
   async function runBacktestComparison({ hours = 24, configA = {}, configB = {} } = {}) {
     const labelA = configA.label || 'A';
     const labelB = configB.label || 'B';
+    const cfg = (c) => ({
+      hours,
+      slippagePct: c.slippagePct,
+      feePct: c.feePct,
+      dailyLossLimitR: c.dailyLossLimitR,
+      maxTradesPerSession: c.maxTradesPerSession,
+      revengeCooldownMs: c.revengeCooldownMs,
+    });
     const [resA, resB] = await Promise.all([
-      runBacktestAll({ hours, slippagePct: configA.slippagePct, feePct: configA.feePct }),
-      runBacktestAll({ hours, slippagePct: configB.slippagePct, feePct: configB.feePct }),
+      runBacktestAll(cfg(configA)),
+      runBacktestAll(cfg(configB)),
     ]);
     const diff = diffBacktests(resA, resB);
     return { hours, labelA, labelB, configA, configB, resultA: resA, resultB: resB, diff };
@@ -4882,7 +4957,11 @@
     const cfgLine = (cfg) => {
       const slip = cfg.slippagePct != null ? `${(cfg.slippagePct*10000).toFixed(1)}bps slip` : 'default slip';
       const fee  = cfg.feePct != null ? `${(cfg.feePct*10000).toFixed(1)}bps fee` : 'default fee';
-      return `${slip} · ${fee}`;
+      const guards = [];
+      if ('dailyLossLimitR'     in cfg) guards.push(cfg.dailyLossLimitR == null ? 'no daily-loss limit' : `daily-loss ${cfg.dailyLossLimitR}R`);
+      if ('maxTradesPerSession' in cfg) guards.push(cfg.maxTradesPerSession == null ? 'no session quota' : `${cfg.maxTradesPerSession}/session`);
+      if ('revengeCooldownMs'   in cfg) guards.push(!cfg.revengeCooldownMs ? 'no revenge cooldown' : `${Math.round(cfg.revengeCooldownMs/60000)}m revenge`);
+      return [slip, fee, ...guards].join(' · ');
     };
 
     const overlay = document.createElement('div');
