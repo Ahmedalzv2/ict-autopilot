@@ -1889,8 +1889,12 @@
     const gst = getGST();
 
     grid.innerHTML = ASSETS.map(a => {
-      const sig = getSignal(a, gst);
-      const conf = getConfidencePct(a, gst);
+      // Use per-tick cache so renderAssets / renderMarketRead /
+      // renderAnalysis don't recompute the same values.
+      const _cached = getCachedAssetState(a, gst);
+      const sig = _cached.signal;
+      const conf = _cached.confidence;
+      const mtf = _cached.mtf;
       const pct = ((a.price - a.entry) / a.entry * 100).toFixed(2);
       const dir = a.price > a.entry ? '↑' : a.price < a.entry ? '↓' : '=';
       const priceColor = a.change24h > 0 ? 'var(--bull)' : a.change24h < 0 ? 'var(--bear)' : 'var(--text)';
@@ -1898,9 +1902,6 @@
       const cardClass = sig === 'invalid' || sig === 'blackout' ? 'skip' : sig === 'enter' ? 'enter' : sig === 'armed' ? 'armed' : sig === 'watch' ? 'watch' : sig === 'skip' ? 'skip' : '';
       const badgeText = sig === 'invalid' ? '🚫 INVALIDATED' : sig === 'blackout' ? '📅 MACRO BLACKOUT' : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
       const modeTag = a.tradeMode === 'spot' ? ' <span style="font-size:8px;background:rgba(201,169,97,0.15);color:var(--gold);border-radius:3px;padding:1px 4px;">SPOT</span>' : '';
-
-      // Feature 1: MTF Badge
-      const mtf = getMTFAligned(a);
       const mtfIcon = (tf, bias) => {
         if (bias === null) return '·';
         if (mtf.pending) return '·';
@@ -2691,27 +2692,120 @@
   // Coalesce live ticks into ~1Hz UI updates. Signal evaluation still runs
   // through the normal path (renderSignals + checkArmedAlerts) and benefits
   // from the live prices.
+  // ─────────────────────────────────────────
+  // Performance — per-tick memoization + perf measurement
+  // ─────────────────────────────────────────
+  // The render path calls getSignal / getConfidencePct / getMTFAligned /
+  // getCHoCHStatus 4-5 times per asset per tick (renderSignals, renderAssets,
+  // renderMarketRead, checkArmedAlerts, renderAnalysis all evaluate them).
+  // This cache returns the same object for the same (symbol, price) within
+  // a 500ms window, eliminating duplicate work across a render burst.
+  const _assetStateCache = new Map();
+  const ASSET_STATE_TTL_MS = 500;
+
+  function invalidateAssetStateCache(symbol) {
+    if (symbol) _assetStateCache.delete(symbol);
+    else _assetStateCache.clear();
+  }
+
+  // Returns { signal, confidence, mtf, choch } for an asset, cached per
+  // (symbol, price) for ASSET_STATE_TTL_MS. Pure-ish — the underlying
+  // helpers read mtfCache / chochCache / etc. but the cache key only
+  // includes price, so callers that mutate the cache (e.g.
+  // checkArmedAlerts after a CHoCH refetch) MUST call
+  // invalidateAssetStateCache(symbol) to bust the entry.
+  function getCachedAssetState(asset, gst) {
+    const cached = _assetStateCache.get(asset.symbol);
+    const now = Date.now();
+    if (cached && (now - cached.ts) < ASSET_STATE_TTL_MS && cached.price === asset.price) {
+      return cached.state;
+    }
+    const state = {
+      signal: getSignal(asset, gst),
+      confidence: getConfidencePct(asset, gst),
+      mtf: getMTFAligned(asset),
+      choch: getCHoCHStatus(asset),
+    };
+    _assetStateCache.set(asset.symbol, { state, ts: now, price: asset.price });
+    return state;
+  }
+
+  // Today's-journal cache. summarizeDay, getDailyR, refreshDailyPnlPill
+  // all re-walk the full journal (up to 500 entries) every tick. We cache
+  // the today-filter keyed on (todayKey, journal.length) so it invalidates
+  // when entries are added/resolved.
+  let _todaysJournalCache = null;
+  function getTodaysJournalEntries(journalArr, todayKey) {
+    if (_todaysJournalCache &&
+        _todaysJournalCache.key === todayKey &&
+        _todaysJournalCache.len === journalArr.length) {
+      return _todaysJournalCache.entries;
+    }
+    const entries = journalArr.filter(j =>
+      j.date === todayKey || gstDateKey(j.timestamp) === todayKey);
+    _todaysJournalCache = { key: todayKey, len: journalArr.length, entries };
+    return entries;
+  }
+  function invalidateTodaysJournalCache() { _todaysJournalCache = null; }
+
+  // Perf sampling. Ring buffer of last 60 tick durations. Inspect via
+  // window.ictPerf().
+  const _perfSamples = [];
+  const _PERF_MAX_SAMPLES = 60;
+  function recordTickPerf(ms) {
+    _perfSamples.push(ms);
+    if (_perfSamples.length > _PERF_MAX_SAMPLES) _perfSamples.shift();
+  }
+  function getPerfStats() {
+    if (!_perfSamples.length) return null;
+    const sorted = [..._perfSamples].sort((a, b) => a - b);
+    const sum = sorted.reduce((s, x) => s + x, 0);
+    return {
+      samples: sorted.length,
+      avgMs: +(sum / sorted.length).toFixed(2),
+      p50Ms: +sorted[Math.floor(sorted.length / 2)].toFixed(2),
+      p95Ms: +sorted[Math.floor(sorted.length * 0.95)].toFixed(2),
+      maxMs: +sorted[sorted.length - 1].toFixed(2),
+    };
+  }
+  if (typeof window !== 'undefined') {
+    window.ictPerf = () => {
+      const s = getPerfStats();
+      if (!s) { console.log('No perf samples yet — wait for a few ticks.'); return null; }
+      console.table(s);
+      return s;
+    };
+  }
+  function nowMs() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
+
   function scheduleLiveTickRender() {
     if (pendingTickRender) return;
     pendingTickRender = setTimeout(() => {
       pendingTickRender = null;
+      const tickStart = nowMs();
       const gst = getGST();
+      // Bust per-tick caches at the top of every render burst so we
+      // don't serve stale data into renderSignals etc.
+      invalidateAssetStateCache();
       try { renderSignals(); } catch(e) {}
       try { renderAssets(); } catch(e) {}
       try { renderMarketRead(); } catch(e) {}
       Promise.resolve().then(() => checkArmedAlerts(gst)).catch(() => {});
       try { renderAnalysis(); } catch(e) {}
-      // Feed sparkline state on every coalesced tick.
+      // Feed sparkline state on every coalesced tick. Use cached signal
+      // (already computed by renderSignals above) instead of recomputing.
       try {
         const now = Date.now();
         for (const a of ASSETS) {
-          signalHistory = recordSignalState(signalHistory, a.symbol, getSignal(a, gst), now);
+          const { signal } = getCachedAssetState(a, gst);
+          signalHistory = recordSignalState(signalHistory, a.symbol, signal, now);
         }
         saveSignalHistory();
       } catch(e) {}
       // Update barSyncTime to reflect live-tick freshness.
       const el = document.getElementById('barSyncTime');
       if (el) el.textContent = `LIVE ${fmtTime(gst, true)}`;
+      recordTickPerf(nowMs() - tickStart);
     }, 1000);
   }
 
@@ -3267,7 +3361,12 @@
         const refreshes = [];
         if (isMTFStale(asset.symbol))   refreshes.push(fetchMTFAlignment(asset).catch(()=>{}));
         if (isCHoCHStale(asset.symbol)) refreshes.push(fetchCHoCH(asset).catch(()=>{}));
-        if (refreshes.length) await Promise.all(refreshes);
+        if (refreshes.length) {
+          await Promise.all(refreshes);
+          // Bust the per-tick cache for this symbol since underlying mtf/
+          // choch caches just changed — we want a fresh re-evaluation.
+          if (typeof invalidateAssetStateCache === 'function') invalidateAssetStateCache(asset.symbol);
+        }
         sig = getSignal(asset, gst);
         const stillEscalated = (sig === 'enter' && prev !== 'enter') ||
                                (sig === 'armed' && prev !== 'armed' && prev !== 'enter');
@@ -3608,11 +3707,13 @@
     if (ts) ts.textContent = `Updated ${String(gst.getHours()).padStart(2,'0')}:${String(gst.getMinutes()).padStart(2,'0')} GST`;
 
     const sigOrder = { armed: 0, watch: 1, wait: 2, skip: 3 };
-    const sorted = [...ASSETS].sort((a,b) => sigOrder[getSignal(a,gst)] - sigOrder[getSignal(b,gst)]);
+    const sorted = [...ASSETS].sort((a,b) =>
+      sigOrder[getCachedAssetState(a, gst).signal] - sigOrder[getCachedAssetState(b, gst).signal]);
 
     grid.innerHTML = sorted.map(asset => {
-      const sig = getSignal(asset, gst);
-      const conf = getConfidencePct(asset, gst);
+      const _cached = getCachedAssetState(asset, gst);
+      const sig = _cached.signal;
+      const conf = _cached.confidence;
       const analysis = analyzeAsset(asset, gst);
       const score = asset.checks.reduce((a,b)=>a+b,0);
       const maxScore = asset.checks.length;
@@ -4076,6 +4177,9 @@
 
   function saveJournal() {
     try { localStorage.setItem('ict_autopilot_journal', JSON.stringify(journal.slice(0, 500))); } catch(e) {}
+    // Bust the per-tick today-filter cache so refreshDailyPnlPill picks
+    // up newly-resolved trades on the next tick.
+    if (typeof invalidateTodaysJournalCache === 'function') invalidateTodaysJournalCache();
   }
 
   function logCall(asset, signal, gst) {
@@ -4819,7 +4923,12 @@
     const el = document.getElementById('dailyPnlVal');
     if (!el) return;
     const todayKey = gstDateKey(gst || getGST());
-    const r = getDailyR(journal, todayKey);
+    // Use cached today-filter so this 1Hz pill update doesn't walk the
+    // full journal on every tick.
+    const todays = getTodaysJournalEntries(journal, todayKey);
+    const r = todays
+      .filter(j => j.outcome === 'win' || j.outcome === 'loss' || j.outcome === 'be')
+      .reduce((sum, j) => sum + (Number.isFinite(j.rMultiple) ? j.rMultiple : nominalR(j)), 0);
     const ses = getCurrentSession(gst || getGST());
     const sesName = ses ? ses.name : null;
     const usedThisSession = sesName ? getSessionTradeCount(sessionTradeCounts, todayKey, sesName) : 0;

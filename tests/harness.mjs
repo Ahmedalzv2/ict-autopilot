@@ -40,6 +40,10 @@ const EXPORTS = [
   // sentiment
   'scoreHeadlineSentiment', 'aggregateAssetSentiment', 'getSentimentContext',
   'BULLISH_KEYWORDS', 'BEARISH_KEYWORDS', 'SENTIMENT_DECAY_MS',
+  // performance
+  'getCachedAssetState', 'invalidateAssetStateCache',
+  'getTodaysJournalEntries', 'invalidateTodaysJournalCache',
+  'recordTickPerf', 'getPerfStats', 'ASSET_STATE_TTL_MS',
 ];
 
 function extractScript(html) {
