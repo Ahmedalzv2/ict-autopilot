@@ -3991,6 +3991,182 @@
   }
 
   // ═══════════════════════════════════════════════════════
+  // 🧪 BACKTESTER
+  // Replays historical klines through getSignal + simulated trade execution
+  // to produce an objective hit-rate for the rule set. Pure helpers below
+  // are testable without network; runBacktest is the async wrapper that
+  // fetches data and applies them.
+  // ═══════════════════════════════════════════════════════
+
+  // Walk forward from the bar AFTER entry. Stop on first candle that wicks
+  // TP or SL. If both touched in same candle, default to 'loss' (conservative).
+  // After maxBarsForward with no resolution: 'be'.
+  function simulateTradeOutcome(direction, entry, sl, tp, futureBars, maxBars = 480) {
+    const isLong = direction === 'long';
+    const limit = Math.min(maxBars, futureBars.length);
+    for (let i = 0; i < limit; i++) {
+      const k = futureBars[i];
+      const high = parseFloat(k[2]);
+      const low = parseFloat(k[3]);
+      const hitTP = isLong ? high >= tp : low <= tp;
+      const hitSL = isLong ? low <= sl : high >= sl;
+      if (hitTP && hitSL) return { outcome: 'loss', barsHeld: i + 1, exitPrice: sl };
+      if (hitTP) {
+        const rRisk = Math.abs(entry - sl);
+        const rReward = Math.abs(tp - entry);
+        return { outcome: 'win', barsHeld: i + 1, exitPrice: tp, rMultiple: rReward / rRisk };
+      }
+      if (hitSL) return { outcome: 'loss', barsHeld: i + 1, exitPrice: sl, rMultiple: -1 };
+    }
+    return { outcome: 'be', barsHeld: limit, exitPrice: entry, rMultiple: 0 };
+  }
+
+  // Reconstruct MTF state at a given timestamp by finding the most recent
+  // COMPLETED candle on each timeframe (closeTime ≤ ts). Returns the same
+  // shape getMTFAligned reads from mtfCache.
+  function reconstructMTFAt(h1Bars, h4Bars, d1Bars, ts) {
+    const lastBefore = (bars) => {
+      let last = null;
+      for (const k of bars) {
+        const closeTime = Number(k[6] ?? k[0]);
+        if (closeTime <= ts) last = k;
+        else break;
+      }
+      return last;
+    };
+    const biasOf = (k) => {
+      if (!k) return null;
+      const open = parseFloat(k[1]);
+      const close = parseFloat(k[4]);
+      return close > open ? 'bull' : 'bear';
+    };
+    return {
+      h1: biasOf(lastBefore(h1Bars)),
+      h4: biasOf(lastBefore(h4Bars)),
+      d1: biasOf(lastBefore(d1Bars)),
+      ts,
+    };
+  }
+
+  // Pure backtest: walks 1m bars, fires simulated trades on ENTER, resolves
+  // each via simulateTradeOutcome. Returns an array of trade records.
+  // Caller supplies a getSignalFn (so we can inject the live function).
+  function runBacktestSync(asset, oneMin, h1, h4, d1, getSignalFn, options = {}) {
+    const { cooldownBars = 30 } = options;
+    const trades = [];
+    let lastEntryIdx = -Infinity;
+    const isLong = asset.sl < asset.entry && (asset.tp1 || asset.tp) > asset.entry;
+    const direction = isLong ? 'long' : 'short';
+    const tp = asset.tp1 || asset.tp;
+
+    for (let i = 0; i < oneMin.length; i++) {
+      // Cooldown: don't fire another simulated entry within N bars of the last.
+      if (i - lastEntryIdx < cooldownBars) continue;
+
+      const bar = oneMin[i];
+      const closeTime = Number(bar[6] ?? bar[0]);
+      const close = parseFloat(bar[4]);
+      // Mutable view of the asset for getSignal — only price moves over time.
+      const view = { ...asset, price: close };
+      // Reconstruct MTF at this bar's open and stash on the cache the way
+      // getMTFAligned reads it.
+      mtfCache[asset.symbol] = reconstructMTFAt(h1, h4, d1, closeTime);
+      const gst = new Date(closeTime + 4 * 3600_000); // GST is UTC+4
+      const sig = getSignalFn(view, gst);
+      if (sig === 'enter') {
+        const futureBars = oneMin.slice(i + 1);
+        const outcome = simulateTradeOutcome(direction, asset.entry, asset.sl, tp, futureBars);
+        trades.push({
+          ts: closeTime,
+          symbol: asset.symbol,
+          direction,
+          entry: asset.entry, sl: asset.sl, tp,
+          ...outcome,
+        });
+        lastEntryIdx = i;
+      }
+    }
+    return trades;
+  }
+
+  function summarizeBacktest(trades) {
+    const wins = trades.filter(t => t.outcome === 'win').length;
+    const losses = trades.filter(t => t.outcome === 'loss').length;
+    const bes = trades.filter(t => t.outcome === 'be').length;
+    const total = trades.length;
+    const winRate = total ? wins / total : 0;
+    const totalR = trades.reduce((s, t) => s + (Number(t.rMultiple) || 0), 0);
+    const avgR = total ? totalR / total : 0;
+    return { total, wins, losses, breakEvens: bes, winRate, totalR, avgR };
+  }
+
+  async function fetchHistoricalKlines(symbol, interval, startMs, endMs) {
+    const sym = symbol + 'USDT';
+    for (const host of BINANCE_HOSTS) {
+      try {
+        const url = `https://${host}/api/v3/klines?symbol=${sym}&interval=${interval}&startTime=${startMs}&endTime=${endMs}&limit=1000`;
+        const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        if (!r.ok) continue;
+        const data = await r.json();
+        if (Array.isArray(data) && data.length) return data;
+      } catch(e) {}
+    }
+    return [];
+  }
+
+  async function runBacktest({ symbol = 'BTC', hours = 24 } = {}) {
+    if (NON_BINANCE_ASSETS.includes(symbol)) {
+      throw new Error(`${symbol} has no Binance data; backtest requires a Binance-listed symbol.`);
+    }
+    const asset = ASSETS.find(a => a.symbol === symbol);
+    if (!asset) throw new Error(`Unknown asset ${symbol}`);
+    const endMs = Date.now();
+    const startMs = endMs - hours * 3600_000;
+
+    // Fetch concurrently. H1/H4/D1 history covers more time than the
+    // backtest window so we always have a "last complete candle before ts".
+    const oneDayMs = 86_400_000;
+    const [oneMin, h1, h4, d1] = await Promise.all([
+      fetchHistoricalKlines(symbol, '1m', startMs, endMs),
+      fetchHistoricalKlines(symbol, '1h', startMs - 7 * oneDayMs, endMs),
+      fetchHistoricalKlines(symbol, '4h', startMs - 30 * oneDayMs, endMs),
+      fetchHistoricalKlines(symbol, '1d', startMs - 60 * oneDayMs, endMs),
+    ]);
+    if (!oneMin.length) throw new Error('No 1m data returned — Binance unreachable or invalid range.');
+
+    const trades = runBacktestSync(asset, oneMin, h1, h4, d1, getSignal);
+    const stats = summarizeBacktest(trades);
+    return { symbol, hours, trades, stats };
+  }
+
+  // Convenience: run backtest, render a toast + console table.
+  async function runBacktestUI(symbol = 'BTC', hours = 24) {
+    showToast(`🧪 Backtesting ${symbol} over last ${hours}h…`, 'info');
+    try {
+      const out = await runBacktest({ symbol, hours });
+      const s = out.stats;
+      const summary = `${out.symbol} ${hours}h: ${s.total} trades · ${s.wins}W / ${s.losses}L / ${s.breakEvens}BE · win-rate ${(s.winRate*100).toFixed(1)}% · totalR ${s.totalR.toFixed(2)} (avg ${s.avgR.toFixed(2)}R)`;
+      showToast(summary, s.winRate >= 0.5 ? 'ok' : 'warn');
+      console.log(`%c🧪 Backtest ${out.symbol} (last ${hours}h)`, 'color:#c9a961;font-family:monospace;font-weight:bold');
+      console.table(out.trades.map(t => ({
+        time: new Date(t.ts).toISOString().slice(0,16).replace('T',' '),
+        dir: t.direction,
+        outcome: t.outcome,
+        rMult: (t.rMultiple ?? 0).toFixed(2),
+        barsHeld: t.barsHeld,
+      })));
+      return out;
+    } catch(e) {
+      showToast(`🧪 Backtest failed: ${e.message}`, 'err');
+      console.error(e);
+    }
+  }
+  // Expose for DevTools usage. Use a distinct name so we don't clobber the
+  // internal `runBacktest` function declaration (function decls in non-module
+  // scripts attach to globalThis, so window.runBacktest = X would overwrite it).
+  if (typeof window !== 'undefined') window.ictBacktest = runBacktestUI;
+
+  // ═══════════════════════════════════════════════════════
   // ＋ ADD ASSET GATEWAY
   // ═══════════════════════════════════════════════════════
   const TRIGGER_NAMES = [

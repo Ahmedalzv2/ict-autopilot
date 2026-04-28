@@ -20,9 +20,11 @@ const EXPORTS = [
   'checkArmedAlerts', 'tagHeadline', 'getNewsContext',
   'getFundingContext', 'isInvalidated',
   'getMacroBlackout', 'ECON_EVENTS', 'isMTFStale',
-  // live stream + sparkline
+  // live stream + sparkline + backtest
   'parseTickerMessage', 'recordSignalState', 'renderSparkline',
   'SIGNAL_HISTORY_MS', 'BINANCE_WS_URL',
+  'simulateTradeOutcome', 'reconstructMTFAt', 'runBacktestSync',
+  'summarizeBacktest', 'runBacktest',
 ];
 
 function extractScript(html) {
