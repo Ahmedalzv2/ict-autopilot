@@ -36,16 +36,28 @@ describe('Journal persistence (localStorage round-trip)', () => {
   });
 });
 
-describe('Outcome resolution (Binance kline → win/loss/be)', () => {
-  function makeFetchStub(closePrices) {
-    let i = 0;
-    return async () => ({
-      json: async () => [[Date.now(), '0', '0', '0', String(closePrices[i++] ?? closePrices[closePrices.length - 1])]],
+describe('Outcome resolution (Binance kline range scan → win/loss/be)', () => {
+  // Each kline: [openTime, open, high, low, close, volume, closeTime, ...]
+  // We mock fetch to return an array of klines so the resolver can scan
+  // for intra-candle TP/SL touches (wicks).
+  function klinesFromOHLC(ohlcs) {
+    return ohlcs.map((c, i) => {
+      const [o, h, l, cl] = c;
+      return [Date.now() + i * 60_000, String(o), String(h), String(l), String(cl), '0'];
     });
   }
+  function makeFetchStub(klines) {
+    return async () => ({ ok: true, json: async () => klines });
+  }
 
-  test('bull setup, close price ≥ TP → win', async () => {
-    const ctx = loadApp({ fetch: makeFetchStub([105]) });
+  test('bull setup, candle high ≥ TP (wick hit) → win — even if close < TP', async () => {
+    // Previous implementation only looked at close; this test guards the fix
+    // that now scans candle highs/lows for intra-candle touches.
+    const klines = klinesFromOHLC([
+      [100, 102, 99.5, 101],
+      [101, 105.5, 100, 102], // wick to 105.5 hits TP=105, close back at 102
+    ]);
+    const ctx = loadApp({ fetch: makeFetchStub(klines) });
     ctx.app.journal = [{
       id: 1, symbol: 'BTC', timestamp: Date.now() - 30 * 60_000,
       bias: 'BULLISH', entry: 100, sl: 99, tp: 105, outcome: null, outcomeChecks: {},
@@ -54,8 +66,11 @@ describe('Outcome resolution (Binance kline → win/loss/be)', () => {
     assert.equal([...ctx.app.journal][0].outcome, 'win');
   });
 
-  test('bull setup, close price ≤ SL → loss', async () => {
-    const ctx = loadApp({ fetch: makeFetchStub([98]) });
+  test('bull setup, candle low ≤ SL (wick) → loss', async () => {
+    const klines = klinesFromOHLC([
+      [100, 100.5, 98.5, 99.8], // wick to 98.5 hits SL=99
+    ]);
+    const ctx = loadApp({ fetch: makeFetchStub(klines) });
     ctx.app.journal = [{
       id: 2, symbol: 'BTC', timestamp: Date.now() - 30 * 60_000,
       bias: 'BULLISH', entry: 100, sl: 99, tp: 105, outcome: null, outcomeChecks: {},
@@ -64,8 +79,11 @@ describe('Outcome resolution (Binance kline → win/loss/be)', () => {
     assert.equal([...ctx.app.journal][0].outcome, 'loss');
   });
 
-  test('bear setup, close price ≤ TP (TP below entry) → win', async () => {
-    const ctx = loadApp({ fetch: makeFetchStub([80]) });
+  test('bear setup, low ≤ TP (TP below entry) → win', async () => {
+    const klines = klinesFromOHLC([
+      [86, 86.2, 79.8, 81], // wick to 79.8 hits TP=80 (bear: TP below entry)
+    ]);
+    const ctx = loadApp({ fetch: makeFetchStub(klines) });
     ctx.app.journal = [{
       id: 3, symbol: 'SOL', timestamp: Date.now() - 60 * 60_000,
       bias: 'BEARISH', entry: 86, sl: 87, tp: 80, outcome: null, outcomeChecks: {},
@@ -74,46 +92,78 @@ describe('Outcome resolution (Binance kline → win/loss/be)', () => {
     assert.equal([...ctx.app.journal][0].outcome, 'win');
   });
 
-  test('480-min check with no TP/SL hit → break-even', async () => {
-    const ctx = loadApp({ fetch: makeFetchStub([100.5]) }); // between SL 99 and TP 105
+  test('TP and SL both hit in same candle → defaults to loss (conservative)', async () => {
+    const klines = klinesFromOHLC([
+      [100, 105.5, 98.5, 100], // both 105.5 (TP) and 98.5 (SL) within the candle
+    ]);
+    const ctx = loadApp({ fetch: makeFetchStub(klines) });
     ctx.app.journal = [{
-      id: 4, symbol: 'BTC', timestamp: Date.now() - 480 * 60_000,
+      id: 4, symbol: 'BTC', timestamp: Date.now() - 30 * 60_000,
       bias: 'BULLISH', entry: 100, sl: 99, tp: 105, outcome: null, outcomeChecks: {},
     }];
-    await ctx.app.fetchOutcomeAtTime(4, 'BTC', Date.now(), 480);
+    await ctx.app.fetchOutcomeAtTime(4, 'BTC', Date.now(), 30);
+    assert.equal([...ctx.app.journal][0].outcome, 'loss');
+  });
+
+  test('480-min check with no TP/SL hit anywhere in range → break-even', async () => {
+    const klines = klinesFromOHLC([
+      [100, 100.4, 99.7, 100.1], [100.1, 100.3, 99.8, 100.0],
+    ]);
+    const ctx = loadApp({ fetch: makeFetchStub(klines) });
+    ctx.app.journal = [{
+      id: 5, symbol: 'BTC', timestamp: Date.now() - 480 * 60_000,
+      bias: 'BULLISH', entry: 100, sl: 99, tp: 105, outcome: null, outcomeChecks: {},
+    }];
+    await ctx.app.fetchOutcomeAtTime(5, 'BTC', Date.now(), 480);
     assert.equal([...ctx.app.journal][0].outcome, 'be');
   });
 
-  test('30-min check with no TP/SL hit → outcome stays null (resolves on later check)', async () => {
-    const ctx = loadApp({ fetch: makeFetchStub([100.5]) });
+  test('30-min check with no TP/SL hit → outcome null (resolves on later check)', async () => {
+    const klines = klinesFromOHLC([[100, 100.4, 99.7, 100.1]]);
+    const ctx = loadApp({ fetch: makeFetchStub(klines) });
     ctx.app.journal = [{
-      id: 5, symbol: 'BTC', timestamp: Date.now() - 30 * 60_000,
+      id: 6, symbol: 'BTC', timestamp: Date.now() - 30 * 60_000,
       bias: 'BULLISH', entry: 100, sl: 99, tp: 105, outcome: null, outcomeChecks: {},
     }];
-    await ctx.app.fetchOutcomeAtTime(5, 'BTC', Date.now(), 30);
+    await ctx.app.fetchOutcomeAtTime(6, 'BTC', Date.now(), 30);
     assert.equal([...ctx.app.journal][0].outcome, null);
-    assert.equal([...ctx.app.journal][0].outcomeChecks['30'], 100.5);
+    assert.equal([...ctx.app.journal][0].outcomeChecks['30'], 100.1);
   });
 
   test('an already-resolved entry is not overwritten by a later check', async () => {
-    const ctx = loadApp({ fetch: makeFetchStub([98]) });
+    const klines = klinesFromOHLC([[100, 100.5, 98.5, 99]]); // would now hit SL
+    const ctx = loadApp({ fetch: makeFetchStub(klines) });
     ctx.app.journal = [{
-      id: 6, symbol: 'BTC', timestamp: Date.now() - 240 * 60_000,
+      id: 7, symbol: 'BTC', timestamp: Date.now() - 240 * 60_000,
       bias: 'BULLISH', entry: 100, sl: 99, tp: 105,
       outcome: 'win', outcomeChecks: { '30': 105 },
     }];
-    await ctx.app.fetchOutcomeAtTime(6, 'BTC', Date.now(), 240);
-    assert.equal([...ctx.app.journal][0].outcome, 'win', 'must not flip win → loss on a later candle');
+    await ctx.app.fetchOutcomeAtTime(7, 'BTC', Date.now(), 240);
+    assert.equal([...ctx.app.journal][0].outcome, 'win');
   });
 
   test('failed fetch (network) does not crash and leaves entry unresolved', async () => {
     const ctx = loadApp({ fetch: async () => { throw new Error('network'); } });
     ctx.app.journal = [{
-      id: 7, symbol: 'BTC', timestamp: Date.now() - 30 * 60_000,
+      id: 8, symbol: 'BTC', timestamp: Date.now() - 30 * 60_000,
       bias: 'BULLISH', entry: 100, sl: 99, tp: 105, outcome: null, outcomeChecks: {},
     }];
-    await ctx.app.fetchOutcomeAtTime(7, 'BTC', Date.now(), 30);
+    await ctx.app.fetchOutcomeAtTime(8, 'BTC', Date.now(), 30);
     assert.equal([...ctx.app.journal][0].outcome, null);
+  });
+
+  test('first-touch wins: TP hit in candle 1, SL hit in candle 2 → win', async () => {
+    const klines = klinesFromOHLC([
+      [100, 105.5, 99.5, 102], // TP hit first
+      [102, 102.5, 98.5, 99],  // SL hit later — ignored
+    ]);
+    const ctx = loadApp({ fetch: makeFetchStub(klines) });
+    ctx.app.journal = [{
+      id: 9, symbol: 'BTC', timestamp: Date.now() - 60 * 60_000,
+      bias: 'BULLISH', entry: 100, sl: 99, tp: 105, outcome: null, outcomeChecks: {},
+    }];
+    await ctx.app.fetchOutcomeAtTime(9, 'BTC', Date.now(), 60);
+    assert.equal([...ctx.app.journal][0].outcome, 'win');
   });
 });
 

@@ -2406,6 +2406,8 @@
   // BINANCE SYNC (auto every 30s)
   // ═══════════════════════════════════════
   let lastSyncTime = null;
+  let consecutiveSyncFails = 0;
+  let lastSuccessfulSyncMs = 0;
   const BINANCE_SYMBOLS = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','SUIUSDT','ASTERUSDT'];
   const BINANCE_HOSTS = ['api.binance.com','data-api.binance.vision'];
 
@@ -2496,9 +2498,30 @@
     });
     lastSyncTime = getGST();
     const timeStr = `${fmtTime(lastSyncTime)} GST`;
-    document.getElementById('barSyncTime').textContent = timeStr;
+
+    // Stale-data tracking: warn the user if Binance has been failing for a
+    // while. Fresh data is the difference between a real signal and a fake
+    // one — surface this prominently rather than letting the dashboard
+    // silently render stale prices.
+    if (ok > 0) {
+      consecutiveSyncFails = 0;
+      lastSuccessfulSyncMs = Date.now();
+    } else {
+      consecutiveSyncFails++;
+    }
+    const stale = consecutiveSyncFails >= 2;
+    const stalenessMin = lastSuccessfulSyncMs ? Math.floor((Date.now() - lastSuccessfulSyncMs) / 60000) : null;
+
+    document.getElementById('barSyncTime').textContent = stale ? `⚠ STALE ${timeStr}` : timeStr;
     const el = document.getElementById('dashSyncStatus');
-    if (el) el.textContent = `Last sync: ${timeStr} · ${ok}/${BINANCE_SYMBOLS.length} updated`;
+    if (el) {
+      if (stale) {
+        const ageStr = stalenessMin !== null ? `${stalenessMin}m old` : 'unknown age';
+        el.innerHTML = `<span style="color:var(--bear);font-weight:600;">⚠ STALE — Binance unreachable (${consecutiveSyncFails} fails). Prices ${ageStr}. Do not trust signals.</span>`;
+      } else {
+        el.textContent = `Last sync: ${timeStr} · ${ok}/${BINANCE_SYMBOLS.length} updated`;
+      }
+    }
     const gstForAlert = getGST();
     try { renderSignals(); } catch(e) {}
     requestAnimationFrame(() => {
@@ -2667,6 +2690,9 @@
       firstSyncDone = true;
       return;
     }
+    // Stale-data guard: never fire alerts when prices are not trustworthy.
+    // Two consecutive sync failures is enough to assume bad data.
+    if (typeof consecutiveSyncFails === 'number' && consecutiveSyncFails >= 2) return;
     ASSETS.forEach(asset => {
       const sig = getSignal(asset, gst);
       const prev = prevSignalMap[asset.symbol] || 'wait';
@@ -2763,7 +2789,11 @@
   // ═══════════════════════════════════════════════════════
   // 🧠 ICT AUTO-ANALYSIS ENGINE (Phase 3)
   // ═══════════════════════════════════════════════════════
-  const CHECK_LABELS = ['HTF Bias','Kill Zone','FVG','OB','CHoCH','MSS','Displacement','Liquidity Sweep','PO3','Macro','Premium/Discount'];
+  // 10 labels matching the 10-element checks array on every asset. "Premium/
+  // Discount" was previously listed here as an 11th label but no asset tracked
+  // it, so analyzeAsset silently dropped it. If you want to track it, extend
+  // every asset.checks to length 11 and add the label back.
+  const CHECK_LABELS = ['HTF Bias','Kill Zone','FVG','OB','CHoCH','MSS','Displacement','Liquidity Sweep','PO3','Macro'];
 
   // Confidence % — shown instead of "ARMED" label
   // CHoCH detection stub — returns {detected: bool, candles: 1m displacement count}
@@ -2798,7 +2828,8 @@
     else if (pct <= 0.005) proxComp = 12;
     else if (pct <= 0.01) proxComp = 5;
     const sessComp = inKZ ? 15 : (session ? 5 : 0);
-    return Math.min(99, Math.round(scoreComp + proxComp + sessComp));
+    // Floor at 0 — a negative confidence percentage is meaningless to a trader.
+    return Math.max(0, Math.min(99, Math.round(scoreComp + proxComp + sessComp)));
   }
 
   function analyzeAsset(asset, gst) {
@@ -2871,6 +2902,14 @@
 
     let analysis = `${para}\n`;
     analysis += `Bias: ${isBull?'Bullish':'Bearish'} · ${gradeNote} · R:R ${rr}:1 · ${sessNote}\n`;
+    // ICT rule: minimum 1:3 R:R. Surface a warning when below — the user
+    // should reconsider the setup or move TP further out.
+    const rrNum = parseFloat(rr);
+    if (Number.isFinite(rrNum) && rrNum < 2) {
+      analysis += `⚠ Sub-2:1 R:R — below ICT minimum of 1:3. Reconsider TP placement or skip.\n`;
+    } else if (Number.isFinite(rrNum) && rrNum < 3) {
+      analysis += `⚠ R:R ${rrNum}:1 is below your 1:3 ICT target — acceptable only on A+ setups.\n`;
+    }
     if (triggeredChecks.length > 0) analysis += `✓ Confirmed: ${triggeredChecks.join(', ')}.\n`;
     if (missingChecks.length > 0) analysis += `✗ Still needed: ${missingChecks.join(', ')}.`;
     const recent = (typeof getNewsContext === 'function') ? getNewsContext(asset.symbol) : [];
@@ -3282,27 +3321,42 @@
     if (!je || je.outcome) return; // already resolved
     try {
       const sym = symbol + 'USDT';
+      // Scan every 1m candle from entry → targetTs and check candle highs/lows
+      // for TP/SL touches. This catches wicks — the previous implementation
+      // only inspected the close at exactly targetTs and silently missed
+      // intra-candle hits, distorting the win rate.
+      const startTs = je.timestamp;
+      const span = Math.max(1, Math.ceil((targetTs - startTs) / 60000));
+      const limit = Math.min(1000, span + 1);
       let data = null;
       for (const host of BINANCE_HOSTS) {
         try {
-          const r = await fetch(`https://${host}/api/v3/klines?symbol=${sym}&interval=1m&startTime=${targetTs}&limit=1`, {signal: AbortSignal.timeout(8000)});
+          const r = await fetch(`https://${host}/api/v3/klines?symbol=${sym}&interval=1m&startTime=${startTs}&endTime=${targetTs}&limit=${limit}`, {signal: AbortSignal.timeout(8000)});
           data = await r.json();
-          if (data && data[0]) break;
+          if (Array.isArray(data) && data.length) break;
         } catch(e) {}
       }
-      if (data && data[0]) {
-        const closePrice = parseFloat(data[0][4]);
-        je.outcomeChecks[String(mins)] = closePrice;
-        // Determine outcome vs TP1/SL
-        const isBull = je.bias === 'bull' || je.bias === 'BULLISH' || je.bias === '🟢 BULLISH';
-        const hitTP = isBull ? closePrice >= je.tp : closePrice <= je.tp;
-        const hitSL = isBull ? closePrice <= je.sl : closePrice >= je.sl;
-        if (hitTP && !je.outcome) je.outcome = 'win';
-        else if (hitSL && !je.outcome) je.outcome = 'loss';
+      if (Array.isArray(data) && data.length) {
+        const isBull = (je.bias || '').toString().toLowerCase().includes('bull');
+        // Walk chronologically — first TP/SL touch wins. If both happen in
+        // the same candle, default to SL (conservative — assume the stop got
+        // hit first since wicks are ambiguous).
+        let resolved = null;
+        for (const k of data) {
+          const high = parseFloat(k[2]);
+          const low = parseFloat(k[3]);
+          const hitTP = isBull ? high >= je.tp : low <= je.tp;
+          const hitSL = isBull ? low <= je.sl : high >= je.sl;
+          if (hitTP && hitSL) { resolved = 'loss'; break; }
+          if (hitTP) { resolved = 'win'; break; }
+          if (hitSL) { resolved = 'loss'; break; }
+        }
+        const lastClose = parseFloat(data[data.length - 1][4]);
+        je.outcomeChecks[String(mins)] = lastClose;
+        if (resolved && !je.outcome) je.outcome = resolved;
         else if (mins === 480 && !je.outcome) je.outcome = 'be';
         saveJournal();
         renderJournal();
-        // Close paper trade on outcome
       }
     } catch(e) {}
   }

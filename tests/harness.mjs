@@ -155,6 +155,10 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   set firstSyncDone(v) { firstSyncDone = v; },
   get prevSignalMap() { return typeof prevSignalMap === 'undefined' ? undefined : prevSignalMap; },
   set prevSignalMap(v) { prevSignalMap = v; },
+  get consecutiveSyncFails() { return typeof consecutiveSyncFails === 'undefined' ? undefined : consecutiveSyncFails; },
+  set consecutiveSyncFails(v) { consecutiveSyncFails = v; },
+  get lastSuccessfulSyncMs() { return typeof lastSuccessfulSyncMs === 'undefined' ? undefined : lastSuccessfulSyncMs; },
+  set lastSuccessfulSyncMs(v) { lastSuccessfulSyncMs = v; },
 });
 `;
 

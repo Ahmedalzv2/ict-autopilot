@@ -11,7 +11,7 @@ describe('ICT data invariants — these protect your trading rules from drift', 
     assert.equal(unique.length, 1, `assets disagree on checks length: ${JSON.stringify(lengths)}`);
   });
 
-  test('CHECK_LABELS length matches asset checks length', { todo: 'CHECK_LABELS has 11 entries (incl. "Premium/Discount") but every asset.checks is length 10. The 11th label is silently ignored by analyzeAsset. Decide: drop "Premium/Discount" from CHECK_LABELS, or extend every asset.checks to 11.' }, () => {
+  test('CHECK_LABELS length matches asset checks length', () => {
     const checksLen = [...app.ASSETS][0].checks.length;
     assert.equal(app.CHECK_LABELS.length, checksLen);
   });
