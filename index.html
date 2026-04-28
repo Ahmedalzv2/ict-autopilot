@@ -2508,10 +2508,7 @@
         try { checkArmedAlerts(gstForAlert); } catch(e) {}
       });
     });
-    if (!syncBinance._analysisCount) syncBinance._analysisCount = 0;
-    if (++syncBinance._analysisCount % 5 === 0) {
-      requestAnimationFrame(() => { try { renderAnalysis(); } catch(e) {} });
-    }
+    requestAnimationFrame(() => { try { renderAnalysis(); } catch(e) {} });
     if (document.getElementById('top-setup').classList.contains('active')) renderSetups();
     if (!silent && ok > 0) showToast(`✓ ${ok} prices updated`, 'ok');
     if (!silent && ok===0) showToast('✗ Binance sync failed. Check connection.', 'err');
@@ -2540,13 +2537,40 @@
   let prevSignalMap = {};   // { symbol: 'wait'|'watch'|'armed'|'skip' }
   let alertLog = [];        // [{ time, symbol, signal, price, entry, grade, analysis }]
   let alertSoundEnabled = true;
+  let firstSyncDone = false; // suppresses alerts on the very first sync after load
+  let assetNewsMap = {};    // { SYMBOL: [{title, url, time, source}] }
 
   function initNotifications() {
-    // Notifications disabled per user preference
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      try { Notification.requestPermission().catch(()=>{}); } catch(e) {}
+    }
   }
 
+  // Web Audio beep — no external asset files. enter = urgent triple, armed = double, watch = single.
   function playAlertSound(type) {
-    // Sound disabled per user preference
+    if (!alertSoundEnabled) return;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ac = new Ctx();
+      const pattern = type === 'enter' ? [880, 660, 880] : type === 'armed' ? [660, 880] : [660];
+      pattern.forEach((freq, i) => {
+        const osc = ac.createOscillator();
+        const gain = ac.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        const start = ac.currentTime + i * 0.18;
+        const dur = 0.15;
+        gain.gain.setValueAtTime(0, start);
+        gain.gain.linearRampToValueAtTime(0.18, start + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+        osc.connect(gain).connect(ac.destination);
+        osc.start(start);
+        osc.stop(start + dur + 0.02);
+      });
+      // Auto-close to release the audio HW
+      setTimeout(() => { try { ac.close(); } catch(e) {} }, pattern.length * 200 + 250);
+    } catch(e) { /* swallow — autoplay policy or unsupported */ }
   }
 
   function showArmedOverlay(asset, signal, analysis) {
@@ -2635,6 +2659,14 @@
   }
 
   function checkArmedAlerts(gst) {
+    // First scan after page load: prime prevSignalMap without firing alerts.
+    // Otherwise every asset already at watch/armed on load would alert as if
+    // it had just escalated from 'wait'.
+    if (!firstSyncDone) {
+      ASSETS.forEach(a => { prevSignalMap[a.symbol] = getSignal(a, gst); });
+      firstSyncDone = true;
+      return;
+    }
     ASSETS.forEach(asset => {
       const sig = getSignal(asset, gst);
       const prev = prevSignalMap[asset.symbol] || 'wait';
@@ -2651,7 +2683,7 @@
 
         // Log to alert log
         alertLog.unshift({ time: timeStr, symbol: asset.symbol, signal: sig, price: asset.price, entry: asset.entry, grade: asset.grade, analysis });
-        if (alertLog.length > 50) alertLog.pop();
+        if (alertLog.length > 50) alertLog.length = 50;
         renderAlertLog();
 
         // Log to journal + schedule outcome checks
@@ -2841,6 +2873,10 @@
     analysis += `Bias: ${isBull?'Bullish':'Bearish'} · ${gradeNote} · R:R ${rr}:1 · ${sessNote}\n`;
     if (triggeredChecks.length > 0) analysis += `✓ Confirmed: ${triggeredChecks.join(', ')}.\n`;
     if (missingChecks.length > 0) analysis += `✗ Still needed: ${missingChecks.join(', ')}.`;
+    const recent = (typeof getNewsContext === 'function') ? getNewsContext(asset.symbol) : [];
+    if (recent.length > 0) {
+      analysis += `\n📰 Recent: "${recent[0].title}" — ${recent[0].source}.`;
+    }
     return analysis.trim();
   }
 
@@ -3028,37 +3064,109 @@
   }
 
   // ═══════════════════════════════════════════════════════
-  // 📰 NEWS FEED (CoinGecko — free, no auth)
+  // 📰 NEWS FEED (CoinGecko + Reddit r/CryptoCurrency — free, no auth)
+  // tagHeadline is also exported for unit tests.
   // ═══════════════════════════════════════════════════════
+  const NEWS_KEYWORDS = {
+    BTC: ['btc', 'bitcoin'],
+    ETH: ['eth', 'ethereum', 'ether'],
+    SOL: ['sol', 'solana'],
+    BNB: ['bnb', 'binance coin'],
+    XRP: ['xrp', 'ripple'],
+    SUI: ['sui', 'sui network'],
+    ASTR: ['astr', 'astar'],
+    US100: ['nasdaq', 'us100', 'ndx', 'tech stocks'],
+    GOLD: ['gold ', 'xau', 'bullion'],
+    SILVER: ['silver', 'xag'],
+  };
+
+  function tagHeadline(title) {
+    const lower = (title || '').toLowerCase();
+    return Object.entries(NEWS_KEYWORDS)
+      .filter(([_, kws]) => kws.some(k => lower.includes(k)))
+      .map(([sym]) => sym);
+  }
+
+  function getNewsContext(symbol) {
+    const items = assetNewsMap[symbol] || [];
+    return items.slice(0, 1); // top headline only — concise
+  }
+
+  async function fetchSocialPulse() {
+    // Reddit r/CryptoCurrency hot posts — free, no auth.
+    // This is the practical (non-paywalled) substitute for raw X. To swap in
+    // an X feed later, replace this fetch with a call to your Apps Script
+    // proxy that holds an X bearer token; the rest of the pipeline stays the
+    // same as long as you return [{title, url, time, source}].
+    try {
+      const r = await fetch('https://www.reddit.com/r/CryptoCurrency/hot.json?limit=15', {signal: AbortSignal.timeout(10000)});
+      if (!r.ok) return [];
+      const j = await r.json();
+      return (j?.data?.children || []).map(c => ({
+        title: c.data.title,
+        url: 'https://reddit.com' + c.data.permalink,
+        source: 'Reddit · r/CryptoCurrency',
+        ts: (c.data.created_utc || 0) * 1000,
+      }));
+    } catch(e) { return []; }
+  }
+
   async function fetchNews() {
     const feed = document.getElementById('newsFeed');
     if (!feed) return;
     feed.innerHTML = '<div style="color:var(--text-mute);padding:8px 0;">Fetching latest crypto news…</div>';
     try {
-      const r = await fetch('https://api.coingecko.com/api/v3/news?per_page=20', {signal: AbortSignal.timeout(10000)});
+      const [r, reddit] = await Promise.all([
+        fetch('https://api.coingecko.com/api/v3/news?per_page=20', {signal: AbortSignal.timeout(10000)}),
+        fetchSocialPulse(),
+      ]);
       const d = await r.json();
-      const news = (d.data || d).slice(0, 15);
-      if (!news.length) throw new Error('No news');
-      // Tag which of our assets each article mentions
-      const symbols = ASSETS.map(a => a.symbol.toLowerCase());
-      const keywords = {btc:'Bitcoin',eth:'Ethereum',sol:'Solana',bnb:'BNB',xrp:'XRP',sui:'SUI',astr:'Astar',us100:'Nasdaq',gold:'Gold',silver:'Silver'};
+      const newsRaw = (d.data || d).slice(0, 15);
+      if (!newsRaw.length && !reddit.length) throw new Error('No news');
+
+      // Normalize CoinGecko + Reddit into one shape, then sort newest-first.
+      const normalized = [
+        ...newsRaw.map(item => ({
+          title: item.title || item.name || '',
+          url: item.url || item.news_url || '#',
+          source: item.author?.name || item.news_site || 'Crypto News',
+          ts: item.updated_at ? item.updated_at * 1000 : Date.now(),
+        })),
+        ...reddit,
+      ].sort((a, b) => b.ts - a.ts).slice(0, 18);
+
+      // Rebuild the per-asset news map for use in analyzeAsset.
+      assetNewsMap = {};
+      for (const item of normalized) {
+        const tagged = tagHeadline(item.title);
+        for (const sym of tagged) {
+          if (!assetNewsMap[sym]) assetNewsMap[sym] = [];
+          assetNewsMap[sym].push({ title: item.title, url: item.url, source: item.source, ts: item.ts });
+        }
+      }
+
       feed.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-top:8px;">` +
-        news.map(item => {
-          const title = item.title || item.name || '';
-          const url = item.url || item.news_url || '#';
-          const src = item.author?.name || item.news_site || 'Crypto News';
-          const time = item.updated_at ? new Date(item.updated_at * 1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Dubai'}) + ' GST' : '';
-          const tagged = Object.entries(keywords).filter(([k,v]) => title.toLowerCase().includes(k) || title.toLowerCase().includes(v.toLowerCase())).map(([k])=>k.toUpperCase());
+        normalized.map(item => {
+          const title = item.title;
+          const url = item.url;
+          const src = item.source;
+          const time = item.ts ? new Date(item.ts).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Dubai'}) + ' GST' : '';
+          const tagged = tagHeadline(title);
+          const isReddit = src.startsWith('Reddit');
           const tagHtml = tagged.length ? tagged.map(t=>`<span style="background:rgba(201,169,97,0.15);color:var(--gold);font-size:10px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;">${t}</span>`).join(' ') : '';
-          return `<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">
+          const srcBadge = isReddit ? `<span style="background:rgba(255,69,0,0.15);color:#ff7a3d;font-size:10px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;">SOCIAL</span>` : `<span style="background:rgba(92,184,138,0.12);color:var(--bull);font-size:10px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;">NEWS</span>`;
+          return `<a href="${url}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;display:block;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">
             <div style="font-size:12px;font-weight:500;color:var(--text);margin-bottom:6px;line-height:1.5;">${title}</div>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              ${srcBadge}
               ${tagHtml}
               <span style="color:var(--text-mute);font-size:10px;">${src}</span>
               <span style="color:var(--text-mute);font-size:10px;">${time}</span>
             </div>
-          </div>`;
+          </a>`;
         }).join('') + '</div>';
+      // Re-render analysis so newly tagged headlines appear in the per-asset narrative.
+      try { renderAnalysis(); } catch(e) {}
     } catch(e) {
       feed.innerHTML = '<div style="color:var(--text-mute);font-size:12px;">News feed temporarily unavailable. CoinGecko free API may be rate-limited — try again in 60s.</div>';
     }

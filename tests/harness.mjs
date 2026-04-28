@@ -16,6 +16,8 @@ const EXPORTS = [
   // journal pipeline
   'loadJournal', 'saveJournal', 'logCall', 'scheduleOutcomeChecks',
   'fetchOutcomeAtTime', 'checkPendingOutcomes', 'setManualOutcome',
+  // alerts + news
+  'checkArmedAlerts', 'tagHeadline', 'getNewsContext',
 ];
 
 function extractScript(html) {
@@ -35,6 +37,7 @@ function makeStubElement() {
     click() {}, focus() {}, blur() {},
     appendChild(c) { this.children.push(c); return c; },
     removeChild() {}, replaceChild() {},
+    remove() {},
     setAttribute() {}, getAttribute: () => null, removeAttribute() {},
     querySelector: () => null,
     querySelectorAll: () => [],
@@ -146,6 +149,12 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   set mtfCache(v) { mtfCache = v; },
   get alertLog() { return typeof alertLog === 'undefined' ? undefined : alertLog; },
   set alertLog(v) { alertLog = v; },
+  get assetNewsMap() { return typeof assetNewsMap === 'undefined' ? undefined : assetNewsMap; },
+  set assetNewsMap(v) { assetNewsMap = v; },
+  get firstSyncDone() { return typeof firstSyncDone === 'undefined' ? undefined : firstSyncDone; },
+  set firstSyncDone(v) { firstSyncDone = v; },
+  get prevSignalMap() { return typeof prevSignalMap === 'undefined' ? undefined : prevSignalMap; },
+  set prevSignalMap(v) { prevSignalMap = v; },
 });
 `;
 
