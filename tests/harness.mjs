@@ -44,6 +44,8 @@ const EXPORTS = [
   'getCachedAssetState', 'invalidateAssetStateCache',
   'getTodaysJournalEntries', 'invalidateTodaysJournalCache',
   'recordTickPerf', 'getPerfStats', 'ASSET_STATE_TTL_MS',
+  // backtest comparison
+  'diffBacktests', 'runBacktestComparison',
 ];
 
 function extractScript(html) {

@@ -4799,6 +4799,148 @@
     return { hours, perAsset, overall, trades: allTrades };
   }
 
+  // ─────────────────────────────────────────
+  // Backtest comparison — A vs B side-by-side
+  // ─────────────────────────────────────────
+  // Pure: compute deltas between two backtest results. Per-asset rows
+  // matched on symbol; overall row at the bottom. Tested directly.
+  function diffBacktests(resultA, resultB) {
+    const indexBySymbol = (perAsset) => Object.fromEntries((perAsset || []).map(r => [r.symbol, r]));
+    const A = indexBySymbol(resultA.perAsset);
+    const B = indexBySymbol(resultB.perAsset);
+    const symbols = Array.from(new Set([...Object.keys(A), ...Object.keys(B)])).sort();
+    const perAsset = symbols.map(symbol => {
+      const a = A[symbol] || {};
+      const b = B[symbol] || {};
+      const dWin = (b.winRate || 0) - (a.winRate || 0);
+      const dR = (b.totalR || 0) - (a.totalR || 0);
+      const dN = (b.total || 0) - (a.total || 0);
+      return {
+        symbol,
+        a: { total: a.total||0, wins: a.wins||0, losses: a.losses||0, winRate: a.winRate||0, totalR: a.totalR||0, error: a.error || null },
+        b: { total: b.total||0, wins: b.wins||0, losses: b.losses||0, winRate: b.winRate||0, totalR: b.totalR||0, error: b.error || null },
+        delta: { trades: dN, winRate: dWin, totalR: dR },
+      };
+    });
+    const dWinO = (resultB.overall?.winRate || 0) - (resultA.overall?.winRate || 0);
+    const dRO   = (resultB.overall?.totalR  || 0) - (resultA.overall?.totalR  || 0);
+    const dNO   = (resultB.overall?.total   || 0) - (resultA.overall?.total   || 0);
+    return {
+      perAsset,
+      overall: {
+        a: resultA.overall || null,
+        b: resultB.overall || null,
+        delta: { trades: dNO, winRate: dWinO, totalR: dRO },
+      },
+    };
+  }
+
+  async function runBacktestComparison({ hours = 24, configA = {}, configB = {} } = {}) {
+    const labelA = configA.label || 'A';
+    const labelB = configB.label || 'B';
+    const [resA, resB] = await Promise.all([
+      runBacktestAll({ hours, slippagePct: configA.slippagePct, feePct: configA.feePct }),
+      runBacktestAll({ hours, slippagePct: configB.slippagePct, feePct: configB.feePct }),
+    ]);
+    const diff = diffBacktests(resA, resB);
+    return { hours, labelA, labelB, configA, configB, resultA: resA, resultB: resB, diff };
+  }
+
+  function renderBacktestComparisonModal(payload) {
+    if (typeof document === 'undefined') return;
+    const existing = document.getElementById('backtestCompareModal');
+    if (existing) existing.remove();
+    const fmtPct = (n) => `${(n * 100).toFixed(1)}%`;
+    const fmtR   = (n) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}R`;
+    const fmtDeltaR   = (n) => (n === 0 ? '·' : `${n > 0 ? '+' : ''}${n.toFixed(2)}R`);
+    const fmtDeltaPct = (n) => (n === 0 ? '·' : `${n > 0 ? '+' : ''}${(n * 100).toFixed(1)}pp`);
+    const fmtDeltaN   = (n) => (n === 0 ? '·' : `${n > 0 ? '+' : ''}${n}`);
+    const dColor = (n) => n > 0 ? 'var(--bull)' : n < 0 ? 'var(--bear)' : 'var(--text-mute)';
+
+    const rows = (payload.diff.perAsset || []).map(r => `
+      <tr>
+        <td style="font-weight:600;">${r.symbol}</td>
+        <td>${r.a.total} · ${fmtPct(r.a.winRate)} · ${fmtR(r.a.totalR)}</td>
+        <td>${r.b.total} · ${fmtPct(r.b.winRate)} · ${fmtR(r.b.totalR)}</td>
+        <td style="color:${dColor(r.delta.totalR)};font-weight:600;">${fmtDeltaR(r.delta.totalR)}</td>
+        <td style="color:${dColor(r.delta.winRate)};font-weight:600;">${fmtDeltaPct(r.delta.winRate)}</td>
+        <td style="color:${dColor(r.delta.trades)};">${fmtDeltaN(r.delta.trades)}</td>
+      </tr>
+    `).join('');
+
+    const o = payload.diff.overall;
+    const overallRow = (o.a && o.b) ? `
+      <tr style="border-top:2px solid var(--gold);font-weight:700;">
+        <td>TOTAL</td>
+        <td>${o.a.total} · ${fmtPct(o.a.winRate)} · ${fmtR(o.a.totalR)}</td>
+        <td>${o.b.total} · ${fmtPct(o.b.winRate)} · ${fmtR(o.b.totalR)}</td>
+        <td style="color:${dColor(o.delta.totalR)};">${fmtDeltaR(o.delta.totalR)}</td>
+        <td style="color:${dColor(o.delta.winRate)};">${fmtDeltaPct(o.delta.winRate)}</td>
+        <td style="color:${dColor(o.delta.trades)};">${fmtDeltaN(o.delta.trades)}</td>
+      </tr>` : '';
+
+    const cfgLine = (cfg) => {
+      const slip = cfg.slippagePct != null ? `${(cfg.slippagePct*10000).toFixed(1)}bps slip` : 'default slip';
+      const fee  = cfg.feePct != null ? `${(cfg.feePct*10000).toFixed(1)}bps fee` : 'default fee';
+      return `${slip} · ${fee}`;
+    };
+
+    const overlay = document.createElement('div');
+    overlay.id = 'backtestCompareModal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(8,8,10,0.92);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);padding:20px;';
+    overlay.innerHTML = `
+      <div style="background:var(--bg-elevated);border:1px solid var(--gold);border-radius:14px;padding:24px 28px;max-width:880px;width:100%;max-height:88vh;overflow:auto;box-shadow:0 24px 64px rgba(0,0,0,0.7);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <div>
+            <div style="font-family:'Instrument Serif',serif;font-size:22px;color:var(--gold);">🧪 Backtest Comparison · ${payload.hours}h</div>
+            <div style="font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin-top:4px;line-height:1.6;">
+              <strong style="color:var(--text);">${payload.labelA}:</strong> ${cfgLine(payload.configA)}<br>
+              <strong style="color:var(--text);">${payload.labelB}:</strong> ${cfgLine(payload.configB)}
+            </div>
+          </div>
+          <button onclick="document.getElementById('backtestCompareModal')?.remove();" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:6px 12px;border-radius:6px;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:12px;">✕ Close</button>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+          <thead>
+            <tr style="color:var(--text-mute);text-align:left;border-bottom:1px solid var(--border);">
+              <th style="padding:8px 6px;">Symbol</th>
+              <th style="padding:8px 6px;">${payload.labelA} (n · win · R)</th>
+              <th style="padding:8px 6px;">${payload.labelB} (n · win · R)</th>
+              <th style="padding:8px 6px;">ΔR</th>
+              <th style="padding:8px 6px;">Δ win-rate</th>
+              <th style="padding:8px 6px;">Δ trades</th>
+            </tr>
+          </thead>
+          <tbody>${rows}${overallRow}</tbody>
+        </table>
+        <div style="margin-top:14px;padding:10px 12px;background:var(--bg-surface);border-radius:8px;font-size:11px;color:var(--text-dim);line-height:1.6;">
+          <strong style="color:var(--text);">Reading the deltas:</strong> green = ${payload.labelB} beats ${payload.labelA}, red = ${payload.labelA} wins. ΔR is the absolute R-multiple difference; Δwin-rate is in percentage points (pp); Δtrades shows whether the ${payload.labelB} config produced more or fewer simulated entries on the same data.
+        </div>
+      </div>`;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+
+  async function runBacktestCompareUI(opts = {}) {
+    const hours = opts.hours || 24;
+    const configA = opts.configA || { label: 'Default', slippagePct: 0.0005, feePct: 0.0004 };
+    const configB = opts.configB || { label: 'No-cost', slippagePct: 0, feePct: 0 };
+    showToast(`🧪 Comparing ${configA.label} vs ${configB.label} over ${hours}h…`, 'info');
+    try {
+      const out = await runBacktestComparison({ hours, configA, configB });
+      renderBacktestComparisonModal(out);
+      const o = out.diff.overall;
+      const dR = o.delta.totalR;
+      const verdict = dR > 0 ? `${configB.label} +${dR.toFixed(2)}R` : dR < 0 ? `${configA.label} +${Math.abs(dR).toFixed(2)}R` : 'tied';
+      showToast(`🧪 ${verdict} over ${hours}h · see modal for per-asset breakdown`, dR === 0 ? 'info' : 'ok');
+      return out;
+    } catch(e) {
+      showToast(`🧪 Comparison failed: ${e.message}`, 'err');
+      console.error(e);
+    }
+  }
+  if (typeof window !== 'undefined') window.ictBacktestCompare = runBacktestCompareUI;
+
   function renderBacktestModal(payload, label) {
     const existing = document.getElementById('backtestModal');
     if (existing) existing.remove();
