@@ -1777,6 +1777,34 @@
   // ═══════════════════════════════════════
   // SIGNAL BOARD
   // ═══════════════════════════════════════
+  // Macro blackout: high-impact macro releases (FOMC/CPI/NFP/PCE) drive
+  // 30+ second algo-driven moves that have nothing to do with ICT structure.
+  // Blanket-suppress signals 30 minutes before through 30 minutes after.
+  const MACRO_BLACKOUT_MIN = 30;
+  const MACRO_HIGH_IMPACT = new Set(['high', 'critical']);
+
+  function getMacroBlackout(now) {
+    if (typeof ECON_EVENTS === 'undefined') return null;
+    const ts = (now instanceof Date ? now : new Date(now)).getTime();
+    const win = MACRO_BLACKOUT_MIN * 60_000;
+    for (const e of ECON_EVENTS) {
+      if (!MACRO_HIGH_IMPACT.has(e.impact)) continue;
+      const eventTs = new Date(`${e.date}T${e.time}:00+04:00`).getTime(); // GST
+      if (Number.isNaN(eventTs)) continue;
+      const diff = ts - eventTs;
+      if (diff >= -win && diff <= win) {
+        return {
+          event: e.event,
+          side: diff < 0 ? 'before' : 'after',
+          minutes: Math.round(Math.abs(diff) / 60_000),
+          impact: e.impact,
+          note: e.note,
+        };
+      }
+    }
+    return null;
+  }
+
   // Structured invalidation: optional invalidationPrice on each asset. When
   // current price has crossed that level, the setup is dead by ICT rules —
   // no signals, no alerts, manual reset required (clear or change the field).
@@ -1794,6 +1822,9 @@
   function getSignal(asset, gst) {
     // Hard short-circuit: invalidated setups never produce a tradeable signal.
     if (isInvalidated(asset)) return 'invalid';
+    // Macro blackout: ±30 min around high-impact macro events. Algo-driven
+    // chop has nothing to do with your ICT structure — stand down.
+    if (getMacroBlackout(gst)) return 'blackout';
 
     const pct = Math.abs((asset.price - asset.entry) / asset.entry);
     const score = asset.checks.reduce((a,b)=>a+b,0);
@@ -1831,8 +1862,8 @@
       const dir = a.price > a.entry ? '↑' : a.price < a.entry ? '↓' : '=';
       const priceColor = a.change24h > 0 ? 'var(--bull)' : a.change24h < 0 ? 'var(--bear)' : 'var(--text)';
       const badgeClass = `badge-${sig}`;
-      const cardClass = sig === 'invalid' ? 'skip' : sig === 'enter' ? 'enter' : sig === 'armed' ? 'armed' : sig === 'watch' ? 'watch' : sig === 'skip' ? 'skip' : '';
-      const badgeText = sig === 'invalid' ? '🚫 INVALIDATED' : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+      const cardClass = sig === 'invalid' || sig === 'blackout' ? 'skip' : sig === 'enter' ? 'enter' : sig === 'armed' ? 'armed' : sig === 'watch' ? 'watch' : sig === 'skip' ? 'skip' : '';
+      const badgeText = sig === 'invalid' ? '🚫 INVALIDATED' : sig === 'blackout' ? '📅 MACRO BLACKOUT' : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
       const modeTag = a.tradeMode === 'spot' ? ' <span style="font-size:8px;background:rgba(201,169,97,0.15);color:var(--gold);border-radius:3px;padding:1px 4px;">SPOT</span>' : '';
 
       // Feature 1: MTF Badge
@@ -2258,7 +2289,7 @@
     const _tp = asset.tp || asset.tp1 || 0;
     const rr = asset.entry && asset.sl && _tp ? Math.abs((_tp - asset.entry)/(asset.entry - asset.sl)).toFixed(1) : '—';
     const sigColor = sig === 'enter' ? 'var(--bear)' : sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
-    const sigLabel = sig === 'invalid' ? '🚫 INVALIDATED' : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+    const sigLabel = sig === 'invalid' ? '🚫 INVALIDATED' : sig === 'blackout' ? '📅 MACRO BLACKOUT' : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
     const savedRemark = (() => { try { return JSON.parse(localStorage.getItem('ict_remarks') || '{}')[asset.symbol] || ''; } catch(e) { return ''; } })();
 
     // MTF section — computed before template to avoid nested backtick syntax error
@@ -2545,7 +2576,7 @@
       try { renderAssets(); } catch(e) {}
       requestAnimationFrame(() => {
         try { renderMarketRead(); } catch(e) {}
-        try { checkArmedAlerts(gstForAlert); } catch(e) {}
+        Promise.resolve().then(() => checkArmedAlerts(gstForAlert)).catch(() => {});
       });
     });
     requestAnimationFrame(() => { try { renderAnalysis(); } catch(e) {} });
@@ -2586,6 +2617,17 @@
   // signal boundaries. ENTER has zero cooldown because that's your trade
   // signal — when price crosses entry, you must hear about it every time.
   const ALERT_COOLDOWN_MS = { watch: 10 * 60_000, armed: 3 * 60_000, enter: 0 };
+
+  // Staleness threshold for MTF cache. If MTF is older than this when an
+  // alert is about to escalate to armed/enter, force a refetch first so the
+  // alarm fires only against currently-aligned timeframes, not 4-min-old data.
+  const MTF_STALE_MS = 60_000;
+
+  function isMTFStale(symbol) {
+    const c = mtfCache[symbol];
+    if (!c || !c.ts) return true; // never fetched
+    return Date.now() - c.ts > MTF_STALE_MS;
+  }
 
   function initNotifications() {
     if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
@@ -2705,7 +2747,7 @@
     if (overlay) { overlay.style.opacity = '0'; overlay.style.transition = 'opacity .2s'; setTimeout(() => overlay.remove(), 200); }
   }
 
-  function checkArmedAlerts(gst) {
+  async function checkArmedAlerts(gst) {
     // First scan after page load: prime prevSignalMap without firing alerts.
     // Otherwise every asset already at watch/armed on load would alert as if
     // it had just escalated from 'wait'.
@@ -2717,14 +2759,31 @@
     // Stale-data guard: never fire alerts when prices are not trustworthy.
     // Two consecutive sync failures is enough to assume bad data.
     if (typeof consecutiveSyncFails === 'number' && consecutiveSyncFails >= 2) return;
-    ASSETS.forEach(asset => {
-      const sig = getSignal(asset, gst);
+    for (const asset of ASSETS) {
+      let sig = getSignal(asset, gst);
       const prev = prevSignalMap[asset.symbol] || 'wait';
 
       // Fire alert if signal escalated (and wasn't already at that level or higher)
       const escalated = (sig === 'enter' && prev !== 'enter') ||
                         (sig === 'armed' && prev !== 'armed' && prev !== 'enter') ||
                         (sig === 'watch' && prev !== 'watch' && prev !== 'armed' && prev !== 'enter');
+
+      // Force-fresh MTF on escalation to armed/enter. Stale MTF could fire
+      // an ARMED on timeframes that flipped 4 minutes ago. After refetch we
+      // re-evaluate the signal — if MTF flipped against us, the alert
+      // gracefully downgrades and does not fire.
+      if (escalated && (sig === 'armed' || sig === 'enter') && isMTFStale(asset.symbol)) {
+        try { await fetchMTFAlignment(asset); } catch(e) {}
+        sig = getSignal(asset, gst);
+        const stillEscalated = (sig === 'enter' && prev !== 'enter') ||
+                               (sig === 'armed' && prev !== 'armed' && prev !== 'enter');
+        if (!stillEscalated) {
+          // MTF refresh changed the signal (e.g. dropped to watch). Update
+          // prev so we don't re-evaluate forever, and move on.
+          prevSignalMap[asset.symbol] = sig;
+          continue;
+        }
+      }
 
       // Cooldown gate: if this symbol already fired the SAME tier recently,
       // suppress the alert (prev tracker still updates so the next genuine
@@ -2793,7 +2852,7 @@
       }
 
       prevSignalMap[asset.symbol] = sig;
-    });
+    }
   }
 
   function renderAlertLog() {
@@ -2923,6 +2982,10 @@
     let para = '';
     if (sig === 'invalid') {
       para = `🚫 INVALIDATED — ${priceStr} has broken your invalidation level ($${(asset.invalidationPrice||0).toLocaleString(undefined,{maximumFractionDigits:4})}). The setup is dead by ICT rules. Do not enter. Stand aside until structure rebuilds, then re-define entry/SL/TP from scratch.`;
+    } else if (sig === 'blackout') {
+      const bl = getMacroBlackout(gst);
+      const sideStr = bl ? `${bl.minutes}m ${bl.side} ${bl.event}` : 'high-impact macro window';
+      para = `📅 MACRO BLACKOUT — ${sideStr}. Algo-driven volatility, not ICT structure. No new positions until ${MACRO_BLACKOUT_MIN}m past the release. ${bl?.note || ''}`.trim();
     } else if (sig === 'enter') {
       para = `🔴 ENTER NOW — ${priceStr} is AT your ${dir} entry (${entryStr}). LIMIT ${dir} at ${entryStr}. Stop Loss at ${slStr}. TP1 at ${tpStr} (${rr}:1 R:R). Execute the plan — do not hesitate, do not chase further.`;
     } else if (sig === 'armed') {
@@ -2993,7 +3056,7 @@
       const color = sig === 'enter' ? 'var(--bear)' : sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
       const cardCls = sig === 'enter' ? 'armed-analysis' : sig === 'armed' ? 'armed-analysis' : sig === 'watch' ? 'watch-analysis' : '';
       const badgeBg = sig === 'enter' ? 'rgba(224,93,93,0.2)' : sig === 'armed' ? 'rgba(92,184,138,0.2)' : sig === 'watch' ? 'rgba(242,179,61,0.2)' : sig === 'skip' ? 'rgba(224,93,93,0.15)' : 'rgba(101,101,109,0.2)';
-      const badgeLabel = sig === 'invalid' ? '🚫 INVALIDATED' : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+      const badgeLabel = sig === 'invalid' ? '🚫 INVALIDATED' : sig === 'blackout' ? '📅 MACRO BLACKOUT' : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
 
       return `
         <div class="analysis-card ${cardCls}">

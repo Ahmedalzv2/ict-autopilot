@@ -28,7 +28,7 @@ function setup({ price, prev }) {
   const ctx = loadApp({
     fetch: async () => ({ json: async () => [] }), // logCall paths
   });
-  ctx.app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull' } };
+  ctx.app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull', ts: Date.now() } };
   ctx.app.alertLog = [];
   ctx.app.journal = [];
   ctx.app.firstSyncDone = true; // bypass first-sync suppression for tests that exercise transitions
@@ -47,7 +47,7 @@ function setup({ price, prev }) {
 }
 
 describe('checkArmedAlerts: edge-triggered escalation', () => {
-  test('first sync after page load PRIMES prevSignalMap without firing (no spam)', () => {
+  test('first sync after page load PRIMES prevSignalMap without firing (no spam)', async () => {
     // After a page reload, every asset starts at default 'wait'. Without
     // suppression, any asset already at watch/armed would alert as if it had
     // just escalated. firstSyncDone gates this.
@@ -55,76 +55,76 @@ describe('checkArmedAlerts: edge-triggered escalation', () => {
     ctx.app.firstSyncDone = false; // explicit: simulate a fresh load
     ctx.app.alertLog = [];
     ctx.app.journal = [];
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.equal([...ctx.app.alertLog].length, 0, 'no alert on first scan');
     assert.equal([...ctx.app.journal].length, 0, 'no journal entry on first scan');
     assert.equal(ctx.app.firstSyncDone, true, 'flag flips to true after priming');
     assert.equal(ctx.app.prevSignalMap.BTC, 'enter', 'prevSignalMap is primed');
   });
 
-  test('after first sync, repeating same signal does not fire', () => {
+  test('after first sync, repeating same signal does not fire', async () => {
     const ctx = setup({ price: 100.04 });
     ctx.app.firstSyncDone = false;
-    ctx.app.checkArmedAlerts(LDN); // primes
+    await ctx.app.checkArmedAlerts(LDN); // primes
     ctx.app.alertLog = [];
-    ctx.app.checkArmedAlerts(LDN); // would fire on enter, but we already at enter
+    await ctx.app.checkArmedAlerts(LDN); // would fire on enter, but we already at enter
     assert.equal([...ctx.app.alertLog].length, 0, 'no spam on stable signal');
   });
 
-  test('repeat invocation at same signal does NOT fire again', () => {
+  test('repeat invocation at same signal does NOT fire again', async () => {
     const ctx = setup({ price: 100.04 });
     ctx.app.alertLog = [];
-    ctx.app.checkArmedAlerts(LDN); // primes & fires
+    await ctx.app.checkArmedAlerts(LDN); // primes & fires
     const afterFirst = [...ctx.app.alertLog].length;
-    ctx.app.checkArmedAlerts(LDN); // should be a no-op
+    await ctx.app.checkArmedAlerts(LDN); // should be a no-op
     assert.equal([...ctx.app.alertLog].length, afterFirst, 'no new alert when signal unchanged');
   });
 
-  test('de-escalation (armed → watch) does NOT fire', () => {
+  test('de-escalation (armed → watch) does NOT fire', async () => {
     const ctx = setup({ price: 100.10 }); // armed (in KZ, score 10, MTF aligned)
     ctx.app.alertLog = [];
-    ctx.app.checkArmedAlerts(LDN); // primes at 'armed'
+    await ctx.app.checkArmedAlerts(LDN); // primes at 'armed'
     const after = [...ctx.app.alertLog].length;
 
     // Move price further from entry → drops to watch
     ctx.app.ASSETS[0].price = 100.40;
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.equal([...ctx.app.alertLog].length, after, 'watch after armed must not re-alert');
   });
 
-  test('escalation watch → armed fires', () => {
+  test('escalation watch → armed fires', async () => {
     const ctx = setup({ price: 100.40 }); // watch
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     const before = [...ctx.app.alertLog].length;
 
     ctx.app.ASSETS[0].price = 100.10; // → armed
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.ok([...ctx.app.alertLog].length > before, 'armed after watch should fire');
   });
 
-  test('escalation armed → enter fires', () => {
+  test('escalation armed → enter fires', async () => {
     const ctx = setup({ price: 100.10 }); // armed
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     const before = [...ctx.app.alertLog].length;
 
     ctx.app.ASSETS[0].price = 100.03; // → enter
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.ok([...ctx.app.alertLog].length > before, 'enter after armed should fire');
     assert.equal([...ctx.app.alertLog][0].signal, 'enter', 'newest alert is the enter event');
   });
 
-  test('alertLog cap: never exceeds 50 entries', () => {
+  test('alertLog cap: never exceeds 50 entries', async () => {
     const ctx = setup({ price: 100.04 });
     ctx.app.alertLog = Array.from({ length: 60 }, (_, i) => ({ time: '00:00', symbol: 'X', signal: 'wait', price: 0, entry: 0, grade: 'a', analysis: '' }));
     // Force one more push
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.ok([...ctx.app.alertLog].length <= 50, `alertLog length=${[...ctx.app.alertLog].length}`);
   });
 
-  test('every alert escalation logs a journal entry', () => {
+  test('every alert escalation logs a journal entry', async () => {
     const ctx = setup({ price: 100.04 });
     ctx.app.journal = [];
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.ok([...ctx.app.journal].length >= 1, 'journal should record the called signal');
   });
 });

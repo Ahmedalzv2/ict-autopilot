@@ -26,37 +26,37 @@ function makeShort(o = {}) {
 }
 
 describe('Invalidation: structured kill switch (your ICT rule)', () => {
-  test('LONG setup, no invalidationPrice set → never invalidated', () => {
+  test('LONG setup, no invalidationPrice set → never invalidated', async () => {
     const { app } = loadApp();
     const a = makeLong({ price: 1 }); // crashed price; no invalidation field
     assert.equal(app.isInvalidated(a), false);
   });
 
-  test('LONG setup, price ≤ invalidationPrice → invalidated', () => {
+  test('LONG setup, price ≤ invalidationPrice → invalidated', async () => {
     const { app } = loadApp();
     const a = makeLong({ price: 94, invalidationPrice: 95 });
     assert.equal(app.isInvalidated(a), true);
   });
 
-  test('LONG setup, price still above invalidationPrice → valid', () => {
+  test('LONG setup, price still above invalidationPrice → valid', async () => {
     const { app } = loadApp();
     const a = makeLong({ price: 96, invalidationPrice: 95 });
     assert.equal(app.isInvalidated(a), false);
   });
 
-  test('SHORT setup, price ≥ invalidationPrice → invalidated', () => {
+  test('SHORT setup, price ≥ invalidationPrice → invalidated', async () => {
     const { app } = loadApp();
     const a = makeShort({ price: 91, invalidationPrice: 90 });
     assert.equal(app.isInvalidated(a), true);
   });
 
-  test('SHORT setup, price still below invalidationPrice → valid', () => {
+  test('SHORT setup, price still below invalidationPrice → valid', async () => {
     const { app } = loadApp();
     const a = makeShort({ price: 89, invalidationPrice: 90 });
     assert.equal(app.isInvalidated(a), false);
   });
 
-  test('getSignal returns "invalid" for invalidated assets — no other state matters', () => {
+  test('getSignal returns "invalid" for invalidated assets — no other state matters', async () => {
     const { app } = loadApp();
     app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull' } };
     // Even with perfect score and price AT entry, an invalidated setup
@@ -65,7 +65,7 @@ describe('Invalidation: structured kill switch (your ICT rule)', () => {
     assert.equal(app.getSignal(a, LDN), 'invalid');
   });
 
-  test('analyzeAsset shows the kill-switch text on invalidation', () => {
+  test('analyzeAsset shows the kill-switch text on invalidation', async () => {
     const { app } = loadApp();
     const a = makeLong({ price: 94, invalidationPrice: 95 });
     const text = app.analyzeAsset(a, LDN);
@@ -73,7 +73,7 @@ describe('Invalidation: structured kill switch (your ICT rule)', () => {
     assert.match(text, /setup is dead/i);
   });
 
-  test('zero / non-finite invalidationPrice ignored (back-compat)', () => {
+  test('zero / non-finite invalidationPrice ignored (back-compat)', async () => {
     const { app } = loadApp();
     assert.equal(app.isInvalidated(makeLong({ price: 1, invalidationPrice: 0 })), false);
     assert.equal(app.isInvalidated(makeLong({ price: 1, invalidationPrice: NaN })), false);
@@ -84,7 +84,7 @@ describe('Invalidation: structured kill switch (your ICT rule)', () => {
 describe('Alert cooldown: stops oscillation spam at signal boundaries', () => {
   function setup() {
     const ctx = loadApp({ fetch: async () => ({ json: async () => [] }) });
-    ctx.app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull' } };
+    ctx.app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull', ts: Date.now() } };
     Object.assign(ctx.app.ASSETS[0], makeLong({ price: 100.4 })); // watch zone
     ctx.app.ASSETS.length = 1;
     ctx.app.firstSyncDone = true;
@@ -96,62 +96,62 @@ describe('Alert cooldown: stops oscillation spam at signal boundaries', () => {
     return ctx;
   }
 
-  test('WATCH→WAIT→WATCH within cooldown does NOT re-alert', () => {
+  test('WATCH→WAIT→WATCH within cooldown does NOT re-alert', async () => {
     const ctx = setup();
-    ctx.app.checkArmedAlerts(LDN); // fires watch
+    await ctx.app.checkArmedAlerts(LDN); // fires watch
     assert.equal([...ctx.app.alertLog].length, 1);
 
     // Simulate price moving back out then in (the spam case)
     ctx.app.ASSETS[0].price = 100.8; // wait
-    ctx.app.checkArmedAlerts(LDN);   // no alert (de-escalation)
+    await ctx.app.checkArmedAlerts(LDN);   // no alert (de-escalation)
     ctx.app.ASSETS[0].price = 100.4; // back to watch
-    ctx.app.checkArmedAlerts(LDN);   // SHOULD be suppressed by cooldown
+    await ctx.app.checkArmedAlerts(LDN);   // SHOULD be suppressed by cooldown
     assert.equal([...ctx.app.alertLog].length, 1, 'no spam — cooldown holds');
   });
 
-  test('WATCH cooldown expires → can re-alert', () => {
+  test('WATCH cooldown expires → can re-alert', async () => {
     const ctx = setup();
-    ctx.app.checkArmedAlerts(LDN); // fires
+    await ctx.app.checkArmedAlerts(LDN); // fires
     assert.equal([...ctx.app.alertLog].length, 1);
 
     // Force cooldown expiry by backdating the lastAlertMs entry
     ctx.app.lastAlertMs = { BTC: { signal: 'watch', ts: Date.now() - 11 * 60_000 } };
     ctx.app.prevSignalMap = { BTC: 'wait' };
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.equal([...ctx.app.alertLog].length, 2, 'fires again after cooldown');
   });
 
-  test('ENTER has no cooldown — fires every time it escalates', () => {
+  test('ENTER has no cooldown — fires every time it escalates', async () => {
     const ctx = setup();
     Object.assign(ctx.app.ASSETS[0], makeLong({ price: 100.04 })); // ENTER
     ctx.app.lastAlertMs = { BTC: { signal: 'enter', ts: Date.now() - 1000 } }; // 1s ago
     ctx.app.prevSignalMap = { BTC: 'wait' };
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.equal([...ctx.app.alertLog].length, 1, 'ENTER ignores cooldown');
   });
 
-  test('ARMED cooldown is 3 minutes, not 10', () => {
+  test('ARMED cooldown is 3 minutes, not 10', async () => {
     const ctx = setup();
     Object.assign(ctx.app.ASSETS[0], makeLong({ price: 100.10 })); // armed
-    ctx.app.checkArmedAlerts(LDN); // fires armed
+    await ctx.app.checkArmedAlerts(LDN); // fires armed
     assert.equal([...ctx.app.alertLog].length, 1);
 
     // 2 minutes ago — within 3min cooldown → suppressed
     ctx.app.lastAlertMs = { BTC: { signal: 'armed', ts: Date.now() - 2 * 60_000 } };
     ctx.app.prevSignalMap = { BTC: 'wait' };
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.equal([...ctx.app.alertLog].length, 1, '2m later still in cooldown');
 
     // 4 minutes ago — past 3min cooldown → fires
     ctx.app.lastAlertMs = { BTC: { signal: 'armed', ts: Date.now() - 4 * 60_000 } };
     ctx.app.prevSignalMap = { BTC: 'wait' };
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.equal([...ctx.app.alertLog].length, 2, 'fires after 3m');
   });
 });
 
 describe('Funding rate context (ICT contrarian read)', () => {
-  test('extreme positive funding → bearish bias message', () => {
+  test('extreme positive funding → bearish bias message', async () => {
     const { app } = loadApp();
     app.fundingRateMap = { BTC: 0.08 };
     const ctx = app.getFundingContext('BTC');
@@ -160,7 +160,7 @@ describe('Funding rate context (ICT contrarian read)', () => {
     assert.match(ctx.message, /sweep DOWN/);
   });
 
-  test('extreme negative funding → bullish bias message', () => {
+  test('extreme negative funding → bullish bias message', async () => {
     const { app } = loadApp();
     app.fundingRateMap = { BTC: -0.05 };
     const ctx = app.getFundingContext('BTC');
@@ -169,20 +169,20 @@ describe('Funding rate context (ICT contrarian read)', () => {
     assert.match(ctx.message, /sweep UP/);
   });
 
-  test('balanced funding → neutral bias', () => {
+  test('balanced funding → neutral bias', async () => {
     const { app } = loadApp();
     app.fundingRateMap = { BTC: 0.01 };
     const ctx = app.getFundingContext('BTC');
     assert.equal(ctx.bias, 'neutral');
   });
 
-  test('no funding data for symbol → null context', () => {
+  test('no funding data for symbol → null context', async () => {
     const { app } = loadApp();
     app.fundingRateMap = {};
     assert.equal(app.getFundingContext('BTC'), null);
   });
 
-  test('analyzeAsset surfaces funding when bias is non-neutral', () => {
+  test('analyzeAsset surfaces funding when bias is non-neutral', async () => {
     const { app } = loadApp();
     app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull' } };
     app.fundingRateMap = { BTC: -0.05 }; // bullish (shorts crowded)
@@ -193,7 +193,7 @@ describe('Funding rate context (ICT contrarian read)', () => {
     assert.match(text, /Aligns with your long setup/);
   });
 
-  test('analyzeAsset flags conflict when funding bias opposes setup', () => {
+  test('analyzeAsset flags conflict when funding bias opposes setup', async () => {
     const { app } = loadApp();
     app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull' } };
     app.fundingRateMap = { BTC: 0.08 }; // bearish
@@ -202,7 +202,7 @@ describe('Funding rate context (ICT contrarian read)', () => {
     assert.match(text, /Conflicts with your bullish setup/);
   });
 
-  test('analyzeAsset omits the funding line when neutral', () => {
+  test('analyzeAsset omits the funding line when neutral', async () => {
     const { app } = loadApp();
     app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull' } };
     app.fundingRateMap = { BTC: 0.01 }; // neutral

@@ -16,7 +16,7 @@ function makeAsset(o = {}) {
 }
 
 describe('Confidence floor — never negative', () => {
-  test('zero score, mtf misaligned, far from entry, off-session → 0 not negative', () => {
+  test('zero score, mtf misaligned, far from entry, off-session → 0 not negative', async () => {
     const { app } = loadApp();
     app.mtfCache = { BTC: { h1: 'bear', h4: 'bear', d1: 'bear' } }; // mtf score 0 against bull bias → -5
     const a = makeAsset({ price: 110, checks: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] });
@@ -25,7 +25,7 @@ describe('Confidence floor — never negative', () => {
     assert.equal(conf, 0);
   });
 
-  test('still capped at 99 in best-case', () => {
+  test('still capped at 99 in best-case', async () => {
     const { app } = loadApp();
     app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull' } };
     const a = makeAsset({ price: 100.05 });
@@ -35,7 +35,7 @@ describe('Confidence floor — never negative', () => {
 });
 
 describe('R:R warning surfaced in analyzeAsset', () => {
-  test('R:R 1:1 setup → "Sub-2:1 R:R" warning', () => {
+  test('R:R 1:1 setup → "Sub-2:1 R:R" warning', async () => {
     const { app } = loadApp();
     app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull' } };
     // entry 100, sl 99 (1$ risk), tp 101 (1$ reward) → R:R 1:1
@@ -44,7 +44,7 @@ describe('R:R warning surfaced in analyzeAsset', () => {
     assert.match(text, /Sub-2:1 R:R/);
   });
 
-  test('R:R 2.5:1 setup → "below your 1:3" caution', () => {
+  test('R:R 2.5:1 setup → "below your 1:3" caution', async () => {
     const { app } = loadApp();
     app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull' } };
     const a = makeAsset({ entry: 100, sl: 99, tp: 102.5, tp1: 102.5, price: 100.4 });
@@ -52,7 +52,7 @@ describe('R:R warning surfaced in analyzeAsset', () => {
     assert.match(text, /below your 1:3/);
   });
 
-  test('R:R 5:1 setup → no warning', () => {
+  test('R:R 5:1 setup → no warning', async () => {
     const { app } = loadApp();
     app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull' } };
     const a = makeAsset({ entry: 100, sl: 99, tp: 105, tp1: 105, price: 100.4 });
@@ -74,29 +74,29 @@ describe('Stale-data guard suppresses alerts', () => {
     return ctx;
   }
 
-  test('with consecutiveSyncFails ≥ 2 → no alerts fire', () => {
+  test('with consecutiveSyncFails ≥ 2 → no alerts fire', async () => {
     const ctx = setup();
     ctx.app.consecutiveSyncFails = 2; // simulate 2 failed syncs
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.equal([...ctx.app.alertLog].length, 0, 'stale data must not trigger alerts');
   });
 
-  test('with consecutiveSyncFails = 0 → alerts fire normally', () => {
+  test('with consecutiveSyncFails = 0 → alerts fire normally', async () => {
     const ctx = setup();
     ctx.app.consecutiveSyncFails = 0;
-    ctx.app.checkArmedAlerts(LDN);
+    await ctx.app.checkArmedAlerts(LDN);
     assert.ok([...ctx.app.alertLog].length >= 1, 'fresh data should fire normally');
   });
 });
 
 describe('CHECK_LABELS resolved (no longer a todo)', () => {
-  test('CHECK_LABELS length is 10, every label has a slot in checks', () => {
+  test('CHECK_LABELS length is 10, every label has a slot in checks', async () => {
     const { app } = loadApp();
     assert.equal(app.CHECK_LABELS.length, 10);
     assert.equal([...app.ASSETS][0].checks.length, 10);
   });
 
-  test('"Premium/Discount" is gone (intentionally — assets do not track it)', () => {
+  test('"Premium/Discount" is gone (intentionally — assets do not track it)', async () => {
     const { app } = loadApp();
     assert.ok(![...app.CHECK_LABELS].includes('Premium/Discount'));
   });

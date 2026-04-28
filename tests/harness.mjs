@@ -16,9 +16,10 @@ const EXPORTS = [
   // journal pipeline
   'loadJournal', 'saveJournal', 'logCall', 'scheduleOutcomeChecks',
   'fetchOutcomeAtTime', 'checkPendingOutcomes', 'setManualOutcome',
-  // alerts + news + funding + invalidation
+  // alerts + news + funding + invalidation + macro
   'checkArmedAlerts', 'tagHeadline', 'getNewsContext',
   'getFundingContext', 'isInvalidated',
+  'getMacroBlackout', 'ECON_EVENTS', 'isMTFStale',
 ];
 
 function extractScript(html) {
