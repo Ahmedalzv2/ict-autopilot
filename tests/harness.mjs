@@ -37,6 +37,9 @@ const EXPORTS = [
   'GUARDRAIL_STATE_KEY', 'GUARDRAIL_STATE_VERSION', 'GUARDRAIL_MAX_AGE_MS',
   // EOD recap
   'summarizeDay', 'maybeRenderEodRecap', 'renderEodRecapModal', 'EOD_LAST_KEY',
+  // sentiment
+  'scoreHeadlineSentiment', 'aggregateAssetSentiment', 'getSentimentContext',
+  'BULLISH_KEYWORDS', 'BEARISH_KEYWORDS', 'SENTIMENT_DECAY_MS',
 ];
 
 function extractScript(html) {
@@ -190,6 +193,8 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   set sessionTradeCounts(v) { sessionTradeCounts = v; },
   get chochCache() { return typeof chochCache === 'undefined' ? undefined : chochCache; },
   set chochCache(v) { chochCache = v; },
+  get sentimentEnabled() { return typeof sentimentEnabled === 'undefined' ? undefined : sentimentEnabled; },
+  set sentimentEnabled(v) { sentimentEnabled = v; },
 });
 `;
 
