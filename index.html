@@ -1748,6 +1748,26 @@
       session ? `Now active: ${session.name}` : 'Waiting for next session';
 
     renderSessionTimeline(gst, session);
+
+    // Record signal-state changes once per second for the sparkline. This
+    // runs whether or not the WebSocket is connected, so history accrues
+    // even on the polling fallback. Only TRANSITIONS are stored.
+    try {
+      if (typeof signalHistory !== 'undefined' && typeof getSignal === 'function') {
+        const now = Date.now();
+        let dirty = false;
+        for (const a of ASSETS) {
+          const s = getSignal(a, gst);
+          const arr = signalHistory[a.symbol] || [];
+          const last = arr[arr.length - 1];
+          if (!last || last.signal !== s) {
+            signalHistory = recordSignalState(signalHistory, a.symbol, s, now);
+            dirty = true;
+          }
+        }
+        if (dirty) saveSignalHistory();
+      }
+    } catch(e) {}
   }
 
   function renderSessionTimeline(gst, currentSession) {
@@ -1894,6 +1914,10 @@
           <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:10px;color:${mtfColor};display:flex;gap:6px;justify-content:center;">
             <span>MTF:</span> <span>${mtfH1}1H</span> <span>${mtfH4}4H</span> <span>${mtfD1}D</span>
           </div>
+          <div style="margin-top:6px;font-size:9px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;display:flex;justify-content:space-between;">
+            <span>24h</span><span>now</span>
+          </div>
+          ${renderSparkline(a.symbol, Date.now())}
         </div>
       `;
     }).join('');
@@ -2451,13 +2475,39 @@
   }
 
   // ═══════════════════════════════════════
-  // BINANCE SYNC (auto every 30s)
+  // BINANCE SYNC (live WebSocket stream + 30s polling fallback)
   // ═══════════════════════════════════════
   let lastSyncTime = null;
   let consecutiveSyncFails = 0;
   let lastSuccessfulSyncMs = 0;
   const BINANCE_SYMBOLS = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','SUIUSDT','ASTERUSDT'];
   const BINANCE_HOSTS = ['api.binance.com','data-api.binance.vision'];
+  const BINANCE_WS_URL = 'wss://stream.binance.com:9443/stream';
+
+  // Live-stream state. WebSocket gives ~1Hz price ticks (miniTicker), much
+  // tighter than the 30s poll. We batch UI updates to ~1Hz to avoid DOM
+  // thrash but signal evaluation runs on every tick (cheap, pure logic).
+  let priceWs = null;
+  let priceWsReconnectMs = 1000;
+  const PRICE_WS_MAX_RECONNECT_MS = 30_000;
+  let pendingTickRender = null;
+  let wakeLock = null;
+
+  // Pure helper: given a Binance combined-stream JSON envelope, return
+  // { symbol, price, change24h } if the message is a ticker update we care
+  // about, else null. Extracted for direct unit testing.
+  function parseTickerMessage(raw) {
+    let msg;
+    try { msg = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch(e) { return null; }
+    const data = msg && (msg.data || msg);
+    if (!data || !data.s) return null;
+    const symbol = String(data.s).replace('USDT', '');
+    const price = parseFloat(data.c);
+    const open = parseFloat(data.o);
+    if (!Number.isFinite(price)) return null;
+    const change24h = Number.isFinite(open) && open !== 0 ? ((price - open) / open) * 100 : 0;
+    return { symbol, price, change24h };
+  }
 
   async function fetchTicker(sym, host) {
     const ctrl = new AbortController();
@@ -2587,6 +2637,91 @@
     if (APPS_SCRIPT_URL) pushToSheet();
   }
 
+  // ═══════════════════════════════════════════════════════
+  // LIVE PRICE STREAM (Binance miniTicker WebSocket)
+  // — Polling stays as fallback; this gives sub-second granularity
+  //   so ENTER NOW fires the moment price crosses entry.
+  // ═══════════════════════════════════════════════════════
+  function connectPriceStream() {
+    if (typeof WebSocket === 'undefined') return; // unsupported env
+    if (priceWs && (priceWs.readyState === 0 || priceWs.readyState === 1)) return; // already connecting/open
+    const streams = BINANCE_SYMBOLS.map(s => s.toLowerCase() + '@miniTicker').join('/');
+    const url = `${BINANCE_WS_URL}?streams=${streams}`;
+    try { priceWs = new WebSocket(url); }
+    catch(e) { scheduleStreamReconnect(); return; }
+
+    priceWs.onopen = () => {
+      priceWsReconnectMs = 1000; // reset backoff
+      consecutiveSyncFails = 0;
+      lastSuccessfulSyncMs = Date.now();
+    };
+    priceWs.onmessage = (ev) => {
+      const upd = parseTickerMessage(ev.data);
+      if (!upd) return;
+      const a = ASSETS.find(x => x.symbol === upd.symbol);
+      if (!a) return;
+      a.price = upd.price;
+      a.change24h = upd.change24h;
+      lastSuccessfulSyncMs = Date.now();
+      consecutiveSyncFails = 0;
+      scheduleLiveTickRender();
+    };
+    priceWs.onclose = () => { scheduleStreamReconnect(); };
+    priceWs.onerror = () => { /* let onclose drive reconnect */ };
+  }
+
+  function scheduleStreamReconnect() {
+    setTimeout(connectPriceStream, priceWsReconnectMs);
+    priceWsReconnectMs = Math.min(priceWsReconnectMs * 2, PRICE_WS_MAX_RECONNECT_MS);
+  }
+
+  // Coalesce live ticks into ~1Hz UI updates. Signal evaluation still runs
+  // through the normal path (renderSignals + checkArmedAlerts) and benefits
+  // from the live prices.
+  function scheduleLiveTickRender() {
+    if (pendingTickRender) return;
+    pendingTickRender = setTimeout(() => {
+      pendingTickRender = null;
+      const gst = getGST();
+      try { renderSignals(); } catch(e) {}
+      try { renderAssets(); } catch(e) {}
+      try { renderMarketRead(); } catch(e) {}
+      Promise.resolve().then(() => checkArmedAlerts(gst)).catch(() => {});
+      try { renderAnalysis(); } catch(e) {}
+      // Feed sparkline state on every coalesced tick.
+      try {
+        const now = Date.now();
+        for (const a of ASSETS) {
+          signalHistory = recordSignalState(signalHistory, a.symbol, getSignal(a, gst), now);
+        }
+        saveSignalHistory();
+      } catch(e) {}
+      // Update barSyncTime to reflect live-tick freshness.
+      const el = document.getElementById('barSyncTime');
+      if (el) el.textContent = `LIVE ${fmtTime(gst, true)}`;
+    }, 1000);
+  }
+
+  // Keep the tab alive so alarms still fire when minimized. Wake Lock API
+  // is the right primitive on modern Chrome; falls back silently elsewhere.
+  async function acquireWakeLock() {
+    try {
+      if (navigator.wakeLock && typeof navigator.wakeLock.request === 'function') {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener?.('release', () => { wakeLock = null; });
+      }
+    } catch(e) { /* user denied or unsupported — fine */ }
+  }
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        if (!wakeLock) acquireWakeLock();
+        // Reconnect WebSocket eagerly when tab returns to foreground.
+        if (!priceWs || priceWs.readyState >= 2) connectPriceStream();
+      }
+    });
+  }
+
   function pasteCSV() {
     const csv = prompt('CSV format:\nAsset,Price\nBTC,77670');
     if (csv) {
@@ -2612,6 +2747,61 @@
   let assetNewsMap = {};    // { SYMBOL: [{title, url, time, source}] }
   let lastAlertMs = {};     // { SYMBOL: { signal: 'watch'|'armed'|'enter', ts: ms } }
   let fundingRateMap = {};  // { SYMBOL: rateAsPercent }  populated by fetchFundingRates
+
+  // Per-asset signal history — only state TRANSITIONS are recorded, keyed by
+  // symbol. Each entry: { ts, signal }. Last 24h kept; persisted to
+  // localStorage so reloads don't lose visible history.
+  let signalHistory = {};
+  const SIGNAL_HISTORY_MS = 24 * 60 * 60_000;
+
+  // Pure helper: append a new signal observation IF it differs from the most
+  // recent one for that symbol; otherwise return the history unchanged.
+  // Prunes anything older than 24h. Tested directly.
+  function recordSignalState(history, symbol, signal, now) {
+    const next = { ...history };
+    const arr = (next[symbol] || []).filter(x => now - x.ts < SIGNAL_HISTORY_MS);
+    const last = arr[arr.length - 1];
+    if (!last || last.signal !== signal) arr.push({ ts: now, signal });
+    next[symbol] = arr;
+    return next;
+  }
+
+  function loadSignalHistory() {
+    try { signalHistory = JSON.parse(localStorage.getItem('ict_signal_history') || '{}'); }
+    catch(e) { signalHistory = {}; }
+  }
+  function saveSignalHistory() {
+    try { localStorage.setItem('ict_signal_history', JSON.stringify(signalHistory)); } catch(e) {}
+  }
+
+  // Render last 24h of signal-state segments as a horizontal stripe.
+  // Each segment is colored by signal state and proportionally sized to
+  // its duration. Pure-ish — returns SVG string for a given history.
+  const SIG_COLOR = {
+    enter:    '#e05d5d',
+    armed:    '#5cb88a',
+    watch:    '#f2b33d',
+    skip:     '#65656d',
+    blackout: '#b07cc9',
+    invalid:  '#a04040',
+    wait:     '#33333a',
+  };
+  function renderSparkline(symbol, now) {
+    const arr = (signalHistory[symbol] || []).filter(x => now - x.ts < SIGNAL_HISTORY_MS);
+    if (arr.length === 0) return '<div style="height:8px;"></div>';
+    const start = now - SIGNAL_HISTORY_MS;
+    const span = SIGNAL_HISTORY_MS;
+    let segs = '';
+    for (let i = 0; i < arr.length; i++) {
+      const segStart = Math.max(arr[i].ts, start);
+      const segEnd = i + 1 < arr.length ? arr[i + 1].ts : now;
+      const x = ((segStart - start) / span) * 100;
+      const w = Math.max(0.5, ((segEnd - segStart) / span) * 100);
+      const color = SIG_COLOR[arr[i].signal] || SIG_COLOR.wait;
+      segs += `<rect x="${x.toFixed(2)}%" y="0" width="${w.toFixed(2)}%" height="8" fill="${color}"/>`;
+    }
+    return `<svg viewBox="0 0 100 8" preserveAspectRatio="none" style="width:100%;height:8px;display:block;border-radius:2px;background:var(--bg-surface);">${segs}</svg>`;
+  }
 
   // ALERT_COOLDOWN_MS by signal tier — protects against oscillation spam at
   // signal boundaries. ENTER has zero cooldown because that's your trade
@@ -4207,6 +4397,7 @@
     _try('loadLevels', loadLevels);
     _try('loadTradeModes', loadTradeModes);
     _try('loadJournal', loadJournal);
+    _try('loadSignalHistory', loadSignalHistory);
     _try('checkPendingOutcomes', checkPendingOutcomes);
     _try('renderAssets', renderAssets);
     _try('renderMethods', renderMethods);
@@ -4221,6 +4412,9 @@
     _try('initNotifications', initNotifications);
     syncBinance(true);
     setInterval(()=>syncBinance(true), 30000);
+    // Live WebSocket stream — gives sub-second price updates between polls.
+    _try('connectPriceStream', connectPriceStream);
+    _try('acquireWakeLock', acquireWakeLock);
     fetchFearGreed();
     fetchFundingRates();
     fetchNews();

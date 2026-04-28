@@ -20,6 +20,9 @@ const EXPORTS = [
   'checkArmedAlerts', 'tagHeadline', 'getNewsContext',
   'getFundingContext', 'isInvalidated',
   'getMacroBlackout', 'ECON_EVENTS', 'isMTFStale',
+  // live stream + sparkline
+  'parseTickerMessage', 'recordSignalState', 'renderSparkline',
+  'SIGNAL_HISTORY_MS', 'BINANCE_WS_URL',
 ];
 
 function extractScript(html) {
@@ -165,6 +168,8 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   set lastAlertMs(v) { lastAlertMs = v; },
   get fundingRateMap() { return typeof fundingRateMap === 'undefined' ? undefined : fundingRateMap; },
   set fundingRateMap(v) { fundingRateMap = v; },
+  get signalHistory() { return typeof signalHistory === 'undefined' ? undefined : signalHistory; },
+  set signalHistory(v) { signalHistory = v; },
 });
 `;
 
