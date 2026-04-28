@@ -1748,6 +1748,7 @@
       session ? `Now active: ${session.name}` : 'Waiting for next session';
 
     renderSessionTimeline(gst, session);
+    try { refreshDailyPnlPill(gst); } catch(e) {}
 
     // Record signal-state changes once per second for the sparkline. This
     // runs whether or not the WebSocket is connected, so history accrues
@@ -2808,6 +2809,68 @@
   // signal — when price crosses entry, you must hear about it every time.
   const ALERT_COOLDOWN_MS = { watch: 10 * 60_000, armed: 3 * 60_000, enter: 0 };
 
+  // ─────────────────────────────────────────
+  // Hard guardrails (STRATEGY.md §8 — circuit breakers, not advisory)
+  // ─────────────────────────────────────────
+  const DAILY_LOSS_LIMIT_R = -3;          // stop firing alerts when today ≤ this
+  const MAX_TRADES_PER_SESSION = 3;       // per Kill Zone / Macro window
+  const REVENGE_COOLDOWN_MS = 30 * 60_000; // suppress new entries on a symbol
+                                           // for this long after a LOSS
+  let lastLossMs = {};                    // { SYMBOL: timestamp of resolved loss }
+  let sessionTradeCounts = {};            // { sessionName: count, _key: 'YYYY-MM-DD|name' }
+
+  // GST date key for journaling — keep it stable across the day so we
+  // aggregate correctly through the trading session.
+  function gstDateKey(date) {
+    const d = date instanceof Date ? date : new Date(date ?? Date.now());
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+
+  // Pure: nominal R from a resolved journal entry. Win = (tp-entry)/(entry-sl)
+  // for long, mirrored for short. Loss = -1. BE = 0.
+  function nominalR(entry) {
+    if (!entry || !entry.outcome) return 0;
+    const tp = entry.tp || entry.tp1 || 0;
+    const e = entry.entry, s = entry.sl;
+    if (!e || !s || !tp) return 0;
+    if (entry.outcome === 'be') return 0;
+    if (entry.outcome === 'loss') return -1;
+    // win
+    const isBull = (entry.bias || '').toString().toLowerCase().includes('bull');
+    const reward = isBull ? (tp - e) : (e - tp);
+    const risk = isBull ? (e - s) : (s - e);
+    return risk > 0 ? reward / risk : 0;
+  }
+
+  // Pure: today's realized R based on resolved journal entries.
+  function getDailyR(journalEntries, todayKey) {
+    return journalEntries
+      .filter(j => j.date === todayKey || gstDateKey(j.timestamp) === todayKey)
+      .filter(j => j.outcome === 'win' || j.outcome === 'loss' || j.outcome === 'be')
+      .reduce((sum, j) => sum + (Number.isFinite(j.rMultiple) ? j.rMultiple : nominalR(j)), 0);
+  }
+
+  // Pure: how many ENTER/ARMED alerts have fired in the current session
+  // today. Resets implicitly when session changes (the key includes session).
+  function getSessionTradeCount(counts, todayKey, sessionName) {
+    if (!sessionName) return 0;
+    const key = `${todayKey}|${sessionName}`;
+    return counts[key] || 0;
+  }
+
+  function bumpSessionTradeCount(counts, todayKey, sessionName) {
+    if (!sessionName) return counts;
+    const key = `${todayKey}|${sessionName}`;
+    return { ...counts, [key]: (counts[key] || 0) + 1 };
+  }
+
+  // Pure: is `symbol` within revenge cooldown after a recent LOSS?
+  function isInRevengeCooldown(lastLossMap, symbol, now) {
+    const ts = lastLossMap[symbol];
+    if (!ts) return false;
+    return (now - ts) < REVENGE_COOLDOWN_MS;
+  }
+
   // Staleness threshold for MTF cache. If MTF is older than this when an
   // alert is about to escalate to armed/enter, force a refetch first so the
   // alarm fires only against currently-aligned timeframes, not 4-min-old data.
@@ -2949,6 +3012,20 @@
     // Stale-data guard: never fire alerts when prices are not trustworthy.
     // Two consecutive sync failures is enough to assume bad data.
     if (typeof consecutiveSyncFails === 'number' && consecutiveSyncFails >= 2) return;
+
+    // Daily loss limit guard: STRATEGY.md §8 — circuit breaker, no override.
+    const todayKey = gstDateKey(gst);
+    const dailyR = getDailyR(journal, todayKey);
+    if (dailyR <= DAILY_LOSS_LIMIT_R) {
+      // Still update prevSignalMap so we don't spam-fire the moment the
+      // next session opens after midnight.
+      for (const a of ASSETS) prevSignalMap[a.symbol] = getSignal(a, gst);
+      return;
+    }
+
+    const session = getCurrentSession(gst);
+    const sessionName = session ? session.name : null;
+
     for (const asset of ASSETS) {
       let sig = getSignal(asset, gst);
       const prev = prevSignalMap[asset.symbol] || 'wait';
@@ -2983,8 +3060,23 @@
       const last = lastAlertMs[asset.symbol];
       const inCooldown = last && last.signal === sig && (Date.now() - last.ts) < cooldownMs;
 
-      if (escalated && !inCooldown) {
+      // Revenge cooldown: after a LOSS on this symbol, suppress new ENTER/
+      // ARMED escalations for 30 min. Lets the trader cool off before
+      // jumping back in on the same setup.
+      const inRevenge = (sig === 'enter' || sig === 'armed') &&
+                        isInRevengeCooldown(lastLossMs, asset.symbol, Date.now());
+
+      // Per-session trade limit: MAX_TRADES_PER_SESSION (3). Counted
+      // against ENTER/ARMED only — WATCH alerts don't burn quota.
+      const sessionFull = (sig === 'enter' || sig === 'armed') &&
+                          sessionName &&
+                          getSessionTradeCount(sessionTradeCounts, todayKey, sessionName) >= MAX_TRADES_PER_SESSION;
+
+      if (escalated && !inCooldown && !inRevenge && !sessionFull) {
         lastAlertMs[asset.symbol] = { signal: sig, ts: Date.now() };
+        if ((sig === 'enter' || sig === 'armed') && sessionName) {
+          sessionTradeCounts = bumpSessionTradeCount(sessionTradeCounts, todayKey, sessionName);
+        }
         const analysis = analyzeAsset(asset, gst);
         const pct = Math.abs((asset.price - asset.entry) / asset.entry * 100).toFixed(2);
         const timeStr = `${fmtTime(gst)} GST`;
@@ -3690,6 +3782,10 @@
         je.outcomeChecks[String(mins)] = lastClose;
         if (resolved && !je.outcome) je.outcome = resolved;
         else if (mins === 480 && !je.outcome) je.outcome = 'be';
+        if (je.outcome) {
+          je.rMultiple = nominalR(je);
+          if (je.outcome === 'loss') lastLossMs[je.symbol] = Date.now();
+        }
         saveJournal();
         renderJournal();
       }
@@ -3720,6 +3816,8 @@
     const je = journal.find(e => e.id === entryId);
     if (!je) return;
     je.outcome = outcome;
+    je.rMultiple = nominalR(je);
+    if (outcome === 'loss') lastLossMs[je.symbol] = Date.now();
     saveJournal();
     renderJournal();
     showToast(`${je.symbol} marked as ${outcome.toUpperCase()}`, outcome === 'win' ? 'ok' : outcome === 'loss' ? 'err' : 'info');
@@ -4321,6 +4419,35 @@
     }
   }
 
+  // Mounts a small "Today: ±NR" pill in the autopilot top bar. Updated by
+  // tick() so it always reflects fresh journal state. Appended via JS so
+  // we don't disturb the existing markup.
+  function mountDailyPnlPill() {
+    if (typeof document === 'undefined' || document.getElementById('dailyPnlPill')) return;
+    const bar = document.querySelector('.autopilot-bar');
+    if (!bar) return;
+    const seg = document.createElement('div');
+    seg.className = 'ap-segment';
+    seg.id = 'dailyPnlPill';
+    seg.innerHTML = `<span class="ap-label">Today</span><span class="ap-value" id="dailyPnlVal">—</span>`;
+    bar.appendChild(seg);
+  }
+
+  function refreshDailyPnlPill(gst) {
+    const el = document.getElementById('dailyPnlVal');
+    if (!el) return;
+    const todayKey = gstDateKey(gst || getGST());
+    const r = getDailyR(journal, todayKey);
+    const ses = getCurrentSession(gst || getGST());
+    const sesName = ses ? ses.name : null;
+    const usedThisSession = sesName ? getSessionTradeCount(sessionTradeCounts, todayKey, sesName) : 0;
+    const limitHit = r <= DAILY_LOSS_LIMIT_R;
+    const sign = r >= 0 ? '+' : '';
+    const sessionTag = sesName ? ` · ${usedThisSession}/${MAX_TRADES_PER_SESSION}` : '';
+    el.textContent = limitHit ? `🛑 ${sign}${r.toFixed(2)}R · LIMIT` : `${sign}${r.toFixed(2)}R${sessionTag}`;
+    el.style.color = limitHit ? 'var(--bear)' : r > 0 ? 'var(--bull)' : r < 0 ? 'var(--liq)' : 'var(--gold)';
+  }
+
   // Floating launcher button — appended to body at init time so we don't
   // need to touch the existing layout markup.
   function mountBacktestLauncher() {
@@ -4775,6 +4902,7 @@
     _try('connectPriceStream', connectPriceStream);
     _try('acquireWakeLock', acquireWakeLock);
     _try('mountBacktestLauncher', mountBacktestLauncher);
+    _try('mountDailyPnlPill', mountDailyPnlPill);
     fetchFearGreed();
     fetchFundingRates();
     fetchNews();

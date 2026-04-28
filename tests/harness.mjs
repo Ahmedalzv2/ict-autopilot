@@ -25,6 +25,10 @@ const EXPORTS = [
   'SIGNAL_HISTORY_MS', 'BINANCE_WS_URL',
   'simulateTradeOutcome', 'reconstructMTFAt', 'runBacktestSync',
   'summarizeBacktest', 'runBacktest', 'runBacktestAll',
+  // hard guardrails
+  'gstDateKey', 'nominalR', 'getDailyR', 'getSessionTradeCount',
+  'bumpSessionTradeCount', 'isInRevengeCooldown',
+  'DAILY_LOSS_LIMIT_R', 'MAX_TRADES_PER_SESSION', 'REVENGE_COOLDOWN_MS',
 ];
 
 function extractScript(html) {
@@ -172,6 +176,10 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   set fundingRateMap(v) { fundingRateMap = v; },
   get signalHistory() { return typeof signalHistory === 'undefined' ? undefined : signalHistory; },
   set signalHistory(v) { signalHistory = v; },
+  get lastLossMs() { return typeof lastLossMs === 'undefined' ? undefined : lastLossMs; },
+  set lastLossMs(v) { lastLossMs = v; },
+  get sessionTradeCounts() { return typeof sessionTradeCounts === 'undefined' ? undefined : sessionTradeCounts; },
+  set sessionTradeCounts(v) { sessionTradeCounts = v; },
 });
 `;
 
