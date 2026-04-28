@@ -24,7 +24,7 @@ const EXPORTS = [
   'parseTickerMessage', 'recordSignalState', 'renderSparkline',
   'SIGNAL_HISTORY_MS', 'BINANCE_WS_URL',
   'simulateTradeOutcome', 'reconstructMTFAt', 'runBacktestSync',
-  'summarizeBacktest', 'runBacktest',
+  'summarizeBacktest', 'runBacktest', 'runBacktestAll',
 ];
 
 function extractScript(html) {

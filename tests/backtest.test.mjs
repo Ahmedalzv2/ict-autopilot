@@ -218,3 +218,97 @@ describe('runBacktest async wrapper (mocked Binance)', () => {
     await assert.rejects(() => app.runBacktest({ symbol: 'NONEXISTENT' }), /Unknown asset/);
   });
 });
+
+describe('runBacktestAll — multi-asset aggregation', () => {
+  test('runs every Binance-listed asset and aggregates trades + per-asset stats', async () => {
+    const klineByInterval = {
+      '1m': [k(Date.now() - 60_000, 100, 100.5, 99.5, 100, Date.now())],
+      '1h': [k(Date.now() - 3600_000, 99, 101, 99, 100, Date.now())],
+      '4h': [k(Date.now() - 4*3600_000, 99, 101, 99, 100, Date.now())],
+      '1d': [k(Date.now() - 86_400_000, 99, 101, 99, 100, Date.now())],
+    };
+    const ctx = loadApp({
+      fetch: async (url) => {
+        const interval = (String(url).match(/interval=(\w+)/) || [])[1];
+        return { ok: true, json: async () => klineByInterval[interval] || [] };
+      },
+    });
+    const out = await ctx.app.runBacktestAll({ hours: 1 });
+    // Every asset that's NOT in NON_BINANCE_ASSETS should appear.
+    const expected = [...ctx.app.ASSETS]
+      .filter(a => ![...ctx.app.NON_BINANCE_ASSETS].includes(a.symbol))
+      .map(a => a.symbol).sort();
+    const got = [...out.perAsset].map(r => r.symbol).sort();
+    assert.deepEqual(got, expected);
+    assert.ok(out.overall, 'aggregate stats present');
+    assert.equal(typeof out.overall.winRate, 'number');
+  });
+
+  test('one symbol failing does not abort the rest (per-asset error captured)', async () => {
+    let call = 0;
+    const ctx = loadApp({
+      fetch: async (url) => {
+        call++;
+        // Fail every fetch for the first symbol to force runBacktest to throw
+        // for that symbol; subsequent symbols still run normally.
+        if (String(url).includes('BTCUSDT')) throw new Error('binance hates us');
+        return { ok: true, json: async () => [k(Date.now() - 60_000, 100, 100.5, 99.5, 100, Date.now())] };
+      },
+    });
+    const out = await ctx.app.runBacktestAll({ hours: 1 });
+    const btcRow = [...out.perAsset].find(r => r.symbol === 'BTC');
+    assert.ok(btcRow.error, 'BTC failure should be captured per-row');
+    // Non-failing rows should have stats objects
+    const others = [...out.perAsset].filter(r => r.symbol !== 'BTC' && !r.error);
+    assert.ok(others.length > 0, 'other assets succeed');
+  });
+});
+
+describe('Confidence MTF tiers (2/3 and 1/3 now contribute)', () => {
+  function makeAsset(o = {}) {
+    return {
+      symbol: 'BTC', bias: 'BULLISH',
+      entry: 100, sl: 99, tp: 105, tp1: 105, grade: 'a',
+      price: 100, change24h: 0,
+      checks: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], reason: '',
+      ...o,
+    };
+  }
+
+  // Off-session GST hour (no session) so sessComp = 0.
+  // Use a Date with .getHours() = 11 (off-session: between London KZ close
+  // at 10:00 and NY AM open at 13:00).
+  const OFF = new Date(2024, 5, 15, 11, 30, 0);
+
+  test('MTF 3/3 → +5 (unchanged)', () => {
+    const { app } = loadApp();
+    app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bull', ts: Date.now() } };
+    const conf = app.getConfidencePct(makeAsset({ price: 100 }), OFF);
+    // score 0, prox 25, sess 0, mtf +5 → 30
+    assert.equal(conf, 30);
+  });
+
+  test('MTF 2/3 → +3 (newly credited — was 0)', () => {
+    const { app } = loadApp();
+    app.mtfCache = { BTC: { h1: 'bull', h4: 'bull', d1: 'bear', ts: Date.now() } };
+    const conf = app.getConfidencePct(makeAsset({ price: 100 }), OFF);
+    // score 0, prox 25, sess 0, mtf +3 → 28
+    assert.equal(conf, 28);
+  });
+
+  test('MTF 1/3 → -2 (newly penalised — was 0)', () => {
+    const { app } = loadApp();
+    app.mtfCache = { BTC: { h1: 'bull', h4: 'bear', d1: 'bear', ts: Date.now() } };
+    const conf = app.getConfidencePct(makeAsset({ price: 100 }), OFF);
+    // score 0, prox 25, sess 0, mtf -2 → 23
+    assert.equal(conf, 23);
+  });
+
+  test('MTF 0/3 → -5 (unchanged)', () => {
+    const { app } = loadApp();
+    app.mtfCache = { BTC: { h1: 'bear', h4: 'bear', d1: 'bear', ts: Date.now() } };
+    const conf = app.getConfidencePct(makeAsset({ price: 100 }), OFF);
+    // score 0, prox 25, sess 0, mtf -5 → 20
+    assert.equal(conf, 20);
+  });
+});

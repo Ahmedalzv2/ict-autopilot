@@ -3099,9 +3099,14 @@
     const choch = getCHoCHStatus ? getCHoCHStatus(asset) : null;
     if (choch && choch.detected) scoreComp += 5;
     
-    // Add MTF alignment bonus
+    // MTF alignment grading. 2/3 is the gate to ARM in getSignal, so it
+    // deserves credit too — previously only 3/3 got the bonus and 2/3 got
+    // nothing despite being good enough to fire alerts. Score 1 = mostly
+    // misaligned, slight penalty.
     const mtf = getMTFAligned(asset);
-    if (mtf.score === 3) scoreComp += 5;
+    if (mtf.score === 3)      scoreComp += 5;
+    else if (mtf.score === 2) scoreComp += 3;
+    else if (mtf.score === 1) scoreComp -= 2;
     else if (mtf.score === 0) scoreComp -= 5;
     
     // Proximity tiers aligned with getSignal's ladder so confidence tracks
@@ -4139,32 +4144,158 @@
     return { symbol, hours, trades, stats };
   }
 
-  // Convenience: run backtest, render a toast + console table.
+  // Run every Binance-listed asset in parallel and aggregate results.
+  async function runBacktestAll({ hours = 24 } = {}) {
+    const symbols = ASSETS
+      .filter(a => !NON_BINANCE_ASSETS.includes(a.symbol))
+      .map(a => a.symbol);
+    const results = await Promise.allSettled(
+      symbols.map(s => runBacktest({ symbol: s, hours }))
+    );
+    const perAsset = [];
+    const allTrades = [];
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.status === 'fulfilled') {
+        perAsset.push({ symbol: symbols[i], ...r.value.stats, error: null });
+        for (const t of r.value.trades) allTrades.push(t);
+      } else {
+        perAsset.push({ symbol: symbols[i], total: 0, wins: 0, losses: 0, breakEvens: 0, winRate: 0, totalR: 0, avgR: 0, error: r.reason?.message || 'failed' });
+      }
+    }
+    const overall = summarizeBacktest(allTrades);
+    return { hours, perAsset, overall, trades: allTrades };
+  }
+
+  function renderBacktestModal(payload, label) {
+    const existing = document.getElementById('backtestModal');
+    if (existing) existing.remove();
+
+    const fmtPct = (n) => `${(n * 100).toFixed(1)}%`;
+    const fmtR = (n) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}R`;
+    const winColor = (rate) => rate >= 0.55 ? 'var(--bull)' : rate >= 0.4 ? 'var(--liq)' : 'var(--bear)';
+    const rColor = (r) => r > 0 ? 'var(--bull)' : r < 0 ? 'var(--bear)' : 'var(--text-mute)';
+
+    const rows = (payload.perAsset || [{ symbol: payload.symbol, ...payload.stats }]).map(row => {
+      if (row.error) {
+        return `<tr><td>${row.symbol}</td><td colspan="5" style="color:var(--bear);font-style:italic;">${row.error}</td></tr>`;
+      }
+      return `<tr>
+        <td style="font-weight:600;">${row.symbol}</td>
+        <td>${row.total}</td>
+        <td>${row.wins}</td>
+        <td>${row.losses}</td>
+        <td style="color:${winColor(row.winRate)};font-weight:600;">${fmtPct(row.winRate)}</td>
+        <td style="color:${rColor(row.totalR)};font-weight:600;">${fmtR(row.totalR)}</td>
+      </tr>`;
+    }).join('');
+
+    const overall = payload.overall || payload.stats;
+    const overallRow = overall ? `<tr style="border-top:2px solid var(--gold);font-weight:700;">
+      <td>TOTAL</td>
+      <td>${overall.total}</td>
+      <td>${overall.wins}</td>
+      <td>${overall.losses}</td>
+      <td style="color:${winColor(overall.winRate)};">${fmtPct(overall.winRate)}</td>
+      <td style="color:${rColor(overall.totalR)};">${fmtR(overall.totalR)}</td>
+    </tr>` : '';
+
+    const overlay = document.createElement('div');
+    overlay.id = 'backtestModal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(8,8,10,0.92);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);padding:20px;';
+    overlay.innerHTML = `
+      <div style="background:var(--bg-elevated);border:1px solid var(--gold);border-radius:14px;padding:24px 28px;max-width:720px;width:100%;max-height:88vh;overflow:auto;box-shadow:0 24px 64px rgba(0,0,0,0.7);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <div>
+            <div style="font-family:'Instrument Serif',serif;font-size:22px;color:var(--gold);">🧪 Backtest · ${label}</div>
+            <div style="font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin-top:2px;">Replay through your live getSignal ladder · ${payload.hours}h window</div>
+          </div>
+          <button onclick="document.getElementById('backtestModal')?.remove();" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:6px 12px;border-radius:6px;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:12px;">✕ Close</button>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:12px;">
+          <thead>
+            <tr style="color:var(--text-mute);text-align:left;border-bottom:1px solid var(--border);">
+              <th style="padding:8px 6px;">Symbol</th>
+              <th style="padding:8px 6px;">Trades</th>
+              <th style="padding:8px 6px;">W</th>
+              <th style="padding:8px 6px;">L</th>
+              <th style="padding:8px 6px;">Win-rate</th>
+              <th style="padding:8px 6px;">Total R</th>
+            </tr>
+          </thead>
+          <tbody style="font-family:'JetBrains Mono',monospace;">${rows}${overallRow}</tbody>
+        </table>
+        <div style="margin-top:14px;padding:10px 12px;background:var(--bg-surface);border-radius:8px;font-size:11px;color:var(--text-dim);line-height:1.6;">
+          <strong style="color:var(--text);">How to read this:</strong> each row replays one symbol's last ${payload.hours}h of 1m candles through getSignal (with reconstructed MTF, invalidation, blackout, cooldown). On every ENTER, a simulated trade fires at your entry price and resolves on the first wick to TP or SL. R-multiples assume your TP1 / SL geometry. Aim for win-rate ≥ 50% AND total R ≥ 0 — either alone is not enough.
+        </div>
+      </div>`;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+
+  // Convenience: run backtest, render a modal + console table. Pass 'all'
+  // to backtest every Binance-listed asset and aggregate.
   async function runBacktestUI(symbol = 'BTC', hours = 24) {
-    showToast(`🧪 Backtesting ${symbol} over last ${hours}h…`, 'info');
+    const isAll = symbol === 'all' || symbol === 'ALL' || symbol === '*';
+    showToast(`🧪 Backtesting ${isAll ? 'all assets' : symbol} over last ${hours}h…`, 'info');
     try {
-      const out = await runBacktest({ symbol, hours });
-      const s = out.stats;
-      const summary = `${out.symbol} ${hours}h: ${s.total} trades · ${s.wins}W / ${s.losses}L / ${s.breakEvens}BE · win-rate ${(s.winRate*100).toFixed(1)}% · totalR ${s.totalR.toFixed(2)} (avg ${s.avgR.toFixed(2)}R)`;
-      showToast(summary, s.winRate >= 0.5 ? 'ok' : 'warn');
-      console.log(`%c🧪 Backtest ${out.symbol} (last ${hours}h)`, 'color:#c9a961;font-family:monospace;font-weight:bold');
-      console.table(out.trades.map(t => ({
-        time: new Date(t.ts).toISOString().slice(0,16).replace('T',' '),
-        dir: t.direction,
-        outcome: t.outcome,
-        rMult: (t.rMultiple ?? 0).toFixed(2),
-        barsHeld: t.barsHeld,
-      })));
-      return out;
+      let payload, label;
+      if (isAll) {
+        const out = await runBacktestAll({ hours });
+        payload = { hours, perAsset: out.perAsset, overall: out.overall };
+        label = 'all assets';
+        const s = out.overall;
+        showToast(`🧪 ${s.total} trades · ${s.wins}W / ${s.losses}L · ${(s.winRate*100).toFixed(1)}% win · ${s.totalR.toFixed(2)}R`, s.winRate >= 0.5 ? 'ok' : 'warn');
+        console.log(`%c🧪 Backtest ALL (last ${hours}h)`, 'color:#c9a961;font-family:monospace;font-weight:bold');
+        console.table(out.perAsset);
+      } else {
+        const out = await runBacktest({ symbol, hours });
+        payload = { hours, symbol: out.symbol, stats: out.stats, perAsset: [{ symbol: out.symbol, ...out.stats }] };
+        label = out.symbol;
+        const s = out.stats;
+        showToast(`${out.symbol} ${hours}h: ${s.total} trades · ${(s.winRate*100).toFixed(1)}% win · ${s.totalR.toFixed(2)}R`, s.winRate >= 0.5 ? 'ok' : 'warn');
+        console.log(`%c🧪 Backtest ${out.symbol} (last ${hours}h)`, 'color:#c9a961;font-family:monospace;font-weight:bold');
+        console.table(out.trades.map(t => ({
+          time: new Date(t.ts).toISOString().slice(0,16).replace('T',' '),
+          dir: t.direction, outcome: t.outcome,
+          rMult: (t.rMultiple ?? 0).toFixed(2), barsHeld: t.barsHeld,
+        })));
+      }
+      renderBacktestModal(payload, label);
+      return payload;
     } catch(e) {
       showToast(`🧪 Backtest failed: ${e.message}`, 'err');
       console.error(e);
     }
   }
-  // Expose for DevTools usage. Use a distinct name so we don't clobber the
-  // internal `runBacktest` function declaration (function decls in non-module
-  // scripts attach to globalThis, so window.runBacktest = X would overwrite it).
-  if (typeof window !== 'undefined') window.ictBacktest = runBacktestUI;
+
+  // Floating launcher button — appended to body at init time so we don't
+  // need to touch the existing layout markup.
+  function mountBacktestLauncher() {
+    if (typeof document === 'undefined' || document.getElementById('backtestLauncher')) return;
+    const btn = document.createElement('button');
+    btn.id = 'backtestLauncher';
+    btn.textContent = '🧪 Backtest';
+    btn.title = 'Replay last 24h through getSignal — Shift+click for single-asset prompt';
+    btn.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:500;background:var(--bg-elevated);color:var(--gold);border:1px solid var(--gold);border-radius:24px;padding:10px 18px;font-family:JetBrains Mono,monospace;font-size:12px;font-weight:600;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,0.5);';
+    btn.onclick = (e) => {
+      if (e.shiftKey) {
+        const sym = prompt('Symbol to backtest (BTC/ETH/SOL/etc), or "all":', 'BTC');
+        if (sym) runBacktestUI(sym.trim().toUpperCase(), 24);
+      } else {
+        runBacktestUI('all', 24);
+      }
+    };
+    document.body.appendChild(btn);
+  }
+
+  // Expose for DevTools usage. Use distinct names so we don't clobber the
+  // internal `runBacktest` / `runBacktestAll` function declarations
+  // (function decls in non-module scripts attach to globalThis).
+  if (typeof window !== 'undefined') {
+    window.ictBacktest = runBacktestUI;
+    window.ictBacktestAll = runBacktestAll;
+  }
 
   // ═══════════════════════════════════════════════════════
   // ＋ ADD ASSET GATEWAY
@@ -4591,6 +4722,7 @@
     // Live WebSocket stream — gives sub-second price updates between polls.
     _try('connectPriceStream', connectPriceStream);
     _try('acquireWakeLock', acquireWakeLock);
+    _try('mountBacktestLauncher', mountBacktestLauncher);
     fetchFearGreed();
     fetchFundingRates();
     fetchNews();
