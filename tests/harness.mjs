@@ -16,8 +16,9 @@ const EXPORTS = [
   // journal pipeline
   'loadJournal', 'saveJournal', 'logCall', 'scheduleOutcomeChecks',
   'fetchOutcomeAtTime', 'checkPendingOutcomes', 'setManualOutcome',
-  // alerts + news
+  // alerts + news + funding + invalidation
   'checkArmedAlerts', 'tagHeadline', 'getNewsContext',
+  'getFundingContext', 'isInvalidated',
 ];
 
 function extractScript(html) {
@@ -159,6 +160,10 @@ ${EXPORTS.map((n) => `  get ${n}() { return typeof ${n} === 'undefined' ? undefi
   set consecutiveSyncFails(v) { consecutiveSyncFails = v; },
   get lastSuccessfulSyncMs() { return typeof lastSuccessfulSyncMs === 'undefined' ? undefined : lastSuccessfulSyncMs; },
   set lastSuccessfulSyncMs(v) { lastSuccessfulSyncMs = v; },
+  get lastAlertMs() { return typeof lastAlertMs === 'undefined' ? undefined : lastAlertMs; },
+  set lastAlertMs(v) { lastAlertMs = v; },
+  get fundingRateMap() { return typeof fundingRateMap === 'undefined' ? undefined : fundingRateMap; },
+  set fundingRateMap(v) { fundingRateMap = v; },
 });
 `;
 

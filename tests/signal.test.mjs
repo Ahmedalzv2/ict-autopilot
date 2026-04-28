@@ -227,29 +227,27 @@ describe('getConfidencePct (score + proximity + session, capped at 99)', () => {
     assert.ok(conf <= 0, `expected ≤ 0, got ${conf}`);
   });
 
-  test('Dead Zone gives zero session credit (treats as off-session-like)', () => {
-    // The implementation: inKZ is false (type==='dead'), session is truthy → sessComp = 5.
-    // Documents what the code actually does so a future change is intentional.
+  test('Dead Zone gives ZERO session credit (no entries during Dead Zone — ICT rule)', () => {
     const { app } = loadApp();
     app.mtfCache = { TEST: { h1: 'bull', h4: 'bull', d1: 'bull' } };
     const a = makeAsset({ price: 100, checks: [1, 1, 1, 1, 1, 0, 0, 0, 0, 0] }); // score 5
     const conf = app.getConfidencePct(a, DEAD);
-    // score 5/10 * 60 = 30, MTF +0 (score 3 means +5? no — score 3 of 3 yes +5), prox 25 (pct=0), sess 5
-    // → 30 + 5 + 25 + 5 = 65
-    assert.equal(conf, 65);
+    // score 5/10 * 60 = 30, MTF +5 (3 of 3), prox 25 (pct=0), sess 0 (Dead Zone)
+    // → 30 + 5 + 25 + 0 = 60
+    assert.equal(conf, 60);
   });
 
-  test('proximity tiers: 0.001/0.002/0.005/0.01 grant 25/20/12/5', () => {
+  test('proximity tiers aligned with getSignal: 0.05/0.15/0.5/1% grant 25/20/12/5', () => {
     const { app } = loadApp();
     app.mtfCache = { TEST: { h1: 'bull', h4: 'bull', d1: 'bull' } };
-    // Use score 0 + off-session to isolate proximity contribution.
-    // Then proxComp + (MTF +5 since score=3) is the only thing left.
+    // Inputs are chosen unambiguously inside each tier (floating point
+    // representation of "boundary" values like 0.0015 isn't reliable).
     const cases = [
-      [0.0005, 25], // ≤ 0.001
-      [0.0015, 20], // ≤ 0.002
-      [0.004,  12], // ≤ 0.005
-      [0.008,   5], // ≤ 0.01
-      [0.05,    0], // > 0.01
+      [0.0003, 25], // enter zone (≤ 0.05%)
+      [0.001,  20], // armed zone (> 0.05%, ≤ 0.15%)
+      [0.003,  12], // watch zone (> 0.15%, ≤ 0.5%)
+      [0.008,   5], // radar    (> 0.5%, ≤ 1.0%)
+      [0.05,    0], // out of range
     ];
     for (const [pct, expectedProx] of cases) {
       const a = makeAsset({
@@ -258,7 +256,7 @@ describe('getConfidencePct (score + proximity + session, capped at 99)', () => {
         checks: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       });
       const conf = app.getConfidencePct(a, OFF);
-      // sessComp = 0 (off-session), scoreComp = 0, MTF +5
+      // sessComp = 0 (off-session), scoreComp = 0, MTF +5 (score 3 of 3)
       assert.equal(conf, 5 + expectedProx, `pct=${pct} expected prox ${expectedProx}, conf=${conf}`);
     }
   });
