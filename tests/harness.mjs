@@ -46,6 +46,9 @@ const EXPORTS = [
   'recordTickPerf', 'getPerfStats', 'ASSET_STATE_TTL_MS',
   // backtest comparison
   'diffBacktests', 'runBacktestComparison',
+  // non-Binance price feeds
+  'parseGoldPriceResponse', 'parseYahooChartResponse', 'parseStooqCsv',
+  'fetchGoldSilverPrices', 'fetchNDXPrice', 'fetchNonBinancePrices',
 ];
 
 function extractScript(html) {
