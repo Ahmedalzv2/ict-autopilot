@@ -4215,113 +4215,77 @@
   const NON_BINANCE_ASSETS = ['GOLD','SILVER','US100'];
 
   // ─────────────────────────────────────────
-  // Non-Binance live prices (GOLD / SILVER / US100)
-  // Binance doesn't list these. We pull GOLD + SILVER from goldprice.org's
-  // free JSON endpoint and US100 (NDX) from Yahoo or stooq as fallback.
-  // All three are best-effort — public endpoints sometimes CORS-block when
-  // the dashboard is opened via file://. If a fetch fails, we leave the
-  // price untouched and log to console; the existing pasteCSV button is
-  // the always-works manual fallback.
+  // Live prices for "non-Binance" assets via Binance proxy symbols.
+  // The user trades GOLD/SILVER on MEXC FUTURES and US100 on FP Markets,
+  // so journal outcome resolution / MTF / CHoCH stay manual (those are
+  // gated by NON_BINANCE_ASSETS above and don't change here). But for
+  // the LIVE PRICE displayed on the dashboard, we proxy:
+  //   GOLD   ← XAUTUSDT (Tether Gold tokens — tracks spot XAU/USD)
+  //   SILVER ← XAGUSDT  (may not be listed; fails gracefully if so)
+  //   US100  ← intentionally skipped (no Binance proxy exists)
+  // No third-party APIs (no goldprice.org, no Yahoo). Same hosts as
+  // BINANCE_HOSTS so we reuse the existing CORS surface.
   // ─────────────────────────────────────────
+  const PRICE_PROXY_SYMBOLS = {
+    GOLD:   'XAUTUSDT',
+    SILVER: 'XAGUSDT',
+  };
 
-  // Pure: parse the goldprice.org JSON shape into a {GOLD, SILVER} update.
-  function parseGoldPriceResponse(json) {
-    const item = json?.items?.[0];
-    if (!item) return {};
-    const out = {};
-    if (Number.isFinite(item.xauPrice)) out.GOLD = item.xauPrice;
-    if (Number.isFinite(item.xagPrice)) out.SILVER = item.xagPrice;
-    return out;
+  // Pure: a Binance /ticker/24hr response → app shape.
+  function parseBinanceTicker(json) {
+    if (!json) return null;
+    const price = parseFloat(json.lastPrice);
+    const change = parseFloat(json.priceChangePercent);
+    if (!Number.isFinite(price)) return null;
+    return { price, change24h: Number.isFinite(change) ? change : 0 };
   }
 
-  // Pure: parse Yahoo's chart endpoint (v8/finance/chart/^NDX) into a
-  // last-close number, or null if the shape is wrong / there's no data.
-  function parseYahooChartResponse(json) {
-    const result = json?.chart?.result?.[0];
-    if (!result) return null;
-    const closes = result?.indicators?.quote?.[0]?.close || [];
-    for (let i = closes.length - 1; i >= 0; i--) {
-      if (Number.isFinite(closes[i])) return closes[i];
+  async function fetchProxyTicker(binanceSym) {
+    for (const host of BINANCE_HOSTS) {
+      try {
+        const r = await fetch(`https://${host}/api/v3/ticker/24hr?symbol=${binanceSym}`, {
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) continue;
+        const parsed = parseBinanceTicker(await r.json());
+        if (parsed) return parsed;
+      } catch(e) {}
     }
-    // Some payloads only carry meta.regularMarketPrice when the market is
-    // closed — try that as a fallback.
-    const meta = result?.meta;
-    if (meta && Number.isFinite(meta.regularMarketPrice)) return meta.regularMarketPrice;
     return null;
   }
 
-  // Pure: parse a stooq CSV row into a last-close number.
-  // Format: "Symbol,Date,Time,Open,High,Low,Close,Volume\n^NDX,2026-04-29,21:30:00,...,...,...,17234.56,..."
-  function parseStooqCsv(csv) {
-    if (typeof csv !== 'string') return null;
-    const lines = csv.trim().split(/\r?\n/);
-    if (lines.length < 2) return null;
-    const cols = lines[1].split(',');
-    const close = parseFloat(cols[6]);
-    return Number.isFinite(close) ? close : null;
-  }
-
-  async function fetchGoldSilverPrices() {
-    try {
-      const r = await fetch('https://data-asg.goldprice.org/dbXRates/USD', { signal: AbortSignal.timeout(8000) });
-      if (!r.ok) return null;
-      return parseGoldPriceResponse(await r.json());
-    } catch(e) { return null; }
-  }
-
-  async function fetchNDXPrice() {
-    // Try Yahoo first (more reliable when it works)
-    try {
-      const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?interval=1m&range=1d', { signal: AbortSignal.timeout(8000) });
-      if (r.ok) {
-        const px = parseYahooChartResponse(await r.json());
-        if (Number.isFinite(px)) return { US100: px };
-      }
-    } catch(e) {}
-    // Fallback: stooq CSV
-    try {
-      const r = await fetch('https://stooq.com/q/l/?s=%5Endx&f=sd2t2ohlcv&h&e=csv', { signal: AbortSignal.timeout(8000) });
-      if (r.ok) {
-        const px = parseStooqCsv(await r.text());
-        if (Number.isFinite(px)) return { US100: px };
-      }
-    } catch(e) {}
-    return null;
-  }
-
-  let nonBinanceFailWarned = false;
+  let nonBinanceFailWarned = {};
   async function fetchNonBinancePrices() {
-    const [metals, ndx] = await Promise.all([
-      fetchGoldSilverPrices(),
-      fetchNDXPrice(),
-    ]);
-    const updates = { ...(metals || {}), ...(ndx || {}) };
+    const entries = Object.entries(PRICE_PROXY_SYMBOLS);
+    const results = await Promise.all(
+      entries.map(async ([assetSym, binanceSym]) => {
+        const t = await fetchProxyTicker(binanceSym);
+        return [assetSym, binanceSym, t];
+      })
+    );
     let updated = 0;
-    for (const [symbol, price] of Object.entries(updates)) {
-      const a = ASSETS.find(x => x.symbol === symbol);
-      if (a && Number.isFinite(price)) {
-        const prev = a.price;
-        a.price = price;
-        // 24h change is approximate here — no historical fetch yet. We compute
-        // the percent move since the LAST update, which is honest if you
-        // squint (drift across 30s polls), and leaves a real number for the
-        // colour-coded UI rather than freezing it at zero.
-        if (prev) a.change24h = ((price - prev) / prev) * 100;
+    for (const [assetSym, binanceSym, t] of results) {
+      if (!t) {
+        if (!nonBinanceFailWarned[assetSym]) {
+          console.warn(`[ict-autopilot] ${assetSym} proxy fetch failed (${binanceSym}). Symbol may not be listed on Binance — tell me the correct symbol/exchange or update via Paste CSV.`);
+          nonBinanceFailWarned[assetSym] = true;
+        }
+        continue;
+      }
+      const a = ASSETS.find(x => x.symbol === assetSym);
+      if (a) {
+        a.price = t.price;
+        a.change24h = t.change24h;
+        nonBinanceFailWarned[assetSym] = false;
         updated++;
       }
     }
     if (updated > 0) {
-      nonBinanceFailWarned = false;
       if (typeof invalidateAssetStateCache === 'function') invalidateAssetStateCache();
       try { renderSignals(); } catch(e) {}
       try { renderAssets(); } catch(e) {}
       try { renderMarketRead(); } catch(e) {}
       Promise.resolve().then(() => checkArmedAlerts(getGST())).catch(() => {});
-    } else if (!nonBinanceFailWarned) {
-      // Print this once — likely CORS block. Don't toast or alarm; the
-      // pasteCSV button is the manual fallback.
-      console.warn('[ict-autopilot] Non-Binance price fetch returned no data. Likely CORS — open the dashboard via http://localhost or use the Paste CSV button to update GOLD/SILVER/US100 manually.');
-      nonBinanceFailWarned = true;
     }
     return updated;
   }

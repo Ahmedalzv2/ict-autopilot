@@ -2,173 +2,118 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadApp } from './harness.mjs';
 
-describe('parseGoldPriceResponse — goldprice.org JSON shape', () => {
+describe('parseBinanceTicker — /ticker/24hr response shape', () => {
   const { app } = loadApp();
 
-  test('extracts xauPrice and xagPrice from items[0]', () => {
-    const r = app.parseGoldPriceResponse({
-      items: [{ curr: 'USD', xauPrice: 2412.50, xagPrice: 28.95 }],
-    });
-    assert.equal(r.GOLD, 2412.50);
-    assert.equal(r.SILVER, 28.95);
+  test('valid response → { price, change24h }', () => {
+    const t = app.parseBinanceTicker({ lastPrice: '2412.50', priceChangePercent: '1.34' });
+    assert.equal(t.price, 2412.50);
+    assert.equal(t.change24h, 1.34);
   });
 
-  test('missing items → empty object (no crash)', () => {
-    const r = app.parseGoldPriceResponse({});
-    assert.deepEqual({ ...r }, {});
+  test('missing priceChangePercent → change24h falls back to 0', () => {
+    const t = app.parseBinanceTicker({ lastPrice: '2412.50' });
+    assert.equal(t.price, 2412.50);
+    assert.equal(t.change24h, 0);
   });
 
-  test('non-finite prices are skipped (no NaN written)', () => {
-    const r = app.parseGoldPriceResponse({
-      items: [{ xauPrice: 'oops', xagPrice: null }],
-    });
-    assert.deepEqual({ ...r }, {});
+  test('non-numeric lastPrice → null (no NaN written)', () => {
+    assert.equal(app.parseBinanceTicker({ lastPrice: 'oops' }), null);
   });
 
-  test('partial response (only xau) returns just GOLD', () => {
-    const r = app.parseGoldPriceResponse({ items: [{ xauPrice: 2400 }] });
-    assert.equal(r.GOLD, 2400);
-    assert.equal(r.SILVER, undefined);
+  test('null/undefined input → null', () => {
+    assert.equal(app.parseBinanceTicker(null), null);
+    assert.equal(app.parseBinanceTicker(undefined), null);
   });
 });
 
-describe('parseYahooChartResponse — Yahoo v8 chart shape', () => {
+describe('PRICE_PROXY_SYMBOLS configuration (per the user\'s instruction)', () => {
   const { app } = loadApp();
 
-  test('returns the latest non-null close from indicators', () => {
-    const json = {
-      chart: { result: [{
-        indicators: { quote: [{ close: [17000, 17050, 17120, null, null] }] },
-      }] },
-    };
-    assert.equal(app.parseYahooChartResponse(json), 17120);
+  test('GOLD proxied via XAUTUSDT (Tether Gold)', () => {
+    assert.equal(app.PRICE_PROXY_SYMBOLS.GOLD, 'XAUTUSDT');
   });
 
-  test('falls back to meta.regularMarketPrice when all closes null (market closed)', () => {
-    const json = {
-      chart: { result: [{
-        indicators: { quote: [{ close: [null, null] }] },
-        meta: { regularMarketPrice: 17234.56 },
-      }] },
-    };
-    assert.equal(app.parseYahooChartResponse(json), 17234.56);
+  test('SILVER proxied via XAGUSDT', () => {
+    assert.equal(app.PRICE_PROXY_SYMBOLS.SILVER, 'XAGUSDT');
   });
 
-  test('totally empty response → null', () => {
-    assert.equal(app.parseYahooChartResponse({}), null);
-    assert.equal(app.parseYahooChartResponse(null), null);
-  });
-
-  test('all null closes + no meta → null', () => {
-    const json = { chart: { result: [{ indicators: { quote: [{ close: [null] }] } }] } };
-    assert.equal(app.parseYahooChartResponse(json), null);
-  });
-});
-
-describe('parseStooqCsv — stooq CSV row', () => {
-  const { app } = loadApp();
-
-  test('extracts close from second line', () => {
-    const csv = 'Symbol,Date,Time,Open,High,Low,Close,Volume\n^NDX,2026-04-29,21:30:00,17000,17150,16950,17234.56,1234567';
-    assert.equal(app.parseStooqCsv(csv), 17234.56);
-  });
-
-  test('header-only CSV → null', () => {
-    const csv = 'Symbol,Date,Time,Open,High,Low,Close,Volume\n';
-    assert.equal(app.parseStooqCsv(csv), null);
-  });
-
-  test('non-string input → null (no crash)', () => {
-    assert.equal(app.parseStooqCsv(null), null);
-    assert.equal(app.parseStooqCsv(undefined), null);
-    assert.equal(app.parseStooqCsv(42), null);
-  });
-
-  test('non-numeric close field → null', () => {
-    const csv = 'Symbol,Date,Time,Open,High,Low,Close,Volume\n^NDX,2026-04-29,21:30:00,17000,17150,16950,N/A,1234567';
-    assert.equal(app.parseStooqCsv(csv), null);
-  });
-
-  test('handles \\r\\n line endings (Windows-style CSV)', () => {
-    const csv = 'Symbol,Date,Time,Open,High,Low,Close,Volume\r\n^NDX,2026-04-29,21:30:00,17000,17150,16950,17234.56,1234567\r\n';
-    assert.equal(app.parseStooqCsv(csv), 17234.56);
+  test('US100 NOT in the proxy map (no Binance proxy — manual only)', () => {
+    assert.equal(app.PRICE_PROXY_SYMBOLS.US100, undefined);
   });
 });
 
 describe('fetchNonBinancePrices — async integration', () => {
-  test('updates GOLD/SILVER/US100 on ASSETS when sources return data', async () => {
+  test('updates GOLD price when XAUTUSDT returns valid ticker', async () => {
     const ctx = loadApp({
       fetch: async (url) => {
         const u = String(url);
-        if (u.includes('goldprice.org')) {
-          return { ok: true, json: async () => ({ items: [{ xauPrice: 2412.50, xagPrice: 28.95 }] }) };
+        if (u.includes('XAUTUSDT')) {
+          return { ok: true, json: async () => ({ lastPrice: '2412.50', priceChangePercent: '1.20' }) };
         }
-        if (u.includes('finance.yahoo.com')) {
-          return { ok: true, json: async () => ({
-            chart: { result: [{ indicators: { quote: [{ close: [17234.56] }] } }] },
-          }) };
-        }
+        return { ok: false }; // SILVER fails
+      },
+    });
+    await ctx.app.fetchNonBinancePrices();
+    const gold = [...ctx.app.ASSETS].find(a => a.symbol === 'GOLD');
+    assert.equal(gold.price, 2412.50);
+    assert.equal(gold.change24h, 1.20);
+  });
+
+  test('updates BOTH metals when both endpoints respond', async () => {
+    const ctx = loadApp({
+      fetch: async (url) => {
+        const u = String(url);
+        if (u.includes('XAUTUSDT')) return { ok: true, json: async () => ({ lastPrice: '2412.50', priceChangePercent: '1.20' }) };
+        if (u.includes('XAGUSDT'))  return { ok: true, json: async () => ({ lastPrice: '28.95',   priceChangePercent: '0.40' }) };
         return { ok: false };
       },
     });
     await ctx.app.fetchNonBinancePrices();
     const gold = [...ctx.app.ASSETS].find(a => a.symbol === 'GOLD');
     const silver = [...ctx.app.ASSETS].find(a => a.symbol === 'SILVER');
-    const us100 = [...ctx.app.ASSETS].find(a => a.symbol === 'US100');
     assert.equal(gold.price, 2412.50);
     assert.equal(silver.price, 28.95);
-    assert.equal(us100.price, 17234.56);
   });
 
-  test('Yahoo failing falls through to stooq', async () => {
+  test('US100 is never fetched (not in PRICE_PROXY_SYMBOLS)', async () => {
+    let urls = [];
     const ctx = loadApp({
       fetch: async (url) => {
-        const u = String(url);
-        if (u.includes('finance.yahoo.com')) {
-          return { ok: false, json: async () => ({}) };
-        }
-        if (u.includes('stooq.com')) {
-          return { ok: true, text: async () => 'Symbol,Date,Time,Open,High,Low,Close,Volume\n^NDX,2026-04-29,21:30:00,0,0,0,17000,0' };
-        }
+        urls.push(String(url));
         return { ok: false };
       },
     });
     await ctx.app.fetchNonBinancePrices();
-    const us100 = [...ctx.app.ASSETS].find(a => a.symbol === 'US100');
-    assert.equal(us100.price, 17000);
+    const us100Calls = urls.filter(u => /US100|NDX|US-100/i.test(u));
+    assert.equal(us100Calls.length, 0, 'no US100/NDX request should ever go out');
   });
 
-  test('all sources failing → ASSETS prices unchanged, no crash', async () => {
-    const ctx = loadApp({
-      fetch: async () => { throw new Error('CORS'); },
-    });
+  test('all proxies fail → ASSETS unchanged, no crash', async () => {
+    const ctx = loadApp({ fetch: async () => { throw new Error('network'); } });
     const before = {
       GOLD:   [...ctx.app.ASSETS].find(a => a.symbol === 'GOLD').price,
       SILVER: [...ctx.app.ASSETS].find(a => a.symbol === 'SILVER').price,
-      US100:  [...ctx.app.ASSETS].find(a => a.symbol === 'US100').price,
     };
     const updated = await ctx.app.fetchNonBinancePrices();
     assert.equal(updated, 0);
     assert.equal([...ctx.app.ASSETS].find(a => a.symbol === 'GOLD').price, before.GOLD);
     assert.equal([...ctx.app.ASSETS].find(a => a.symbol === 'SILVER').price, before.SILVER);
-    assert.equal([...ctx.app.ASSETS].find(a => a.symbol === 'US100').price, before.US100);
   });
 
-  test('change24h is updated to reflect tick-over-tick movement', async () => {
+  test('fallback host is tried when first host fails', async () => {
+    let calls = [];
     const ctx = loadApp({
       fetch: async (url) => {
-        const u = String(url);
-        if (u.includes('goldprice.org')) {
-          return { ok: true, json: async () => ({ items: [{ xauPrice: 2500, xagPrice: 30 }] }) };
-        }
+        calls.push(String(url));
+        if (calls.length === 1) return { ok: false }; // first host bad
+        if (String(url).includes('XAUTUSDT')) return { ok: true, json: async () => ({ lastPrice: '2412.50', priceChangePercent: '1' }) };
         return { ok: false };
       },
     });
-    const gold = [...ctx.app.ASSETS].find(a => a.symbol === 'GOLD');
-    const previous = gold.price; // seeded value
     await ctx.app.fetchNonBinancePrices();
-    const expected = ((2500 - previous) / previous) * 100;
-    assert.ok(Math.abs(gold.change24h - expected) < 1e-6,
-      `change24h should reflect movement, got ${gold.change24h} expected ${expected}`);
+    // Should have hit the fallback host at least once for the GOLD proxy.
+    const xautCalls = calls.filter(u => u.includes('XAUTUSDT'));
+    assert.ok(xautCalls.length >= 2, `expected fallback to be tried, got ${xautCalls.length} XAUTUSDT calls`);
   });
 });
