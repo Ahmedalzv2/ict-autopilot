@@ -4101,52 +4101,64 @@
     const sig = () => AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined;
     let updated = false;
 
-    // ── GOLD via Binance XAUTUSDT → TradingView scanner ──
+    // helper: parse metals.live response — handles both {gold:x} and [{gold:x}] formats
+    const parseMetals = (j, key) => {
+      const v = Array.isArray(j) ? j[0]?.[key] : j?.[key];
+      const p = parseFloat(v);
+      return (!isNaN(p) && p > 0) ? p : null;
+    };
+
+    // ── GOLD: metals.live → Binance XAUTUSDT → TradingView OANDA:XAUUSD ──
     const goldAsset = ASSETS.find(a => a.symbol === 'GOLD');
     if (goldAsset) {
       let price = null;
-      // Source 1: Binance XAUT/USDT (Tether Gold — tracks spot gold per troy oz)
-      for (const host of ['api.binance.com', 'data-api.binance.vision']) {
+      try {
+        const r = await fetch('https://api.metals.live/v1/spot/gold', {cache:'no-store', signal:sig()});
+        if (r.ok) price = parseMetals(await r.json(), 'gold');
+      } catch(e) {}
+      if (!price) for (const host of ['api.binance.com','data-api.binance.vision']) {
         try {
           const r = await fetch(`https://${host}/api/v3/ticker/price?symbol=XAUTUSDT`, {cache:'no-store', signal:sig()});
-          if (r.ok) { const j = await r.json(); price = parseFloat(j?.price) || null; }
-          if (price) break;
+          if (r.ok) { const p = parseFloat((await r.json())?.price); if (p > 1000) { price = p; break; } }
         } catch(e) {}
       }
-      // Source 2: TradingView scanner
       if (!price) try {
-        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['TVC:GOLD']},columns:['close']}), cache:'no-store', signal:sig()});
-        if (r.ok) { const j = await r.json(); price = j?.data?.[0]?.d?.[0] || null; }
+        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['OANDA:XAUUSD','TVC:GOLD']},columns:['close']}), cache:'no-store', signal:sig()});
+        if (r.ok) { const j = await r.json(); price = j?.data?.[0]?.d?.[0] || j?.data?.[1]?.d?.[0] || null; }
       } catch(e) {}
-      if (price && price > 0) {
+      if (price && price > 1000) {
         goldAsset.price = price; updated = true;
-        console.log('%c📡 GOLD (Binance XAUT/TV): $' + price.toFixed(2), 'color:#ffd700;font-family:monospace');
+        console.log('%c📡 GOLD: $' + price.toFixed(2), 'color:#ffd700;font-family:monospace');
         if (typeof autoUpdateChecks === 'function') autoUpdateChecks(goldAsset);
-      } else console.warn('GOLD: all price sources failed');
+      } else console.warn('GOLD: all sources failed or bad value:', price);
     }
 
-    // ── SILVER via Binance XAGUSDT → TradingView scanner ──
+    // ── SILVER: metals.live → TradingView OANDA:XAGUSD → TVC:SILVER ──
+    // NOTE: Binance XAGUSDT removed — it's a synthetic token, NOT spot silver price
     const silverAsset = ASSETS.find(a => a.symbol === 'SILVER');
     if (silverAsset) {
       let price = null;
-      // Source 1: Binance XAG/USDT
-      for (const host of ['api.binance.com', 'data-api.binance.vision']) {
-        try {
-          const r = await fetch(`https://${host}/api/v3/ticker/price?symbol=XAGUSDT`, {cache:'no-store', signal:sig()});
-          if (r.ok) { const j = await r.json(); price = parseFloat(j?.price) || null; }
-          if (price) break;
-        } catch(e) {}
-      }
-      // Source 2: TradingView scanner
-      if (!price) try {
-        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['TVC:SILVER']},columns:['close']}), cache:'no-store', signal:sig()});
-        if (r.ok) { const j = await r.json(); price = j?.data?.[0]?.d?.[0] || null; }
+      try {
+        const r = await fetch('https://api.metals.live/v1/spot/silver', {cache:'no-store', signal:sig()});
+        if (r.ok) price = parseMetals(await r.json(), 'silver');
       } catch(e) {}
-      if (price && price > 0) {
+      // Validate: real silver is between $10 and $300/oz — reject garbage values
+      if (price && (price < 10 || price > 300)) { console.warn('SILVER metals.live returned bad value:', price); price = null; }
+      if (!price) try {
+        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['OANDA:XAGUSD','TVC:SILVER','FX:XAGUSD']},columns:['close']}), cache:'no-store', signal:sig()});
+        if (r.ok) {
+          const j = await r.json();
+          for (const row of (j?.data || [])) {
+            const p = row?.d?.[0];
+            if (p && p > 10 && p < 300) { price = p; break; }
+          }
+        }
+      } catch(e) {}
+      if (price && price > 10) {
         silverAsset.price = price; updated = true;
-        console.log('%c📡 SILVER (Binance XAG/TV): $' + price.toFixed(2), 'color:#c0c0c0;font-family:monospace');
+        console.log('%c📡 SILVER: $' + price.toFixed(2), 'color:#c0c0c0;font-family:monospace');
         if (typeof autoUpdateChecks === 'function') autoUpdateChecks(silverAsset);
-      } else console.warn('SILVER: all price sources failed');
+      } else console.warn('SILVER: all sources failed or bad value:', price);
     }
 
     // ── US100 via TradingView Scanner → Yahoo ──
