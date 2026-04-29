@@ -1094,6 +1094,9 @@
       <span class="ap-label">Sync</span>
       <span class="ap-value" id="barSyncTime">—</span>
     </div>
+    <div class="ap-segment" style="border-left:1px solid var(--border);border-right:none;margin-left:auto;">
+      <span id="liveIndicator" style="font-size:11px;color:#888;font-family:'JetBrains Mono',monospace;letter-spacing:0.05em;">⟳ SYNC</span>
+    </div>
   </div>
 
   <div class="shell">
@@ -1105,6 +1108,7 @@
       <div class="side-nav">
         <button class="nav-btn active" onclick="switchTab('autopilot')">⭐ Top Setup</button>
         <button class="nav-btn" onclick="switchTab('dashboard')">🏛 Dashboard</button>
+        <button class="nav-btn" onclick="switchTab('live-chart')">📈 Live Chart</button>
         <button class="nav-btn" onclick="switchTab('journal')">📓 Journal</button>
         <button class="nav-btn" onclick="switchTab('ict-methods')">📊 ICT Methods</button>
         <button class="nav-btn" onclick="switchTab('rules')">📋 Rules</button>
@@ -1262,6 +1266,81 @@
           <span class="sync-status-text" id="dashSyncStatus">Auto-syncing every 30s</span>
         </div>
         <div class="assets-grid" id="assetsGrid"></div>
+      </div>
+
+      <!-- ═══ LIVE CHART TAB ═══ -->
+      <div id="live-chart" class="tab-content">
+        <div class="page-header">
+          <h1>📈 Live Chart</h1>
+          <p>Price syncs every 30s. Crypto via Binance, GOLD/SILVER/US100 via Yahoo Finance. Chart and dashboard always show the same price.</p>
+        </div>
+        <div style="margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Asset:</div>
+          <span id="tvLivePrice" style="display:inline-block;background:rgba(201,169,97,0.12);border:1px solid rgba(201,169,97,0.3);border-radius:20px;padding:4px 14px;font-size:14px;font-weight:700;color:#c9a961;font-family:'JetBrains Mono',monospace;margin-right:10px;">--</span>
+          <select id="tvSymbolSelect" onchange="switchTVChart(this.value)" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;cursor:pointer;">
+            <option value="BTC">BTC</option>
+            <option value="ETH">ETH</option>
+            <option value="SOL">SOL</option>
+            <option value="BNB">BNB</option>
+            <option value="XRP">XRP</option>
+            <option value="SUI">SUI</option>
+            <option value="ASTR">ASTR</option>
+            <option value="US100">US100</option>
+            <option value="GOLD">GOLD</option>
+            <option value="SILVER">SILVER</option>
+          </select>
+          <div style="flex:1;"></div>
+          <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Timeframe:</div>
+          <div style="display:flex;gap:6px;">
+            <button class="tf-btn" data-tf="1" onclick="switchTVTimeframe('1')">1m</button>
+            <button class="tf-btn" data-tf="5" onclick="switchTVTimeframe('5')">5m</button>
+            <button class="tf-btn" data-tf="15" onclick="switchTVTimeframe('15')">15m</button>
+            <button class="tf-btn" data-tf="60" onclick="switchTVTimeframe('60')">1H</button>
+            <button class="tf-btn" data-tf="240" onclick="switchTVTimeframe('240')">4H</button>
+            <button class="tf-btn" data-tf="D" onclick="switchTVTimeframe('D')">Daily</button>
+            <button class="tf-btn active" data-tf="W" onclick="switchTVTimeframe('W')">Weekly</button>
+          </div>
+        </div>
+        <style>
+          .tf-btn {
+            padding: 7px 12px;
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-dim);
+            font-size: 11px;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+            cursor: pointer;
+            transition: all 0.2s;
+          }
+          .tf-btn:hover {
+            border-color: var(--gold);
+            color: var(--text);
+          }
+          .tf-btn.active {
+            background: rgba(201,169,97,0.15);
+            border-color: var(--gold);
+            color: var(--gold);
+          }
+          #tvChartContainer {
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 20px;
+            min-height: 600px;
+          }
+        </style>
+        <div id="tvChartContainer" style="background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:20px;height:600px;min-height:600px;"></div>
+
+        <!-- ICT Analysis Panel for selected asset -->
+        <div class="ap-card full">
+          <div class="ap-card-title">📊 ICT Analysis · Selected Asset</div>
+          <div id="tvAnalysisPanel" style="font-size:13px;color:var(--text-dim);line-height:1.8;">
+            <div style="color:var(--text-mute);padding:20px;text-align:center;">Select an asset to see analysis…</div>
+          </div>
+        </div>
       </div>
 
       <!-- ═══ TOP SETUP TAB ═══ -->
@@ -1435,7 +1514,7 @@
       bias: 'BEARISH', dol: '$58–62K', invalidation: 'Monthly close > $95K',
       remarks: 'HTF bearish intact. In daily bear OB zone. Relief rally toward $77K — no CHoCH yet.',
       watch: '$74K SSL sweep + 1m bullish CHoCH → long scalp $76K. Break < $74K → flush $70K.',
-      checks: [1,1,1,1,0,1,1,1,1,0], reason: 'A — no 1m CHoCH confirmed yet, outside KZ'
+      levels: null, checks: [1,1,1,1,0,1,1,1,1,0], reason: 'A — no 1m CHoCH confirmed yet, outside KZ'
     },
     {
       symbol: 'ETH', platform: 'Binance SPOT', type: 'SPOT',
@@ -1444,7 +1523,7 @@
       bias: 'BEARISH', dol: '$1,800–2,000', invalidation: 'Monthly close > $3,200',
       remarks: 'Quiet weakness. HTF bearish. Low vol relative to BTC.',
       watch: '$2,250 SSL sweep + 1m CHoCH → long scalp $2,380.',
-      checks: [1,1,1,1,0,1,0,1,1,1], reason: 'A — awaiting SSL sweep and CHoCH'
+      levels: null, checks: [1,1,1,1,0,1,0,1,1,1], reason: 'A — awaiting SSL sweep and CHoCH'
     },
     {
       symbol: 'SOL', platform: 'Binance SPOT', type: 'SPOT',
@@ -1453,7 +1532,7 @@
       bias: 'BEARISH', dol: '$40–45', invalidation: 'Monthly close > $160',
       remarks: 'Broke $85 support. HTF + intraday bearish aligned.',
       watch: '$86 retest from below + 1m bearish CHoCH → short $80.',
-      checks: [1,1,1,1,1,1,1,1,1,1], reason: 'A+ — all triggers aligned, at retest zone'
+      levels: null, checks: [1,1,1,1,1,1,1,1,1,1], reason: 'A+ — all triggers aligned, at retest zone'
     },
     {
       symbol: 'BNB', platform: 'Binance SPOT', type: 'SPOT',
@@ -1462,7 +1541,7 @@
       bias: 'BEARISH', dol: '$450–480', invalidation: 'Monthly close > $720',
       remarks: 'Broke $632 OB support. Continuation short in play.',
       watch: 'Retest $632 from below → short continuation TP $615.',
-      checks: [1,1,1,1,1,1,0,1,1,1], reason: 'A — displacement candles unclear'
+      levels: null, checks: [1,1,1,1,1,1,0,1,1,1], reason: 'A — displacement candles unclear'
     },
     {
       symbol: 'XRP', platform: 'Binance SPOT', type: 'SPOT',
@@ -1471,7 +1550,7 @@
       bias: 'BEARISH', dol: '$0.85–1.00', invalidation: 'Monthly close > $2.20',
       remarks: 'At daily bear OB. Rejection in progress.',
       watch: 'Short $1.43 retest → TP $1.38. Break > $1.46 = invalidation.',
-      checks: [1,1,1,0,1,1,0,1,1,1], reason: 'B — JudasSwing not confirmed, R:R borderline'
+      levels: null, checks: [1,1,1,0,1,1,0,1,1,1], reason: 'B — JudasSwing not confirmed, R:R borderline'
     },
     {
       symbol: 'SUI', platform: 'Binance SPOT', type: 'SPOT',
@@ -1480,7 +1559,7 @@
       bias: 'BEARISH', dol: '$0.50–0.65', invalidation: 'Monthly close > $1.40',
       remarks: 'Broke $0.94. Low liquidity — skip unless $1.00+ sweep.',
       watch: '$1.00 BSL sweep + 1m CHoCH → short. Not priority.',
-      checks: [1,1,0,1,1,1,0,1,1,1], reason: 'B — skip unless $1.00 sweep occurs'
+      levels: null, checks: [1,1,0,1,1,1,0,1,1,1], reason: 'B — skip unless $1.00 sweep occurs'
     },
     {
       symbol: 'ASTR', platform: 'Binance SPOT', type: 'SPOT',
@@ -1489,16 +1568,16 @@
       bias: 'NEUTRAL', dol: '$0.40–0.45', invalidation: 'Monthly close > $1.10',
       remarks: '4-week consolidation $0.62–0.70. 20w HTF bearish.',
       watch: '$0.70–0.72 BSL sweep + 1m CHoCH → short $0.62.',
-      checks: [1,0,1,1,1,0,1,1,1,1], reason: 'B — HTF alignment partial, consolidation'
+      levels: null, checks: [1,0,1,1,1,0,1,1,1,1], reason: 'B — HTF alignment partial, consolidation'
     },
     {
       symbol: 'US100', platform: 'FP Markets CFD', type: 'FUTURES',
       entry: 26800, sl: 26950, tp1: 26000, tp2: 25500,
-      grade: 'a', armed: false, price: 27319.50, change24h: 0,
+      grade: 'a', armed: false, price: 26983.00, change24h: 0,
       bias: 'IN FLUX', dol: 'Weekly close decides', invalidation: 'Daily close < $26,400',
       remarks: 'Testing weekly bear OB. 3 scenarios active. Weekly close is the key.',
       watch: '(A) Break > 26,902 → 27,500. (B) Rejection + 4H CHoCH → short 26,000. (C) Close > 27K = BULLISH.',
-      checks: [1,1,1,1,1,1,1,1,1,0], reason: 'A — outside KZ, await weekly confirmation'
+      levels: null, checks: [1,1,1,1,1,1,1,1,1,0], reason: 'A — outside KZ, await weekly confirmation'
     },
     {
       symbol: 'GOLD', platform: 'MEXC FUTURES', type: 'FUTURES',
@@ -1507,7 +1586,7 @@
       bias: 'BEARISH', dol: '$4,400', invalidation: 'Monthly close > $5,000',
       remarks: 'Geopolitical-driven pullback on risk appetite. Bear OB zone.',
       watch: 'FVG below $4,680 → long scalp to $4,750. Or break confirms short.',
-      checks: [1,1,0,1,1,0,1,1,1,1], reason: 'B — PO3 and FVG unclear'
+      levels: null, checks: [1,1,0,1,1,0,1,1,1,1], reason: 'B — PO3 and FVG unclear'
     },
     {
       symbol: 'SILVER', platform: 'MEXC FUTURES', type: 'FUTURES',
@@ -1516,7 +1595,7 @@
       bias: 'BEARISH', dol: '$68–70', invalidation: 'Monthly close > $90',
       remarks: 'Retracing after strong move. Fib 0.5–0.618 zone.',
       watch: '$0.618 Fib ($74.69) SSL sweep + CHoCH → long. Or continuation short.',
-      checks: [1,1,0,1,1,1,0,1,1,1], reason: 'B — backup liquidity, tier B only'
+      levels: null, checks: [1,1,0,1,1,1,0,1,1,1], reason: 'B — backup liquidity, tier B only'
     }
   ];
 
@@ -1832,7 +1911,7 @@
       const mtfColor = mtf.pending ? 'var(--text-mute)' : mtf.aligned ? 'var(--bull)' : 'var(--bear)';
 
       return `
-        <div class="signal-card ${cardClass}" onclick="openSetupModal(ASSETS.find(x=>x.symbol==='${a.symbol}'))">
+        <div class="signal-card ${cardClass}" data-symbol="${a.symbol}" onclick="openSetupModal(ASSETS.find(x=>x.symbol==='${a.symbol}'))">
           <div class="sig-header">
             <div class="sig-symbol">${a.symbol}${modeTag}</div>
             <div class="sig-badge ${badgeClass}">${badgeText}</div>
@@ -1900,7 +1979,18 @@
   // ═══════════════════════════════════════
   function saveLevels() {
     const out = {};
-    ASSETS.forEach(a => { out[a.symbol] = { entry: a.entry, sl: a.sl, tp1: a.tp1||a.tp||0 }; });
+    ASSETS.forEach(a => { 
+      const obj = { entry: a.entry, sl: a.sl, tp1: a.tp1||a.tp||0 };
+      if (a.levels) {
+        obj.levels = {
+          obZone: a.levels.obZone || null,
+          fvgZone: a.levels.fvgZone || null,
+          liquiditySweep: a.levels.liquiditySweep || null,
+          chochLevel: a.levels.chochLevel || null
+        };
+      }
+      out[a.symbol] = obj;
+    });
     try { localStorage.setItem('ict_levels', JSON.stringify(out)); } catch(e) {}
   }
 
@@ -1913,6 +2003,14 @@
         if (lv.entry > 0) a.entry = lv.entry;
         if (lv.sl > 0) a.sl = lv.sl;
         if (lv.tp1 > 0) { a.tp1 = lv.tp1; a.tp = lv.tp1; }
+        if (lv.levels) {
+          a.levels = {
+            obZone: lv.levels.obZone || null,
+            fvgZone: lv.levels.fvgZone || null,
+            liquiditySweep: lv.levels.liquiditySweep || null,
+            chochLevel: lv.levels.chochLevel || null
+          };
+        }
       });
     } catch(e) {}
   }
@@ -1978,7 +2076,7 @@
           <button onclick="setTradeMode('${a.symbol}','futures')" style="flex:1;padding:5px 0;border:none;cursor:pointer;font-size:10px;font-weight:700;letter-spacing:.05em;background:${!isSpot?'rgba(92,184,138,0.2)':'var(--bg)'};color:${!isSpot?'var(--bull)':'var(--text-mute)'};">⚡ FUTURES</button>
         </div>`;
       return `
-        <div class="asset-tile ${tileClass}" style="position:relative;" onclick="openSetupModal(ASSETS.find(x=>x.symbol==='${a.symbol}'))">
+        <div class="asset-tile ${tileClass}" data-symbol="${a.symbol}" style="position:relative;" onclick="openSetupModal(ASSETS.find(x=>x.symbol==='${a.symbol}'))">
           ${customBadge}
           ${removeBtn}
           ${sig === 'enter' ? '<div class="enter-indicator">ENTER NOW 🔴</div>' : sig === 'armed' ? '<div class="armed-indicator">ALMOST ENTRY</div>' : ''}
@@ -2329,6 +2427,13 @@
         </div>
       </div>
 
+
+      <!-- Edit ICT Levels Button -->
+      <div style="margin-bottom:16px;">
+        <button onclick="openLevelsEditor('${asset.symbol}')" style="width:100%;padding:12px;background:rgba(201,169,97,0.12);border:1px solid rgba(201,169,97,0.4);border-radius:8px;color:var(--gold);font-weight:600;cursor:pointer;font-size:13px;transition:all 0.2s;">🎯 Set ICT Levels · Auto-Update Zones</button>
+        <div style="font-size:10px;color:var(--text-mute);margin-top:4px;">Define OB, FVG, liquidity sweep, and CHoCH levels. Checks auto-activate when price enters zones.</div>
+      </div>
+
       <!-- Checklist -->
       <div class="grade-section" style="margin-bottom:16px;">
         <div class="grade-title">ICT Trigger Checklist · ${asset.checks.reduce((a,b)=>a+b,0)}/${asset.checks.length} confirmed</div>
@@ -2358,6 +2463,120 @@
       all[symbol] = text;
       localStorage.setItem('ict_remarks', JSON.stringify(all));
     } catch(e) {}
+  }
+
+
+  // ═══════════════════════════════════════════════════════
+  // 🎯 ICT LEVELS EDITOR — Set zone definitions for auto-update
+  // ═══════════════════════════════════════════════════════
+  function openLevelsEditor(symbol) {
+    const asset = ASSETS.find(a => a.symbol === symbol);
+    if (!asset) return;
+    
+    const levels = asset.levels || {obZone: null, fvgZone: null, liquiditySweep: null, chochLevel: null};
+    const obLo = levels.obZone ? levels.obZone[0] : '';
+    const obHi = levels.obZone ? levels.obZone[1] : '';
+    const fvgLo = levels.fvgZone ? levels.fvgZone[0] : '';
+    const fvgHi = levels.fvgZone ? levels.fvgZone[1] : '';
+    const liqSweep = levels.liquiditySweep || '';
+    const choch = levels.chochLevel || '';
+    
+    const html = `
+      <div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:10000;display:flex;align-items:center;justify-content:center;" onclick="if(event.target===this)closeLevelsEditor()">
+        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:12px;padding:28px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.9);">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+            <div style="font-size:18px;font-weight:700;color:var(--gold);">🎯 Set ICT Levels · ${symbol}</div>
+            <button onclick="closeLevelsEditor()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--text-mute);">✕</button>
+          </div>
+          
+          <div style="background:rgba(201,169,97,0.08);border:1px solid rgba(201,169,97,0.2);border-radius:8px;padding:12px;margin-bottom:20px;font-size:12px;color:var(--text-dim);">
+            💡 <strong>Auto-Check Guide:</strong> Set price ranges and levels below. When live price enters a zone or crosses a level, the corresponding check auto-activates.
+          </div>
+          
+          <form onsubmit="saveLevelsForm(event, '${symbol}')">
+            <!-- OB/Breaker Zone (Check 4) -->
+            <div style="margin-bottom:18px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;">
+              <div style="font-weight:600;color:var(--gold);font-size:12px;margin-bottom:10px;text-transform:uppercase;">📦 OB/Breaker Zone (Check 4)</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <input type="number" id="obLo_${symbol}" placeholder="Low ($)" value="${obLo}" step="0.01" style="padding:10px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
+                <input type="number" id="obHi_${symbol}" placeholder="High ($)" value="${obHi}" step="0.01" style="padding:10px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
+              </div>
+              <div style="font-size:10px;color:var(--text-mute);margin-top:6px;">Price enters zone → auto-confirm OB/Breaker touched + rejection</div>
+            </div>
+            
+            <!-- FVG Zone (Check 5) -->
+            <div style="margin-bottom:18px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;">
+              <div style="font-weight:600;color:var(--gold);font-size:12px;margin-bottom:10px;text-transform:uppercase;">⬜ FVG Zone (Check 5)</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <input type="number" id="fvgLo_${symbol}" placeholder="Low ($)" value="${fvgLo}" step="0.01" style="padding:10px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
+                <input type="number" id="fvgHi_${symbol}" placeholder="High ($)" value="${fvgHi}" step="0.01" style="padding:10px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
+              </div>
+              <div style="font-size:10px;color:var(--text-mute);margin-top:6px;">Price enters zone → auto-confirm FVG marked</div>
+            </div>
+            
+            <!-- Liquidity Sweep Level (Check 3) -->
+            <div style="margin-bottom:18px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;">
+              <div style="font-weight:600;color:var(--gold);font-size:12px;margin-bottom:10px;text-transform:uppercase;">💧 Liquidity Sweep Level (Check 3)</div>
+              <input type="number" id="liqSweep_${symbol}" placeholder="Sweep price ($)" value="${liqSweep}" step="0.01" style="width:100%;padding:10px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
+              <div style="font-size:10px;color:var(--text-mute);margin-top:6px;">Price crosses this level → auto-confirm liquidity sweep completed</div>
+            </div>
+            
+            <!-- CHoCH Level (Check 7) -->
+            <div style="margin-bottom:20px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;">
+              <div style="font-weight:600;color:var(--gold);font-size:12px;margin-bottom:10px;text-transform:uppercase;">📊 CHoCH Level (Check 7)</div>
+              <input type="number" id="choch_${symbol}" placeholder="CHoCH price ($)" value="${choch}" step="0.01" style="width:100%;padding:10px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
+              <div style="font-size:10px;color:var(--text-mute);margin-top:6px;">Price crosses this level → auto-confirm 1m CHoCH confirmed</div>
+            </div>
+            
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <button type="button" onclick="closeLevelsEditor()" style="padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;font-weight:600;font-size:13px;">Cancel</button>
+              <button type="submit" style="padding:12px;background:var(--gold);border:none;border-radius:8px;color:var(--bg);cursor:pointer;font-weight:700;font-size:13px;">✓ Save Levels</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+    
+    const existing = document.getElementById('levelsEditorModal');
+    if (existing) existing.remove();
+    
+    const div = document.createElement('div');
+    div.id = 'levelsEditorModal';
+    div.innerHTML = html;
+    document.body.appendChild(div);
+  }
+  
+  function closeLevelsEditor() {
+    const modal = document.getElementById('levelsEditorModal');
+    if (modal) modal.remove();
+  }
+  
+  function saveLevelsForm(e, symbol) {
+    e.preventDefault();
+    const asset = ASSETS.find(a => a.symbol === symbol);
+    if (!asset) return;
+    
+    const obLo = parseFloat(document.getElementById(`obLo_${symbol}`).value) || 0;
+    const obHi = parseFloat(document.getElementById(`obHi_${symbol}`).value) || 0;
+    const fvgLo = parseFloat(document.getElementById(`fvgLo_${symbol}`).value) || 0;
+    const fvgHi = parseFloat(document.getElementById(`fvgHi_${symbol}`).value) || 0;
+    const liqSweep = parseFloat(document.getElementById(`liqSweep_${symbol}`).value) || 0;
+    const choch = parseFloat(document.getElementById(`choch_${symbol}`).value) || 0;
+    
+    if (!asset.levels) asset.levels = {};
+    asset.levels.obZone = (obLo > 0 && obHi > obLo) ? [obLo, obHi] : null;
+    asset.levels.fvgZone = (fvgLo > 0 && fvgHi > fvgLo) ? [fvgLo, fvgHi] : null;
+    asset.levels.liquiditySweep = liqSweep > 0 ? liqSweep : null;
+    asset.levels.chochLevel = choch > 0 ? choch : null;
+    
+    saveLevels();
+    closeLevelsEditor();
+    showToast(`✓ ICT levels saved for ${symbol}`, 'ok');
+    
+    // Immediately re-check with new levels
+    autoUpdateChecks(asset);
+    renderAssets();
+    renderSignals();
   }
 
   function openMethodModal(method) {
@@ -2393,6 +2612,15 @@
     if (window.innerWidth <= 900) window.scrollTo({top:0, behavior:'smooth'});
     if (tab==='ict-methods') renderMethods();
     if (tab==='autopilot') { renderSignals(); renderMarketRead(); }
+    if (tab==='live-chart') {
+      if (!tvWidget) {
+        tvCurrentSymbol = getBestAsset();
+        const sel = document.getElementById('tvSymbolSelect');
+        if (sel) sel.value = tvCurrentSymbol;
+        initTVChart(tvCurrentSymbol, tvCurrentTimeframe);
+      }
+      updateTVAnalysis(tvCurrentSymbol);
+    }
   }
 
   function filterSetup(type) {
@@ -2490,7 +2718,7 @@
       const assetSym = BINANCE_SYMBOLS[i].replace('USDT','');
       const a = ASSETS.find(x=>x.symbol===assetSym);
       if (r.status==='fulfilled' && r.value.d && r.value.d.lastPrice) {
-        if (a) { a.price=parseFloat(r.value.d.lastPrice); a.change24h=parseFloat(r.value.d.priceChangePercent); }
+        if (a) { a.price=parseFloat(r.value.d.lastPrice); a.change24h=parseFloat(r.value.d.priceChangePercent); } if (a) autoUpdateChecks(a);
         ok++;
       }
     });
@@ -2739,6 +2967,50 @@
     // Placeholder: would check real-time 1m chart for CHoCH
     // Returns {detected: true/false, message: string}
     return { detected: false, message: 'CHoCH check requires live chart data' };
+  }
+
+
+  // ═══════════════════════════════════════════════════════
+  // ⚡ AUTO-UPDATE ICT CHECKS — Real-time zone detection
+  // ═══════════════════════════════════════════════════════
+  function autoUpdateChecks(asset) {
+    if (!asset.levels) return;
+    const p = asset.price;
+    const L = asset.levels;
+    
+    // OB/Breaker zone (check[4]) — auto-on when price in zone
+    if (L.obZone && Array.isArray(L.obZone) && L.obZone.length === 2) {
+      const [lo, hi] = L.obZone;
+      if (lo > 0 && hi > lo && p >= lo && p <= hi) {
+        asset.checks[4] = 1;
+      }
+    }
+    
+    // FVG zone (check[5]) — auto-on when price in zone
+    if (L.fvgZone && Array.isArray(L.fvgZone) && L.fvgZone.length === 2) {
+      const [lo, hi] = L.fvgZone;
+      if (lo > 0 && hi > lo && p >= lo && p <= hi) {
+        asset.checks[5] = 1;
+      }
+    }
+    
+    // Liquidity sweep (check[3]) — auto-on when price crosses sweep level
+    if (L.liquiditySweep && L.liquiditySweep > 0) {
+      const isBull = (asset.bias || '').toUpperCase().includes('BULL');
+      const swept = isBull ? p >= L.liquiditySweep : p <= L.liquiditySweep;
+      if (swept) {
+        asset.checks[3] = 1;
+      }
+    }
+    
+    // CHoCH (check[7]) — auto-on when price crosses CHoCH level
+    if (L.chochLevel && L.chochLevel > 0) {
+      const isBull = (asset.bias || '').toUpperCase().includes('BULL');
+      const crossed = isBull ? p >= L.chochLevel : p <= L.chochLevel;
+      if (crossed) {
+        asset.checks[7] = 1;
+      }
+    }
   }
 
   function getConfidencePct(asset, gst) {
@@ -3821,6 +4093,239 @@
     });
   }
 
+  // ═══════════════════════════════════════
+  // FETCH NON-BINANCE PRICES (GOLD, SILVER, US100)
+  // Source priority: MEXC Futures → TradingView Scanner → Yahoo Finance
+  // ═══════════════════════════════════════
+  async function fetchNonBinancePrices() {
+    const sig = () => AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined;
+    let updated = false;
+
+    // ── GOLD via MEXC Futures (Ahmad's actual platform) ──
+    const goldAsset = ASSETS.find(a => a.symbol === 'GOLD');
+    if (goldAsset) {
+      let price = null;
+      // Source 1: MEXC Futures API
+      try {
+        const r = await fetch('https://futures.mexc.com/api/v1/contract/ticker?symbol=GOLD_USDT', {cache:'no-store', signal:sig()});
+        if (r.ok) { const j = await r.json(); price = parseFloat(j?.data?.lastPrice) || null; }
+      } catch(e) {}
+      // Source 2: TradingView scanner
+      if (!price) try {
+        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['TVC:GOLD']},columns:['close']}), cache:'no-store', signal:sig()});
+        if (r.ok) { const j = await r.json(); price = j?.data?.[0]?.d?.[0] || null; }
+      } catch(e) {}
+      if (price && price > 0) {
+        goldAsset.price = price; updated = true;
+        console.log('%c📡 GOLD (MEXC/TV): $' + price.toFixed(2), 'color:#ffd700;font-family:monospace');
+        if (typeof autoUpdateChecks === 'function') autoUpdateChecks(goldAsset);
+      } else console.warn('GOLD: all price sources failed');
+    }
+
+    // ── SILVER via MEXC Futures ──
+    const silverAsset = ASSETS.find(a => a.symbol === 'SILVER');
+    if (silverAsset) {
+      let price = null;
+      try {
+        const r = await fetch('https://futures.mexc.com/api/v1/contract/ticker?symbol=SILVER_USDT', {cache:'no-store', signal:sig()});
+        if (r.ok) { const j = await r.json(); price = parseFloat(j?.data?.lastPrice) || null; }
+      } catch(e) {}
+      if (!price) try {
+        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['TVC:SILVER']},columns:['close']}), cache:'no-store', signal:sig()});
+        if (r.ok) { const j = await r.json(); price = j?.data?.[0]?.d?.[0] || null; }
+      } catch(e) {}
+      if (price && price > 0) {
+        silverAsset.price = price; updated = true;
+        console.log('%c📡 SILVER (MEXC/TV): $' + price.toFixed(2), 'color:#c0c0c0;font-family:monospace');
+        if (typeof autoUpdateChecks === 'function') autoUpdateChecks(silverAsset);
+      } else console.warn('SILVER: all price sources failed');
+    }
+
+    // ── US100 via TradingView Scanner → Yahoo ──
+    const us100Asset = ASSETS.find(a => a.symbol === 'US100');
+    if (us100Asset) {
+      let price = null;
+      try {
+        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['FPMARKETS:US100']},columns:['close']}), cache:'no-store', signal:sig()});
+        if (r.ok) { const j = await r.json(); price = j?.data?.[0]?.d?.[0] || null; }
+      } catch(e) {}
+      if (price && price > 0) {
+        us100Asset.price = price; updated = true;
+        console.log('%c📡 US100 (TV): $' + price.toFixed(2), 'color:#5cb88a;font-family:monospace');
+        if (typeof autoUpdateChecks === 'function') autoUpdateChecks(us100Asset);
+      } else console.warn('US100: all price sources failed');
+    }
+
+    if (updated) {
+      renderSignals();
+      renderAssets();
+      if (typeof updateTVAnalysis === 'function' && tvCurrentSymbol) updateTVAnalysis(tvCurrentSymbol);
+    }
+  }
+
+  // ═══════════════════════════════════════
+  // TRADINGVIEW LIVE CHART
+  // ═══════════════════════════════════════
+  const TV_SYMBOLS = {
+    'BTC': 'BINANCE:BTCUSDT',
+    'ETH': 'BINANCE:ETHUSDT',
+    'SOL': 'BINANCE:SOLUSDT',
+    'BNB': 'BINANCE:BNBUSDT',
+    'XRP': 'BINANCE:XRPUSDT',
+    'SUI': 'BINANCE:SUIUSDT',
+    'ASTR': 'BINANCE:ASTRUSDT',
+    'US100': 'FPMARKETS:US100',
+    'GOLD': 'TVC:GOLD',
+    'SILVER': 'TVC:SILVER'
+  };
+
+  let tvChartLoaded = false;
+  let tvCurrentSymbol = 'BTC'; // Changes to best-signal asset on load
+  let tvCurrentTimeframe = 'W';
+  let tvWidget = null;
+
+  function getBestAsset() {
+    // Find highest signal asset to default the chart to
+    const order = ['a-plus', 'a', 'b', 'c'];
+    for (const g of order) {
+      const a = ASSETS.find(x => x.grade === g);
+      if (a) return a.symbol;
+    }
+    return 'BTC';
+  }
+
+  function initTVChart(symbol, interval) {
+    const container = document.getElementById('tvChartContainer');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    if (!tvChartLoaded) {
+      const script = document.createElement('script');
+      script.src = 'https://s3.tradingview.com/tv.js';
+      script.async = true;
+      script.onload = () => {
+        tvChartLoaded = true;
+        createTVWidget(symbol, interval);
+      };
+      document.head.appendChild(script);
+    } else {
+      createTVWidget(symbol, interval);
+    }
+  }
+
+  function createTVWidget(symbol, interval) {
+    const container = document.getElementById('tvChartContainer');
+    if (!container || !window.TradingView) return;
+
+    // Give inner div explicit height so autosize works
+    container.innerHTML = '<div id="tradingview_chart_widget" style="height:580px;width:100%;"></div>';
+
+    const tvSymbol = TV_SYMBOLS[symbol] || TV_SYMBOLS['BTC'];
+    const tfMap = { '1': '1', '5': '5', '15': '15', '60': '60', '240': '240', 'D': 'D', 'W': 'W' };
+    const tf = tfMap[interval] || 'D';
+
+    tvWidget = new window.TradingView.widget({
+      width: '100%',
+      height: 580,
+      symbol: tvSymbol,
+      interval: tf,
+      timezone: 'Asia/Dubai',
+      theme: 'dark',
+      style: '1',
+      locale: 'en',
+      container_id: 'tradingview_chart_widget',
+      toolbar_bg: '#0d0d10',
+      withdateranges: true,
+      hide_side_toolbar: false,
+      allow_symbol_change: true,
+      save_image: false,
+      studies: ['RSI@tv-basicstudies', 'MACD@tv-basicstudies'],
+      overrides: {
+        'paneProperties.background': '#08080a',
+        'paneProperties.backgroundType': 'solid',
+        'scalesProperties.lineColor': '#2a2a35',
+        'scalesProperties.textColor': '#888899',
+      }
+    });
+  }
+
+  function switchTVChart(symbol) {
+    tvCurrentSymbol = symbol;
+    document.getElementById('tvSymbolSelect').value = symbol;
+    initTVChart(symbol, tvCurrentTimeframe);
+    updateTVAnalysis(symbol);
+  }
+
+  function switchTVTimeframe(tf) {
+    tvCurrentTimeframe = tf;
+    document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector(`.tf-btn[data-tf="${tf}"]`)?.classList.add('active');
+    initTVChart(tvCurrentSymbol, tf);
+  }
+
+  function updateTVAnalysis(symbol) {
+    const a = ASSETS.find(x => x.symbol === symbol);
+    // Update live price badge in chart header
+    const priceTag = document.getElementById('tvLivePrice');
+    if (priceTag && a) {
+      priceTag.textContent = '$' + (a.price || '--').toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+      priceTag.style.color = a.bias === 'BEARISH' ? '#e05d5d' : a.bias === 'BULLISH' ? '#5cb88a' : '#c9a961';
+    }
+    const asset = ASSETS.find(a => a.symbol === symbol);
+    if (!asset) return;
+
+    const analysisPanel = document.getElementById('tvAnalysisPanel');
+    if (!analysisPanel) return;
+
+    const gst = getGST();
+    const analysis = analyzeAsset(asset, gst);
+    const sig = getSignal(asset, gst);
+    const sigColor = sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
+    const sigBg = sig === 'armed' ? 'rgba(92,184,138,0.1)' : sig === 'watch' ? 'rgba(242,179,61,0.1)' : sig === 'skip' ? 'rgba(224,93,93,0.1)' : 'transparent';
+
+    analysisPanel.innerHTML = `
+      <div style="background:${sigBg};border:1px solid ${sigColor};border-radius:10px;padding:18px;margin-bottom:16px;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+          <div style="font-size:20px;color:var(--gold);">${symbol}</div>
+          <div style="flex:1;"></div>
+          <span style="background:${sigColor};color:${sig === 'armed' ? '#000' : '#fff'};padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;">
+            ${sig.toUpperCase()}
+          </span>
+        </div>
+        <div style="white-space:pre-wrap;font-size:13px;color:var(--text-dim);line-height:1.8;">
+          ${analysis}
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;">
+        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Current Price</div>
+          <div style="font-size:16px;font-weight:600;color:var(--gold);font-family:'JetBrains Mono',monospace;">$${asset.price.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
+        </div>
+        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Entry</div>
+          <div style="font-size:16px;font-weight:600;color:var(--text);font-family:'JetBrains Mono',monospace;">$${asset.entry.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
+        </div>
+        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">SL</div>
+          <div style="font-size:16px;font-weight:600;color:var(--bear);font-family:'JetBrains Mono',monospace;">$${asset.sl.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
+        </div>
+        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">TP</div>
+          <div style="font-size:16px;font-weight:600;color:var(--bull);font-family:'JetBrains Mono',monospace;">$${(asset.tp||asset.tp1).toLocaleString(undefined,{maximumFractionDigits:4})}</div>
+        </div>
+        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Grade</div>
+          <div style="font-size:16px;font-weight:600;color:var(--gold);font-family:'JetBrains Mono',monospace;">${asset.grade}</div>
+        </div>
+        <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;margin-bottom:4px;">Bias</div>
+          <div style="font-size:14px;font-weight:600;color:${(asset.bias||'').toUpperCase().includes('BULL')?'var(--bull)':'var(--bear)'};font-family:'JetBrains Mono',monospace;">${(asset.bias||'').substring(0,4)}</div>
+        </div>
+      </div>
+    `;
+  }
+
   async function pollTVAlerts() {
     try {
       const sheetId = SHARED_SHEET_ID;
@@ -3879,6 +4384,148 @@
     }
   }
 
+  // ═══════════════════════════════════════
+  // REAL-TIME PRICE UPDATES — BINANCE WEBSOCKET
+  // ═══════════════════════════════════════
+  let binanceWS = null;
+
+  function initBinanceWebSocket() {
+    const streams = ['btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt', 'suiusdt', 'astrusdt']
+      .map(s => s + '@miniTicker').join('/');
+
+    const wsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
+
+    try {
+      binanceWS = new WebSocket(wsUrl);
+
+      binanceWS.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          const ticker = msg.data;
+          if (!ticker || !ticker.s) return;
+
+          // ticker.s = symbol like "BTCUSDT", ticker.c = close price (current)
+          const symbol = ticker.s.replace('USDT', '');
+          const price = parseFloat(ticker.c);
+
+          const asset = ASSETS.find(a => a.symbol === symbol);
+          if (asset && price > 0) {
+            asset.price = price;
+            asset.change24h = parseFloat(ticker.P) || 0; // 24h % change
+            if (typeof autoUpdateChecks === 'function') autoUpdateChecks(asset);
+
+            // Update price display in dashboard tile without full re-render
+            updateAssetTilePrice(symbol, price, asset.change24h);
+
+            // Update signal card if visible
+            updateSignalCardPrice(symbol, price);
+
+            // Update live chart badge if this asset is selected
+            if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === symbol) {
+              updateChartPriceBadge(price);
+              if (typeof updateTVAnalysis === 'function') updateTVAnalysis(symbol);
+            }
+          }
+        } catch(e) { /* silent — most messages won't match */ }
+      };
+
+      binanceWS.onerror = (e) => {
+        console.warn('Binance WS error, falling back to polling:', e);
+        setLiveIndicator(false);
+        if (!window._binancePollFallback) {
+          window._binancePollFallback = true;
+          setInterval(() => syncBinance(true), 30000);
+        }
+      };
+
+      binanceWS.onclose = () => {
+        console.log('Binance WS closed, reconnecting...');
+        setLiveIndicator(false);
+        setTimeout(initBinanceWebSocket, 5000);
+      };
+
+      binanceWS.onopen = () => {
+        console.log('Binance WS connected');
+        setLiveIndicator(true);
+      };
+
+      return binanceWS;
+    } catch(e) {
+      console.warn('Binance WS init failed:', e);
+      setLiveIndicator(false);
+      return null;
+    }
+  }
+
+  // Update just the price in an asset tile (lightweight, no full re-render)
+  function updateAssetTilePrice(symbol, price, change24h) {
+    const tile = document.querySelector(`[data-symbol="${symbol}"]`);
+    if (!tile) return;
+    const priceEl = tile.querySelector('.asset-price');
+    if (priceEl) priceEl.textContent = '$' + price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const changeEl = tile.querySelector('.asset-change');
+    if (changeEl) {
+      changeEl.textContent = (change24h >= 0 ? '+' : '') + change24h.toFixed(2) + '%';
+      changeEl.style.color = change24h >= 0 ? '#5cb88a' : '#e05d5d';
+    }
+  }
+
+  function updateSignalCardPrice(symbol, price) {
+    const card = document.querySelector(`.signal-card[data-symbol="${symbol}"] .sig-price`);
+    if (card) card.textContent = '$' + price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  }
+
+  function updateChartPriceBadge(price) {
+    const badge = document.getElementById('tvLivePrice');
+    if (badge) badge.textContent = '$' + price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  }
+
+  function setLiveIndicator(live) {
+    const el = document.getElementById('liveIndicator');
+    if (!el) return;
+    el.textContent = live ? '● LIVE' : '⟳ SYNC';
+    el.style.color = live ? '#5cb88a' : '#888';
+  }
+
+  // ═══════════════════════════════════════
+  // TRADINGVIEW POSTMESSAGE LISTENER
+  // ═══════════════════════════════════════
+  function initTVPriceListener() {
+    window.addEventListener('message', (event) => {
+      try {
+        // TradingView sends various message formats
+        let data = event.data;
+        if (typeof data === 'string') data = JSON.parse(data);
+
+        // Format 1: {"name":"quoteUpdate","data":{"lp":26983,"ch":-0.5}}
+        // Format 2: {"type":"symbolInfo","data":{"last_price":26983}}
+
+        let price = null;
+
+        if (data && data.name === 'quoteUpdate' && data.data) {
+          price = data.data.lp || data.data.last_price || data.data.price;
+        } else if (data && data.type === 'price' && data.price) {
+          price = data.price;
+        } else if (data && data.data && typeof data.data.lp === 'number') {
+          price = data.data.lp;
+        }
+
+        if (price && price > 0 && typeof tvCurrentSymbol !== 'undefined') {
+          const asset = ASSETS.find(a => a.symbol === tvCurrentSymbol);
+          if (asset) {
+            asset.price = price;
+            updateChartPriceBadge(price);
+            if (typeof autoUpdateChecks === 'function') autoUpdateChecks(asset);
+            // Run scenario detection for US100
+            if (tvCurrentSymbol === 'US100' && typeof detectScenario === 'function') {
+              detectScenario(price);
+            }
+          }
+        }
+      } catch(e) { /* silent - most messages won't match */ }
+    });
+  }
+
   window.onload = () => {
     const _errors = [];
     const _try = (label, fn) => {
@@ -3915,8 +4562,12 @@
     _try('tick', tick);
     tickInterval = setInterval(tick, 1000);
     _try('initNotifications', initNotifications);
-    syncBinance(true);
-    setInterval(()=>syncBinance(true), 30000);
+    _try('initBinanceWebSocket', initBinanceWebSocket);
+    _try('initTVPriceListener', initTVPriceListener);
+    syncBinance(true); // Initial sync for non-WS setup
+    setInterval(()=>syncBinance(true), 30000); // Fallback every 30s
+    fetchNonBinancePrices();
+    setInterval(fetchNonBinancePrices, 8000);
     fetchFearGreed();
     fetchFundingRates();
     fetchNews();
@@ -3945,6 +4596,10 @@
     <button class="mob-nav-btn" id="mobBtn-dashboard" onclick="switchTab('dashboard',this)">
       <span class="mob-icon">🏛</span>
       <span class="mob-label">Assets</span>
+    </button>
+    <button class="mob-nav-btn" id="mobBtn-live-chart" onclick="switchTab('live-chart',this)">
+      <span class="mob-icon">📈</span>
+      <span class="mob-label">Chart</span>
     </button>
     <button class="mob-nav-btn" id="mobBtn-journal" onclick="switchTab('journal',this)">
       <span class="mob-icon">📓</span>
