@@ -1591,7 +1591,7 @@
     {
       symbol: 'SILVER', platform: 'MEXC FUTURES', type: 'FUTURES',
       entry: 75.65, sl: 75.50, tp1: 75.90, tp2: 76.20,
-      grade: 'b', armed: false, price: 75.655, change24h: 0,
+      grade: 'b', armed: false, price: 32.80, change24h: 0,
       bias: 'BEARISH', dol: '$68–70', invalidation: 'Monthly close > $90',
       remarks: 'Retracing after strong move. Fib 0.5–0.618 zone.',
       watch: '$0.618 Fib ($74.69) SSL sweep + CHoCH → long. Or continuation short.',
@@ -4133,28 +4133,31 @@
       } else console.warn('GOLD: all sources failed or bad value:', price);
     }
 
-    // ── SILVER: metals.live → TradingView OANDA:XAGUSD → TVC:SILVER ──
-    // NOTE: Binance XAGUSDT removed — it's a synthetic token, NOT spot silver price
+    // ── SILVER: frankfurter.app (XAG→USD) → metals.live → TradingView OANDA:XAGUSD ──
+    // NOTE: Binance XAGUSDT removed — it's a synthetic token, NOT real spot silver price
     const silverAsset = ASSETS.find(a => a.symbol === 'SILVER');
     if (silverAsset) {
       let price = null;
-      try {
-        const r = await fetch('https://api.metals.live/v1/spot/silver', {cache:'no-store', signal:sig()});
-        if (r.ok) price = parseMetals(await r.json(), 'silver');
+      const validSilver = p => p && p > 10 && p < 300;
+      // Source 1: frankfurter.app — real XAG/USD spot, proper CORS headers, free
+      if (!price) try {
+        const r = await fetch('https://api.frankfurter.app/latest?from=XAG&to=USD', {cache:'no-store', signal:sig()});
+        if (r.ok) { const j = await r.json(); const p = j?.rates?.USD; if (validSilver(p)) price = p; }
       } catch(e) {}
-      // Validate: real silver is between $10 and $300/oz — reject garbage values
-      if (price && (price < 10 || price > 300)) { console.warn('SILVER metals.live returned bad value:', price); price = null; }
+      // Source 2: metals.live
+      if (!price) try {
+        const r = await fetch('https://api.metals.live/v1/spot/silver', {cache:'no-store', signal:sig()});
+        if (r.ok) { const p = parseMetals(await r.json(), 'silver'); if (validSilver(p)) price = p; }
+      } catch(e) {}
+      // Source 3: TradingView scanner OANDA:XAGUSD
       if (!price) try {
         const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['OANDA:XAGUSD','TVC:SILVER','FX:XAGUSD']},columns:['close']}), cache:'no-store', signal:sig()});
         if (r.ok) {
           const j = await r.json();
-          for (const row of (j?.data || [])) {
-            const p = row?.d?.[0];
-            if (p && p > 10 && p < 300) { price = p; break; }
-          }
+          for (const row of (j?.data || [])) { const p = row?.d?.[0]; if (validSilver(p)) { price = p; break; } }
         }
       } catch(e) {}
-      if (price && price > 10) {
+      if (price) {
         silverAsset.price = price; updated = true;
         console.log('%c📡 SILVER: $' + price.toFixed(2), 'color:#c0c0c0;font-family:monospace');
         if (typeof autoUpdateChecks === 'function') autoUpdateChecks(silverAsset);
