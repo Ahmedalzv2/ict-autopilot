@@ -1732,6 +1732,31 @@
     return new Date(utcMs + 4 * 3600000);
   }
 
+  // GOLD / SILVER (XAU/XAG spot) and US100 (CME index futures) follow the
+  // CME/forex weekend close. In GST the window is roughly:
+  //   Friday 22:00 GST  →  Monday 02:00 GST
+  // (CME closes Fri 16:00 CT, reopens Sun 17:00 CT.)
+  // Crypto trades 24/7 and is never closed.
+  const WEEKEND_CLOSED_SYMBOLS = ['GOLD','SILVER','US100'];
+  function isMarketClosed(asset, gst) {
+    if (!asset || !WEEKEND_CLOSED_SYMBOLS.includes(asset.symbol)) return false;
+    if (!gst) gst = getGST();
+    const day = gst.getDay();        // 0 Sun, 5 Fri, 6 Sat
+    const hour = gst.getHours();
+    if (day === 6) return true;                       // all of Saturday
+    if (day === 0 && hour < 22) return true;          // Sunday before 22:00 GST
+    if (day === 5 && hour >= 22) return true;         // Friday after 22:00 GST
+    return false;
+  }
+  function nextMarketOpen(gst) {
+    if (!gst) gst = getGST();
+    const day = gst.getDay();
+    if (day === 5 && gst.getHours() >= 22) return 'Sunday 22:00 GST';
+    if (day === 6) return 'Sunday 22:00 GST';
+    if (day === 0 && gst.getHours() < 22) return 'tonight 22:00 GST';
+    return 'now (open)';
+  }
+
   // Format GST Date object as 12h AM/PM (e.g. "2:35 PM")
   function fmtTime(gst, withSec) {
     let h = gst.getHours(), m = gst.getMinutes(), s = gst.getSeconds();
@@ -1860,6 +1885,7 @@
   // SIGNAL BOARD
   // ═══════════════════════════════════════
   function getSignal(asset, gst) {
+    if (isMarketClosed(asset, gst)) return 'closed';
     const pct = Math.abs((asset.price - asset.entry) / asset.entry);
     const score = asset.checks.reduce((a,b)=>a+b,0);
     const session = getCurrentSession(gst);
@@ -1895,9 +1921,10 @@
       const pct = ((a.price - a.entry) / a.entry * 100).toFixed(2);
       const dir = a.price > a.entry ? '↑' : a.price < a.entry ? '↓' : '=';
       const priceColor = a.change24h > 0 ? 'var(--bull)' : a.change24h < 0 ? 'var(--bear)' : 'var(--text)';
-      const badgeClass = `badge-${sig}`;
-      const cardClass = sig === 'enter' ? 'enter' : sig === 'armed' ? 'armed' : sig === 'watch' ? 'watch' : sig === 'skip' ? 'skip' : '';
-      const badgeText = sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+      const isClosed = sig === 'closed';
+      const badgeClass = isClosed ? 'badge-skip' : `badge-${sig}`;
+      const cardClass = isClosed ? 'skip' : sig === 'enter' ? 'enter' : sig === 'armed' ? 'armed' : sig === 'watch' ? 'watch' : sig === 'skip' ? 'skip' : '';
+      const badgeText = isClosed ? `🔒 CLOSED · ${nextMarketOpen(gst)}` : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
       const modeTag = a.tradeMode === 'spot' ? ' <span style="font-size:8px;background:rgba(201,169,97,0.15);color:var(--gold);border-radius:3px;padding:1px 4px;">SPOT</span>' : '';
 
       // Feature 1: MTF Badge
@@ -2355,8 +2382,8 @@
     const isBull = (asset.bias || '').toUpperCase().includes('BULL');
     const _tp = asset.tp || asset.tp1 || 0;
     const rr = asset.entry && asset.sl && _tp ? Math.abs((_tp - asset.entry)/(asset.entry - asset.sl)).toFixed(1) : '—';
-    const sigColor = sig === 'enter' ? 'var(--bear)' : sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
-    const sigLabel = sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+    const sigColor = sig === 'closed' ? 'var(--liq)' : sig === 'enter' ? 'var(--bear)' : sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
+    const sigLabel = sig === 'closed' ? `🔒 MARKET CLOSED · reopens ${nextMarketOpen(gst)}` : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
     const savedRemark = (() => { try { return JSON.parse(localStorage.getItem('ict_remarks') || '{}')[asset.symbol] || ''; } catch(e) { return ''; } })();
 
     // MTF section — computed before template to avoid nested backtick syntax error
@@ -3094,6 +3121,9 @@
   }
 
   function analyzeAsset(asset, gst) {
+    if (isMarketClosed(asset, gst)) {
+      return `🔒 Market closed (weekend). ${asset.symbol} reopens ${nextMarketOpen(gst)}. No analysis or entries until market reopens.`;
+    }
     const pct = Math.abs((asset.price - asset.entry) / asset.entry * 100);
     const score = asset.checks.reduce((a,b)=>a+b,0);
     const maxScore = asset.checks.length;
@@ -3186,7 +3216,7 @@
       const color = sig === 'enter' ? 'var(--bear)' : sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
       const cardCls = sig === 'enter' ? 'armed-analysis' : sig === 'armed' ? 'armed-analysis' : sig === 'watch' ? 'watch-analysis' : '';
       const badgeBg = sig === 'enter' ? 'rgba(224,93,93,0.2)' : sig === 'armed' ? 'rgba(92,184,138,0.2)' : sig === 'watch' ? 'rgba(242,179,61,0.2)' : sig === 'skip' ? 'rgba(224,93,93,0.15)' : 'rgba(101,101,109,0.2)';
-      const badgeLabel = sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+      const badgeLabel = sig === 'closed' ? `🔒 CLOSED` : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
 
       return `
         <div class="analysis-card ${cardCls}">
@@ -4258,6 +4288,13 @@
   }
 
   async function autoAnalyzeAsset(asset) {
+    // Skip closed markets — don't burn API calls and don't fire stale signals
+    if (isMarketClosed(asset)) {
+      asset.tfEntries = { closed: true, reopens: nextMarketOpen() };
+      asset.tfEntriesUpdated = Date.now();
+      _lastEntryCount[asset.symbol] = 0;
+      return;
+    }
     const syms = _resolveSymbols(asset);
     if (!syms.binance && !syms.mexc) { asset.tfEntries = null; return; }
     const tfEntries = {};
@@ -4301,6 +4338,7 @@
   // Render the per-TF entry table for the modal
   function renderTFEntryHTML(tfEntries) {
     if (!tfEntries) return '<div style="font-size:11px;color:var(--text-mute);font-family:\'JetBrains Mono\',monospace;">⟳ Auto-analyzing across timeframes…</div>';
+    if (tfEntries.closed) return `<div style="font-size:12px;color:var(--liq);font-family:'JetBrains Mono',monospace;padding:8px 4px;">🔒 Market closed for the weekend · reopens ${tfEntries.reopens || 'Sunday 22:00 GST'}. Auto-analysis paused.</div>`;
     const rows = TF_LIST.map(tf => {
       const e = tfEntries[tf];
       if (!e || e.error) return `<tr><td style="padding:6px 8px;color:var(--text-mute);">${TF_LABELS[tf]}</td><td colspan="6" style="padding:6px 8px;color:var(--text-mute);font-size:10px;">no data</td></tr>`;
