@@ -2472,6 +2472,14 @@
       </div>
 
 
+      <!-- 🌐 Social Pulse · LunarCrush sentiment + galaxy score -->
+      <div style="margin-bottom:16px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div style="font-size:11px;color:var(--gold);font-weight:600;text-transform:uppercase;letter-spacing:.1em;">🌐 Social Pulse · X / Reddit / YouTube aggregate</div>
+        </div>
+        ${renderSocialPulseHTML(asset)}
+      </div>
+
       <!-- 🤖 AI Auto-Analysis · Multi-Timeframe Entry Table -->
       <div style="margin-bottom:16px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
@@ -3267,6 +3275,90 @@
   // Paste the deployment URL below in APPS_SCRIPT_URL:
 
   const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxmszoVaDfeEQ0-t7iy3_aWcfs1V0mu49W8s5832u9iSWY_AQllAsOtZ1Vavwdt3u2pAg/exec';
+
+  // ═══════════════════════════════════════════════════════
+  // 🌐 SOCIAL PULSE — LunarCrush social sentiment per asset
+  // Sign up free at https://lunarcrush.com/developers, paste key here.
+  // Free tier = 100 calls/day, 10/min. We cache 5 min per coin.
+  // ═══════════════════════════════════════════════════════
+  const LUNARCRUSH_API_KEY = ''; // <-- paste your key here, e.g. 'abcd1234...'
+  const _socialCache = {}; // { symbol: { data, ts } }
+  const SOCIAL_TTL_MS = 5 * 60 * 1000;
+
+  async function fetchSocialPulse(symbol) {
+    if (!LUNARCRUSH_API_KEY) return { error: 'no-key' };
+    // Map dashboard tickers to LunarCrush coin symbols where they differ
+    const lcSymbol = ({
+      'ASTR':'aster', 'ASTER':'aster', 'BTC':'btc', 'ETH':'eth', 'BNB':'bnb',
+      'XRP':'xrp', 'SUI':'sui', 'SOL':'sol'
+    })[symbol] || symbol.toLowerCase();
+    const cached = _socialCache[symbol];
+    if (cached && (Date.now() - cached.ts) < SOCIAL_TTL_MS) return cached.data;
+    try {
+      const r = await fetch(`https://lunarcrush.com/api4/public/coins/${lcSymbol}/v1`, {
+        headers: { 'Authorization': 'Bearer ' + LUNARCRUSH_API_KEY }
+      });
+      if (!r.ok) return { error: `http-${r.status}` };
+      const j = await r.json();
+      const d = j?.data || {};
+      const out = {
+        galaxy: d.galaxy_score ?? null,
+        altRank: d.alt_rank ?? null,
+        sentiment: d.sentiment ?? null,
+        socialDominance: d.social_dominance ?? null,
+        socialVolume24h: d.social_volume_24h ?? d.interactions_24h ?? null,
+        priceChange24h: d.percent_change_24h ?? null,
+        topic: d.topic ?? lcSymbol,
+        ts: Date.now()
+      };
+      _socialCache[symbol] = { data: out, ts: Date.now() };
+      return out;
+    } catch(e) { return { error: e.message }; }
+  }
+
+  function renderSocialPulseHTML(asset) {
+    if (!LUNARCRUSH_API_KEY) {
+      return `<div style="font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">⚠️ Add your LunarCrush API key to enable social sentiment. See LUNARCRUSH_API_KEY in source.</div>`;
+    }
+    const cached = _socialCache[asset.symbol]?.data;
+    if (!cached) {
+      // Trigger lazy fetch + re-render
+      fetchSocialPulse(asset.symbol).then(() => { try { refreshOpenModal(); } catch(e) {} });
+      return `<div style="font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">⟳ Fetching social pulse…</div>`;
+    }
+    if (cached.error) {
+      return `<div style="font-size:11px;color:var(--bear);font-family:'JetBrains Mono',monospace;">Social fetch failed: ${cached.error}</div>`;
+    }
+    const galaxyColor = cached.galaxy >= 70 ? 'var(--bull)' : cached.galaxy >= 50 ? 'var(--liq)' : cached.galaxy != null ? 'var(--bear)' : 'var(--text-mute)';
+    const sentColor   = cached.sentiment >= 70 ? 'var(--bull)' : cached.sentiment >= 50 ? 'var(--liq)' : cached.sentiment != null ? 'var(--bear)' : 'var(--text-mute)';
+    const fmt = v => v == null ? '—' : (typeof v === 'number' ? (v >= 1000 ? v.toLocaleString(undefined,{maximumFractionDigits:0}) : v.toFixed(1)) : v);
+    return `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;font-family:'JetBrains Mono',monospace;">
+        <div style="background:var(--bg);padding:10px;border-radius:8px;text-align:center;border:1px solid var(--border);">
+          <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;">Galaxy</div>
+          <div style="font-size:18px;font-weight:700;color:${galaxyColor};">${fmt(cached.galaxy)}</div>
+          <div style="font-size:9px;color:var(--text-mute);">/100</div>
+        </div>
+        <div style="background:var(--bg);padding:10px;border-radius:8px;text-align:center;border:1px solid var(--border);">
+          <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;">Alt Rank</div>
+          <div style="font-size:18px;font-weight:700;color:var(--gold);">#${fmt(cached.altRank)}</div>
+          <div style="font-size:9px;color:var(--text-mute);">lower = hotter</div>
+        </div>
+        <div style="background:var(--bg);padding:10px;border-radius:8px;text-align:center;border:1px solid var(--border);">
+          <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;">Sentiment</div>
+          <div style="font-size:18px;font-weight:700;color:${sentColor};">${fmt(cached.sentiment)}%</div>
+          <div style="font-size:9px;color:var(--text-mute);">bull bias</div>
+        </div>
+        <div style="background:var(--bg);padding:10px;border-radius:8px;text-align:center;border:1px solid var(--border);">
+          <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;">Social 24h</div>
+          <div style="font-size:14px;font-weight:700;color:var(--text);">${fmt(cached.socialVolume24h)}</div>
+          <div style="font-size:9px;color:var(--text-mute);">posts + likes</div>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--text-mute);margin-top:8px;font-family:'JetBrains Mono',monospace;">
+        LunarCrush · ${Math.round((Date.now()-cached.ts)/1000)}s ago · social dominance ${fmt(cached.socialDominance)}%
+      </div>`;
+  }
 
   async function pushToSheet() {
     const statusEl = document.getElementById('pushSheetStatus');
