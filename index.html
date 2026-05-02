@@ -1152,6 +1152,9 @@
             <div class="signals-grid" id="signalsGrid"></div>
           </div>
 
+          <!-- 🔔 Live AI entry alerts (auto-derived, 3+ TFs aligned) -->
+          <div id="entryAlertsHost" style="margin-bottom:16px;"></div>
+
           <!-- Market context -->
           <div class="ap-card full gold-border">
             <div class="ap-card-title">⚡ Claude's Active Market Read</div>
@@ -2442,10 +2445,14 @@
       </div>
 
 
-      <!-- Edit ICT Levels Button -->
-      <div style="margin-bottom:16px;">
-        <button onclick="openLevelsEditor('${asset.symbol}')" style="width:100%;padding:12px;background:rgba(201,169,97,0.12);border:1px solid rgba(201,169,97,0.4);border-radius:8px;color:var(--gold);font-weight:600;cursor:pointer;font-size:13px;transition:all 0.2s;">🎯 Set ICT Levels · Auto-Update Zones</button>
-        <div style="font-size:10px;color:var(--text-mute);margin-top:4px;">Define OB, FVG, liquidity sweep, and CHoCH levels. Checks auto-activate when price enters zones.</div>
+      <!-- 🤖 AI Auto-Analysis · Multi-Timeframe Entry Table -->
+      <div style="margin-bottom:16px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div style="font-size:11px;color:var(--gold);font-weight:600;text-transform:uppercase;letter-spacing:.1em;">🤖 AI Auto-Analysis · Entry by Timeframe</div>
+          <div style="font-size:9px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">${asset.tfEntriesUpdated ? Math.round((Date.now()-asset.tfEntriesUpdated)/1000) + 's ago' : 'pending…'}</div>
+        </div>
+        ${renderTFEntryHTML(asset.tfEntries)}
+        <div style="margin-top:10px;font-size:10px;color:var(--text-mute);">Levels (FVG · OB · sweep · CHoCH) auto-derived from candles. 3+ confluences on a TF = ENTRY ready · you'll get a notification.</div>
       </div>
 
       <!-- Checklist -->
@@ -4034,9 +4041,15 @@
     renderSignals();
     renderAnalysis();
     renderSetups();
-    showToast(`✓ ${sym} added · now tracking with full ICT signal logic`, 'ok');
-    // Sync price immediately
+    showToast(`✓ ${sym} added · auto-analyzing across 1m/5m/15m/1h/4h/24h…`, 'ok');
+    // Sync price + auto-analyze across all TFs immediately
     syncBinance(true);
+    if (typeof autoAnalyzeAsset === 'function') {
+      autoAnalyzeAsset(newAsset).then(() => {
+        try { renderAnalysis(); } catch(e) {}
+        try { refreshOpenModal(); } catch(e) {}
+      }).catch(()=>{});
+    }
   }
 
   function removeCustomAsset(sym) {
@@ -4120,6 +4133,244 @@
   async function fetchAllMTF() {
     const nonBinance = ASSETS.filter(a => !NON_BINANCE_ASSETS.includes(a.symbol));
     await Promise.all(nonBinance.map(a => fetchMTFAlignment(a)));
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 🤖 AUTO ICT ANALYSIS — multi-timeframe entry detection
+  // Pulls klines from Binance/MEXC, auto-derives FVG / sweep /
+  // displacement / CHoCH per TF; fires entry alert at 3+ alignments.
+  // No manual ICT level entry required.
+  // ═══════════════════════════════════════════════════════
+  const TF_LIST   = ['1m','5m','15m','1h','4h','1d'];
+  const TF_LABELS = { '1m':'1m','5m':'5m','15m':'15m','1h':'1h','4h':'4h','1d':'24h' };
+  const TF_MEXC   = { '1m':'Min1','5m':'Min5','15m':'Min15','1h':'Min60','4h':'Hour4','1d':'Day1' };
+  const TF_MS     = { '1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000 };
+
+  let _autoAnalysisRunning = false;
+  let _lastEntryCount = {};         // {symbol: prevReadyTfCount}
+  let _entryAlertQueue = [];        // [{symbol, dir, tfs, ts, confirmed:false}]
+
+  async function fetchBinanceKlines(symbol, interval, limit=50) {
+    for (const host of BINANCE_HOSTS) {
+      try {
+        const r = await fetch(`https://${host}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, {cache:'no-store'});
+        if (!r.ok) continue;
+        const j = await r.json();
+        if (!Array.isArray(j) || j.length === 0) continue;
+        return j.map(k => ({ t:+k[0], o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5] }));
+      } catch(e) {}
+    }
+    return null;
+  }
+
+  async function fetchMexcKlines(contractSym, interval, limit=50) {
+    try {
+      const start = Math.floor((Date.now() - limit * (TF_MS[interval]||60000)) / 1000);
+      const r = await fetch(`https://contract.mexc.com/api/v1/contract/kline/${contractSym}?interval=${TF_MEXC[interval]||'Min1'}&start=${start}`, {cache:'no-store'});
+      if (!r.ok) return null;
+      const j = await r.json();
+      const d = j?.data;
+      if (!d?.time?.length) return null;
+      return d.time.map((t,i) => ({ t:t*1000, o:+d.open[i], h:+d.high[i], l:+d.low[i], c:+d.close[i], v:+(d.vol?.[i]||0) }));
+    } catch(e) { return null; }
+  }
+
+  function _atr(klines, period=14) {
+    if (klines.length < period+1) return 0;
+    let sum = 0;
+    for (let i = klines.length - period; i < klines.length; i++) {
+      const h = klines[i].h, l = klines[i].l, pc = klines[i-1].c;
+      sum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+    }
+    return sum / period;
+  }
+
+  function _detectFVG(k) {
+    // 3-candle imbalance somewhere in last 5
+    if (k.length < 5) return null;
+    for (let i = k.length - 5; i <= k.length - 3; i++) {
+      const a = k[i], c = k[i+2];
+      if (a.h < c.l) return { dir:'bull', lo:a.h, hi:c.l };
+      if (a.l > c.h) return { dir:'bear', lo:c.h, hi:a.l };
+    }
+    return null;
+  }
+
+  function _detectSweep(k) {
+    if (k.length < 22) return null;
+    const last = k[k.length - 1];
+    const prior = k.slice(-22, -1);
+    const pHi = Math.max(...prior.map(x => x.h));
+    const pLo = Math.min(...prior.map(x => x.l));
+    if (last.h > pHi && last.c < pHi) return { dir:'bear', level:pHi };
+    if (last.l < pLo && last.c > pLo) return { dir:'bull', level:pLo };
+    return null;
+  }
+
+  function _detectDisplacement(k) {
+    if (k.length < 16) return null;
+    const last = k[k.length - 1];
+    const range = Math.abs(last.c - last.o);
+    const atr = _atr(k, 14);
+    if (atr > 0 && range > 1.8 * atr) return { dir: last.c > last.o ? 'bull' : 'bear', size: range / atr };
+    return null;
+  }
+
+  function _detectCHoCH(k) {
+    if (k.length < 10) return null;
+    const recent = k.slice(-5), prior = k.slice(-10, -5);
+    const rHi = Math.max(...recent.map(x=>x.h)), rLo = Math.min(...recent.map(x=>x.l));
+    const pHi = Math.max(...prior.map(x=>x.h)), pLo = Math.min(...prior.map(x=>x.l));
+    const lastClose = k[k.length-1].c;
+    if (rLo < pLo && lastClose < pLo) return { dir:'bear' };
+    if (rHi > pHi && lastClose > pHi) return { dir:'bull' };
+    return null;
+  }
+
+  function _analyzeKlines(k) {
+    if (!k || k.length < 22) return { error:true };
+    const last = k[k.length - 1];
+    const fvg = _detectFVG(k);
+    const sweep = _detectSweep(k);
+    const disp = _detectDisplacement(k);
+    const choch = _detectCHoCH(k);
+    const dirs = [fvg?.dir, sweep?.dir, disp?.dir, choch?.dir].filter(Boolean);
+    const bull = dirs.filter(d=>d==='bull').length;
+    const bear = dirs.filter(d=>d==='bear').length;
+    const dir = bull > bear ? 'bull' : bear > bull ? 'bear' : null;
+    const score = (fvg?1:0) + (sweep?1:0) + (disp?1:0) + (choch?1:0);
+    return {
+      bias: last.c > last.o ? 'bull' : 'bear',
+      dir,
+      fvg:!!fvg, sweep:!!sweep, displacement:!!disp, choch:!!choch,
+      score,
+      entryReady: score >= 3 && dir !== null,
+      price: last.c
+    };
+  }
+
+  function _resolveSymbols(asset) {
+    // Returns { binance, mexc } pair-symbol candidates per asset
+    if (asset.symbol === 'GOLD')   return { binance:'XAUTUSDT', mexc:'XAUT_USDT' };
+    if (asset.symbol === 'SILVER') return { binance:null,        mexc:'XAG_USDT'  };
+    if (asset.symbol === 'US100')  return { binance:null,        mexc:null        }; // CFD-only, skip MTF
+    return { binance: asset.symbol + 'USDT', mexc: (MEXC_PERP_MAP[asset.symbol+'USDT'] || asset.symbol + '_USDT') };
+  }
+
+  async function autoAnalyzeAsset(asset) {
+    const syms = _resolveSymbols(asset);
+    if (!syms.binance && !syms.mexc) { asset.tfEntries = null; return; }
+    const tfEntries = {};
+    for (const tf of TF_LIST) {
+      let kl = null;
+      if (syms.binance) kl = await fetchBinanceKlines(syms.binance, tf, 50);
+      if ((!kl || kl.length < 22) && syms.mexc) kl = await fetchMexcKlines(syms.mexc, tf, 50);
+      tfEntries[tf] = _analyzeKlines(kl);
+    }
+    asset.tfEntries = tfEntries;
+    asset.tfEntriesUpdated = Date.now();
+
+    // Transition detection: fire entry alert when 3+ TFs flip to ready
+    const ready = TF_LIST.filter(tf => tfEntries[tf]?.entryReady);
+    const readyCount = ready.length;
+    const prevCount = _lastEntryCount[asset.symbol] || 0;
+    _lastEntryCount[asset.symbol] = readyCount;
+    if (readyCount >= 3 && prevCount < 3) {
+      const dir = tfEntries[ready[0]]?.dir;
+      _entryAlertQueue.push({ symbol: asset.symbol, dir, tfs: ready.map(t=>TF_LABELS[t]), ts: Date.now(), confirmed: false });
+      const dirLabel = dir === 'bull' ? '🟢 LONG' : '🔴 SHORT';
+      try { showToast(`🔔 ${asset.symbol} entry ready · ${dirLabel} · ${ready.map(t=>TF_LABELS[t]).join(' · ')}`, 'ok'); } catch(e) {}
+      try { renderEntryAlerts(); } catch(e) {}
+    }
+  }
+
+  async function autoAnalyzeAll() {
+    if (_autoAnalysisRunning) return;
+    _autoAnalysisRunning = true;
+    try {
+      // Run sequentially per asset (within asset, TFs sequential too) to keep API load gentle
+      for (const a of ASSETS) {
+        try { await autoAnalyzeAsset(a); } catch(e) { console.warn('autoAnalyze', a.symbol, e); }
+      }
+      try { renderAnalysis(); } catch(e) {}
+      try { refreshOpenModal(); } catch(e) {}
+      try { renderEntryAlerts(); } catch(e) {}
+    } finally { _autoAnalysisRunning = false; }
+  }
+
+  // Render the per-TF entry table for the modal
+  function renderTFEntryHTML(tfEntries) {
+    if (!tfEntries) return '<div style="font-size:11px;color:var(--text-mute);font-family:\'JetBrains Mono\',monospace;">⟳ Auto-analyzing across timeframes…</div>';
+    const rows = TF_LIST.map(tf => {
+      const e = tfEntries[tf];
+      if (!e || e.error) return `<tr><td style="padding:6px 8px;color:var(--text-mute);">${TF_LABELS[tf]}</td><td colspan="6" style="padding:6px 8px;color:var(--text-mute);font-size:10px;">no data</td></tr>`;
+      const dirColor = e.dir === 'bull' ? 'var(--bull)' : e.dir === 'bear' ? 'var(--bear)' : 'var(--text-mute)';
+      const dirLabel = e.dir === 'bull' ? '🟢 LONG' : e.dir === 'bear' ? '🔴 SHORT' : '—';
+      const status = e.entryReady
+        ? `<span style="color:var(--bull);font-weight:700;">✓ ENTRY</span>`
+        : `<span style="color:var(--text-mute);">${e.score}/4 · waiting</span>`;
+      const tick = v => v ? '<span style="color:var(--bull);">✓</span>' : '<span style="color:var(--text-mute);">·</span>';
+      return `<tr style="${e.entryReady?'background:rgba(92,184,138,0.06);':''}border-top:1px solid var(--border);">
+        <td style="padding:6px 8px;color:var(--gold);font-weight:600;">${TF_LABELS[tf]}</td>
+        <td style="padding:6px 8px;color:${dirColor};">${dirLabel}</td>
+        <td style="padding:6px 8px;text-align:center;">${tick(e.fvg)}</td>
+        <td style="padding:6px 8px;text-align:center;">${tick(e.sweep)}</td>
+        <td style="padding:6px 8px;text-align:center;">${tick(e.displacement)}</td>
+        <td style="padding:6px 8px;text-align:center;">${tick(e.choch)}</td>
+        <td style="padding:6px 8px;font-size:10px;">${status}</td>
+      </tr>`;
+    }).join('');
+    return `
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead>
+          <tr style="color:var(--text-mute);text-transform:uppercase;letter-spacing:.05em;font-size:9px;">
+            <th style="padding:4px 8px;text-align:left;">TF</th>
+            <th style="padding:4px 8px;text-align:left;">Dir</th>
+            <th style="padding:4px 8px;">FVG</th>
+            <th style="padding:4px 8px;">Sweep</th>
+            <th style="padding:4px 8px;">Disp</th>
+            <th style="padding:4px 8px;">CHoCH</th>
+            <th style="padding:4px 8px;text-align:left;">Status</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  // Confirm/skip handlers for entry alert banners
+  function confirmEntryAlert(symbol) {
+    const item = _entryAlertQueue.find(x => x.symbol === symbol && !x.confirmed);
+    if (!item) return;
+    item.confirmed = true;
+    item.action = 'confirmed';
+    try { showToast(`✓ ${symbol} entry confirmed — alert acknowledged`, 'ok'); } catch(e) {}
+    renderEntryAlerts();
+  }
+  function skipEntryAlert(symbol) {
+    const idx = _entryAlertQueue.findIndex(x => x.symbol === symbol && !x.confirmed);
+    if (idx >= 0) _entryAlertQueue.splice(idx, 1);
+    renderEntryAlerts();
+  }
+
+  function renderEntryAlerts() {
+    const el = document.getElementById('entryAlertsHost');
+    if (!el) return;
+    const active = _entryAlertQueue.filter(x => !x.confirmed);
+    if (active.length === 0) { el.innerHTML = ''; return; }
+    el.innerHTML = active.map(a => {
+      const dirColor = a.dir === 'bull' ? 'var(--bull)' : 'var(--bear)';
+      const dirLabel = a.dir === 'bull' ? '🟢 LONG' : '🔴 SHORT';
+      const ago = Math.max(0, Math.round((Date.now() - a.ts)/1000));
+      return `<div style="background:rgba(92,184,138,0.08);border:1px solid ${dirColor};border-radius:10px;padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;">
+        <div style="font-size:22px;">🔔</div>
+        <div style="flex:1;">
+          <div style="font-size:13px;font-weight:700;color:${dirColor};font-family:'JetBrains Mono',monospace;">${a.symbol} · ${dirLabel} · ENTRY READY</div>
+          <div style="font-size:11px;color:var(--text-mute);margin-top:2px;">Aligned timeframes: ${a.tfs.join(' · ')} · ${ago}s ago</div>
+        </div>
+        <button onclick="confirmEntryAlert('${a.symbol}')" style="background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">✓ Confirm</button>
+        <button onclick="skipEntryAlert('${a.symbol}')" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:6px 12px;border-radius:6px;font-size:11px;cursor:pointer;">Skip</button>
+      </div>`;
+    }).join('');
   }
 
   // ═══════════════════════════════════════════════════════
@@ -4660,6 +4911,11 @@
     setInterval(renderEconCalendar, 60000);
     fetchAllMTF();
     setInterval(() => fetchAllMTF().catch(()=>{}), 5*60*1000);
+    // 🤖 Auto MTF entry analysis — every 60s, all assets, all TFs
+    autoAnalyzeAll();
+    setInterval(() => autoAnalyzeAll().catch(()=>{}), 60000);
+    // Refresh "Xs ago" timestamps in alert banners every 5s
+    setInterval(() => { try { renderEntryAlerts(); } catch(e) {} }, 5000);
     if (APPS_SCRIPT_URL) {
       _try('tvWebhookUrl', () => { document.getElementById('tvWebhookUrl').textContent = APPS_SCRIPT_URL; });
       pollTVAlerts();
