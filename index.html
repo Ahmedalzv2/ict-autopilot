@@ -2329,8 +2329,22 @@
   // ═══════════════════════════════════════
   // MODALS
   // ═══════════════════════════════════════
-  function openSetupModal(asset) {
+  // Track which asset modal is currently open so we can re-render it on price refresh
+  let _openModalSymbol = null;
+
+  function refreshOpenModal() {
+    if (!_openModalSymbol) return;
+    const modalEl = document.getElementById('setupModal');
+    if (!modalEl || !modalEl.classList.contains('active')) { _openModalSymbol = null; return; }
+    const a = ASSETS.find(x => x.symbol === _openModalSymbol);
+    if (!a) return;
+    // Re-render content while keeping the modal open. Suppress the symbol track reset.
+    openSetupModal(a, true);
+  }
+
+  function openSetupModal(asset, _isRefresh) {
     if (!asset) return;
+    if (!_isRefresh) _openModalSymbol = asset.symbol;
     const gst = getGST();
     const sig = getSignal(asset, gst);
     const conf = getConfidencePct(asset, gst);
@@ -2365,7 +2379,7 @@
         </div>
       </div>` : '';
 
-    document.getElementById('modalAsset').textContent = `${asset.symbol} · ${asset.platform}`;
+    document.getElementById('modalAsset').textContent = `${asset.symbol} · ${asset.platform || asset.type || 'Tracked'}`;
     document.getElementById('modalBody').innerHTML = `
       ${spotBannerHtml}
 
@@ -2585,7 +2599,7 @@
     document.getElementById('methodModal').classList.add('active');
   }
 
-  function closeModal() { document.getElementById('setupModal').classList.remove('active'); }
+  function closeModal() { document.getElementById('setupModal').classList.remove('active'); _openModalSymbol = null; }
   function closeMethod() { document.getElementById('methodModal').classList.remove('active'); }
 
   // ═══════════════════════════════════════
@@ -2768,6 +2782,7 @@
         if (typeof updateTVAnalysis === 'function' && typeof tvCurrentSymbol !== 'undefined') {
           try { updateTVAnalysis(tvCurrentSymbol); } catch(e) {}
         }
+        try { refreshOpenModal(); } catch(e) {}
       });
     });
     if (document.getElementById('top-setup').classList.contains('active')) renderSetups();
@@ -4227,6 +4242,7 @@
       try { renderAnalysis(); } catch(e) {}
       try { renderMarketRead(); } catch(e) {}
       if (typeof updateTVAnalysis === 'function' && tvCurrentSymbol) updateTVAnalysis(tvCurrentSymbol);
+      try { refreshOpenModal(); } catch(e) {}
     }
   }
 
