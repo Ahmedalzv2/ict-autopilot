@@ -1272,7 +1272,7 @@
       <div id="live-chart" class="tab-content">
         <div class="page-header">
           <h1>📈 Live Chart</h1>
-          <p>Price syncs every 30s. Crypto via Binance, GOLD/SILVER/US100 via Yahoo Finance. Chart and dashboard always show the same price.</p>
+          <p>Price syncs every 30s. Crypto via Binance SPOT (MEXC perp fallback), GOLD/SILVER via MEXC perp (XAUT_USDT / XAG_USDT), US100 via FP Markets (TradingView). Chart and dashboard always show the same price.</p>
         </div>
         <div style="margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
           <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Asset:</div>
@@ -2636,6 +2636,11 @@
   let lastSyncTime = null;
   const BINANCE_SYMBOLS = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','SUIUSDT','ASTERUSDT'];
   const BINANCE_HOSTS = ['api.binance.com','data-api.binance.vision'];
+  // MEXC perp contract symbols, indexed by Binance ticker for fallback when Binance is blocked/down
+  const MEXC_PERP_MAP = {
+    'BTCUSDT':'BTC_USDT','ETHUSDT':'ETH_USDT','SOLUSDT':'SOL_USDT','BNBUSDT':'BNB_USDT',
+    'XRPUSDT':'XRP_USDT','SUIUSDT':'SUI_USDT','ASTERUSDT':'ASTER_USDT'
+  };
 
   async function fetchTicker(sym, host) {
     const ctrl = new AbortController();
@@ -2645,6 +2650,23 @@
       clearTimeout(t);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
+    } finally { clearTimeout(t); }
+  }
+
+  // MEXC perp 24h ticker — same shape we need: { lastPrice, riseFallRate (as fraction) }
+  async function fetchMexcPerpTicker(contractSym) {
+    const ctrl = new AbortController();
+    const t = setTimeout(()=>ctrl.abort(), 5000);
+    try {
+      const res = await fetch(`https://contract.mexc.com/api/v1/contract/ticker?symbol=${contractSym}`, {signal:ctrl.signal, cache:'no-store'});
+      clearTimeout(t);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = await res.json();
+      const d = Array.isArray(j?.data) ? j.data[0] : j?.data;
+      const last = parseFloat(d?.lastPrice ?? d?.last ?? d?.fairPrice);
+      const pct = parseFloat(d?.riseFallRate);
+      if (!isFinite(last) || last <= 0) throw new Error('bad price');
+      return { lastPrice: last, priceChangePercent: isFinite(pct) ? pct * 100 : 0 };
     } finally { clearTimeout(t); }
   }
 
@@ -2708,25 +2730,33 @@
     const results = await Promise.allSettled(BINANCE_SYMBOLS.map(async sym => {
       let lastErr;
       for (const host of BINANCE_HOSTS) {
-        try { const d = await fetchTicker(sym, host); return {sym, d}; }
+        try { const d = await fetchTicker(sym, host); return {sym, d, src:'binance'}; }
         catch(e) { lastErr=e; }
+      }
+      // Fallback: MEXC perp ticker (e.g. BTC_USDT)
+      const mexcSym = MEXC_PERP_MAP[sym];
+      if (mexcSym) {
+        try { const d = await fetchMexcPerpTicker(mexcSym); return {sym, d, src:'mexc'}; }
+        catch(e) { lastErr = e; }
       }
       throw lastErr;
     }));
-    let ok=0;
+    let ok=0, mexcCount=0;
     results.forEach((r,i)=>{
       const assetSym = BINANCE_SYMBOLS[i].replace('USDT','');
       const a = ASSETS.find(x=>x.symbol===assetSym);
       if (r.status==='fulfilled' && r.value.d && r.value.d.lastPrice) {
         if (a) { a.price=parseFloat(r.value.d.lastPrice); a.change24h=parseFloat(r.value.d.priceChangePercent); } if (a) autoUpdateChecks(a);
         ok++;
+        if (r.value.src === 'mexc') mexcCount++;
       }
     });
     lastSyncTime = getGST();
     const timeStr = `${fmtTime(lastSyncTime)} GST`;
     document.getElementById('barSyncTime').textContent = timeStr;
     const el = document.getElementById('dashSyncStatus');
-    if (el) el.textContent = `Last sync: ${timeStr} · ${ok}/${BINANCE_SYMBOLS.length} updated`;
+    const srcTag = mexcCount > 0 ? ` · ${mexcCount} via MEXC perp` : '';
+    if (el) el.textContent = `Last sync: ${timeStr} · ${ok}/${BINANCE_SYMBOLS.length} updated${srcTag}`;
     const gstForAlert = getGST();
     try { renderSignals(); } catch(e) {}
     requestAnimationFrame(() => {
@@ -2734,15 +2764,15 @@
       requestAnimationFrame(() => {
         try { renderMarketRead(); } catch(e) {}
         try { checkArmedAlerts(gstForAlert); } catch(e) {}
+        try { renderAnalysis(); } catch(e) {}
+        if (typeof updateTVAnalysis === 'function' && typeof tvCurrentSymbol !== 'undefined') {
+          try { updateTVAnalysis(tvCurrentSymbol); } catch(e) {}
+        }
       });
     });
-    if (!syncBinance._analysisCount) syncBinance._analysisCount = 0;
-    if (++syncBinance._analysisCount % 5 === 0) {
-      requestAnimationFrame(() => { try { renderAnalysis(); } catch(e) {} });
-    }
     if (document.getElementById('top-setup').classList.contains('active')) renderSetups();
-    if (!silent && ok > 0) showToast(`✓ ${ok} prices updated`, 'ok');
-    if (!silent && ok===0) showToast('✗ Binance sync failed. Check connection.', 'err');
+    if (!silent && ok > 0) showToast(`✓ ${ok} prices updated${srcTag}`, 'ok');
+    if (!silent && ok===0) showToast('✗ Sync failed (Binance + MEXC). Check connection.', 'err');
     // Phase 2: auto-push to sheet if URL is configured
     if (APPS_SCRIPT_URL) pushToSheet();
   }
@@ -4108,21 +4138,41 @@
       return (!isNaN(p) && p > 0) ? p : null;
     };
 
-    // ── GOLD: metals.live → Binance XAUTUSDT → TradingView OANDA:XAUUSD ──
+    // helper: read last price from MEXC contract ticker (perp futures)
+    const mexcContractPrice = async (contractSym) => {
+      try {
+        const r = await fetch(`https://contract.mexc.com/api/v1/contract/ticker?symbol=${contractSym}`, {cache:'no-store', signal:sig()});
+        if (!r.ok) return null;
+        const j = await r.json();
+        const d = Array.isArray(j?.data) ? j.data[0] : j?.data;
+        const p = parseFloat(d?.lastPrice ?? d?.last ?? d?.fairPrice);
+        return isFinite(p) && p > 0 ? p : null;
+      } catch(e) { return null; }
+    };
+
+    // helper: read last price from MEXC spot ticker
+    const mexcSpotPrice = async (spotSym) => {
+      try {
+        const r = await fetch(`https://api.mexc.com/api/v3/ticker/price?symbol=${spotSym}`, {cache:'no-store', signal:sig()});
+        if (!r.ok) return null;
+        const j = await r.json();
+        const p = parseFloat(j?.price);
+        return isFinite(p) && p > 0 ? p : null;
+      } catch(e) { return null; }
+    };
+
+    // ── GOLD: MEXC perp XAUT_USDT → MEXC spot XAUTUSDT → Binance XAUTUSDT → TV OANDA:XAUUSD ──
     const goldAsset = ASSETS.find(a => a.symbol === 'GOLD');
     if (goldAsset) {
-      let price = null;
-      try {
-        const r = await fetch('https://api.metals.live/v1/spot/gold', {cache:'no-store', signal:sig()});
-        if (r.ok) price = parseMetals(await r.json(), 'gold');
-      } catch(e) {}
-      if (!price) for (const host of ['api.binance.com','data-api.binance.vision']) {
+      let price = await mexcContractPrice('XAUT_USDT');
+      if (!(price > 1000)) price = await mexcSpotPrice('XAUTUSDT');
+      if (!(price > 1000)) for (const host of ['api.binance.com','data-api.binance.vision']) {
         try {
           const r = await fetch(`https://${host}/api/v3/ticker/price?symbol=XAUTUSDT`, {cache:'no-store', signal:sig()});
           if (r.ok) { const p = parseFloat((await r.json())?.price); if (p > 1000) { price = p; break; } }
         } catch(e) {}
       }
-      if (!price) try {
+      if (!(price > 1000)) try {
         const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['OANDA:XAUUSD','TVC:GOLD']},columns:['close']}), cache:'no-store', signal:sig()});
         if (r.ok) { const j = await r.json(); price = j?.data?.[0]?.d?.[0] || j?.data?.[1]?.d?.[0] || null; }
       } catch(e) {}
@@ -4133,28 +4183,23 @@
       } else console.warn('GOLD: all sources failed or bad value:', price);
     }
 
-    // ── SILVER: metals.live → TradingView OANDA:XAGUSD → TVC:SILVER ──
-    // NOTE: Binance XAGUSDT removed — it's a synthetic token, NOT spot silver price
+    // ── SILVER: MEXC perp XAG_USDT → MEXC spot XAGUSDT → TV OANDA:XAGUSD ──
     const silverAsset = ASSETS.find(a => a.symbol === 'SILVER');
     if (silverAsset) {
-      let price = null;
-      try {
-        const r = await fetch('https://api.metals.live/v1/spot/silver', {cache:'no-store', signal:sig()});
-        if (r.ok) price = parseMetals(await r.json(), 'silver');
-      } catch(e) {}
-      // Validate: real silver is between $10 and $300/oz — reject garbage values
-      if (price && (price < 10 || price > 300)) { console.warn('SILVER metals.live returned bad value:', price); price = null; }
-      if (!price) try {
+      const inRange = p => isFinite(p) && p > 10 && p < 300;
+      let price = await mexcContractPrice('XAG_USDT');
+      if (!inRange(price)) price = await mexcSpotPrice('XAGUSDT');
+      if (!inRange(price)) try {
         const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['OANDA:XAGUSD','TVC:SILVER','FX:XAGUSD']},columns:['close']}), cache:'no-store', signal:sig()});
         if (r.ok) {
           const j = await r.json();
           for (const row of (j?.data || [])) {
             const p = row?.d?.[0];
-            if (p && p > 10 && p < 300) { price = p; break; }
+            if (inRange(p)) { price = p; break; }
           }
         }
       } catch(e) {}
-      if (price && price > 10) {
+      if (inRange(price)) {
         silverAsset.price = price; updated = true;
         console.log('%c📡 SILVER: $' + price.toFixed(2), 'color:#c0c0c0;font-family:monospace');
         if (typeof autoUpdateChecks === 'function') autoUpdateChecks(silverAsset);
@@ -4179,6 +4224,8 @@
     if (updated) {
       renderSignals();
       renderAssets();
+      try { renderAnalysis(); } catch(e) {}
+      try { renderMarketRead(); } catch(e) {}
       if (typeof updateTVAnalysis === 'function' && tvCurrentSymbol) updateTVAnalysis(tvCurrentSymbol);
     }
   }
