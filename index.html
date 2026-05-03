@@ -3855,9 +3855,11 @@
   ];
 
   async function _fetchNitterFeed(handle, label) {
-    for (const mirror of NITTER_MIRRORS) {
+    // Cap to first 3 mirrors with 6s each — worst case 18s per account vs
+    // the prior 60s. Background fetch so the news page renders without us.
+    for (const mirror of NITTER_MIRRORS.slice(0, 3)) {
       const url = `${mirror}/${handle}/rss`;
-      const xml = await _scrapeBadgerFetch(url, { timeout: 12000 });
+      const xml = await _scrapeBadgerFetch(url, { timeout: 6000 });
       if (!xml || xml.length < 100) continue;
       try {
         const doc = new DOMParser().parseFromString(xml, 'application/xml');
@@ -4020,21 +4022,31 @@
     const btn = document.getElementById('newsRefreshBtn');
     if (btn) btn.textContent = '⟳ refreshing…';
     const rssTasks = RSS_FEEDS.map(f => _fetchRSSFeed(f));
-    const [cc, cg, social, xlive, ...rssResults] = await Promise.all([
+    // X-Live (Nitter via ScrapeBadger) is SLOW and unreliable — fetch it
+    // separately so the main news refresh isn't blocked by it.
+    const [cc, cg, social, ...rssResults] = await Promise.all([
       _fetchCryptoCompareGlobal(),
       _fetchCoinGeckoGlobal(),
       _fetchLunarCrushSocial(),
-      _fetchAllXFeeds(),
       ...rssTasks
     ]);
     const allRss = rssResults.flat();
-    // Dedupe by URL
+    // Dedupe by URL (preserve any already-loaded X-live items in the cache)
     const byUrl = new Map();
-    [...cc, ...cg, ...allRss, ...social, ...xlive].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
+    const existingXlive = _newsAggregateItems.filter(i => i._sourceKey === 'xlive');
+    [...cc, ...cg, ...allRss, ...social, ...existingXlive].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
     _newsAggregateItems = Array.from(byUrl.values()).sort((a,b) => (b.published||0) - (a.published||0));
     _newsAggregateTs = Date.now();
     if (btn) btn.textContent = '↻ Refresh';
     _renderNewsPage();
+    // Kick off X-Live in the background and re-render when it returns
+    _fetchAllXFeeds().then(xlive => {
+      if (!xlive || !xlive.length) return;
+      const merged = new Map();
+      [..._newsAggregateItems, ...xlive].forEach(item => { if (item && item.url && !merged.has(item.url)) merged.set(item.url, item); });
+      _newsAggregateItems = Array.from(merged.values()).sort((a,b) => (b.published||0) - (a.published||0));
+      try { _renderNewsPage(); } catch(e) {}
+    }).catch(()=>{});
     return _newsAggregateItems;
   }
 
