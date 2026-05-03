@@ -4463,14 +4463,57 @@
   }
 
   function _detectFVG(k) {
-    // 3-candle imbalance somewhere in last 5
+    // 3-candle imbalance somewhere in last 5; also flag if any subsequent candle
+    // has wicked into the gap (mitigated FVGs are lower probability)
     if (k.length < 5) return null;
     for (let i = k.length - 5; i <= k.length - 3; i++) {
       const a = k[i], c = k[i+2];
-      if (a.h < c.l) return { dir:'bull', lo:a.h, hi:c.l, mid:(a.h + c.l)/2 };
-      if (a.l > c.h) return { dir:'bear', lo:c.h, hi:a.l, mid:(c.h + a.l)/2 };
+      let fvg = null;
+      if (a.h < c.l) fvg = { dir:'bull', lo:a.h, hi:c.l, mid:(a.h + c.l)/2, idx: i+2 };
+      else if (a.l > c.h) fvg = { dir:'bear', lo:c.h, hi:a.l, mid:(c.h + a.l)/2, idx: i+2 };
+      if (fvg) {
+        let mitigated = false;
+        for (let j = fvg.idx + 1; j < k.length; j++) {
+          const cj = k[j];
+          if (cj.h >= fvg.lo && cj.l <= fvg.hi) { mitigated = true; break; }
+        }
+        fvg.mitigated = mitigated;
+        return fvg;
+      }
     }
     return null;
+  }
+
+  function _detectOB(k, dispDir) {
+    // Order Block = last opposite-color candle before displacement.
+    // Bull displacement → look back for last bearish candle. Bear → last bullish.
+    if (!dispDir || k.length < 5) return null;
+    const targetBull = dispDir === 'bear';
+    for (let i = k.length - 2; i >= Math.max(0, k.length - 8); i--) {
+      const c = k[i];
+      const isBull = c.c > c.o;
+      if (isBull === targetBull) {
+        return { dir: dispDir, hi: c.h, lo: c.l, mid: (c.h + c.l) / 2, idx: i };
+      }
+    }
+    return null;
+  }
+
+  function _calcPDArray(k, lookback=50) {
+    const n = Math.min(lookback, k.length);
+    if (n < 5) return null;
+    const recent = k.slice(-n);
+    const high = Math.max(...recent.map(x => x.h));
+    const low = Math.min(...recent.map(x => x.l));
+    const eq = (high + low) / 2;
+    return { high, low, eq, range: high - low };
+  }
+
+  function _classifyPD(price, pd) {
+    if (!pd || !price) return null;
+    if (price > pd.eq) return 'premium';
+    if (price < pd.eq) return 'discount';
+    return 'equilibrium';
   }
 
   function _detectSweep(k) {
@@ -4515,12 +4558,14 @@
     const bull = dirs.filter(d=>d==='bull').length;
     const bear = dirs.filter(d=>d==='bear').length;
     const dir = bull > bear ? 'bull' : bear > bull ? 'bear' : null;
+    const ob = _detectOB(k, disp?.dir || dir);
+    const pd = _calcPDArray(k, 50);
     const score = (fvg?1:0) + (sweep?1:0) + (disp?1:0) + (choch?1:0);
     return {
       bias: last.c > last.o ? 'bull' : 'bear',
       dir,
       fvg:!!fvg, sweep:!!sweep, displacement:!!disp, choch:!!choch,
-      fvgZone: fvg, sweepLevel: sweep,
+      fvgZone: fvg, sweepLevel: sweep, obZone: ob, pd,
       score,
       entryReady: score >= 3 && dir !== null,
       price: last.c
@@ -4571,34 +4616,89 @@
       const baseAnalysis = tfEntries[baseTf];
       const fvg = baseAnalysis?.fvgZone;
       const sweep = baseAnalysis?.sweepLevel;
+      const ob = baseAnalysis?.obZone;
+      const pd = baseAnalysis?.pd;
       let suggested = null;
+      let entrySource = null;
+      // Prefer OB-inside-FVG entry (sharper) when both exist on the right side
+      // For longs: OB should sit at or below FVG mid (deeper, discount within zone)
+      // For shorts: OB should sit at or above FVG mid (deeper, premium within zone)
+      let useOB = false;
+      if (ob && fvg && ob.dir === dir && fvg.dir === dir) {
+        const obInsideFvg = ob.hi >= fvg.lo && ob.lo <= fvg.hi;
+        const obDeeper = dir === 'bull' ? ob.mid <= fvg.mid : ob.mid >= fvg.mid;
+        if (obInsideFvg || obDeeper) useOB = true;
+      }
       if (fvg && fvg.dir === dir) {
-        const entry = fvg.mid;
-        let sl, slSource;
-        if (sweep && sweep.dir === dir) {
-          // SL just past the swept extreme + 10% buffer of the entry-to-sweep distance
-          const buffer = Math.abs(entry - sweep.level) * 0.10;
-          sl = dir === 'bull' ? sweep.level - buffer : sweep.level + buffer;
-          slSource = 'sweep';
+        let entry, sl, slSource;
+        if (useOB) {
+          entry = ob.mid;
+          // SL just past OB extreme + 10% of OB body
+          const obBody = Math.abs(ob.hi - ob.lo);
+          const buffer = obBody * 0.10;
+          sl = dir === 'bull' ? ob.lo - buffer : ob.hi + buffer;
+          slSource = 'ob';
+          entrySource = 'ob+fvg';
         } else {
-          // Fallback: SL at FVG opposite extreme + 0.2% safety buffer
-          sl = dir === 'bull' ? fvg.lo * 0.998 : fvg.hi * 1.002;
-          slSource = 'fvg-edge';
+          entry = fvg.mid;
+          if (sweep && sweep.dir === dir) {
+            const buffer = Math.abs(entry - sweep.level) * 0.10;
+            sl = dir === 'bull' ? sweep.level - buffer : sweep.level + buffer;
+            slSource = 'sweep';
+          } else {
+            sl = dir === 'bull' ? fvg.lo * 0.998 : fvg.hi * 1.002;
+            slSource = 'fvg-edge';
+          }
+          entrySource = 'fvg';
         }
         const stopDist = Math.abs(entry - sl);
         const rrTarget = isScalp ? 1.5 : 2.0;
         const tp = dir === 'bull' ? entry + stopDist * rrTarget : entry - stopDist * rrTarget;
         const round = (v) => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
-        suggested = { entry: round(entry), sl: round(sl), tp: round(tp), type: tradeType, baseTf: TF_LABELS[baseTf], rr: rrTarget, slSource };
+        // Premium/Discount classification of entry location
+        const pdPos = _classifyPD(entry, pd);
+        // For ICT: longs from discount, shorts from premium = "with PD"
+        const pdAligned = (dir === 'bull' && pdPos === 'discount') || (dir === 'bear' && pdPos === 'premium');
+        suggested = {
+          entry: round(entry), sl: round(sl), tp: round(tp),
+          type: tradeType, baseTf: TF_LABELS[baseTf], rr: rrTarget,
+          slSource, entrySource, pdPos, pdAligned,
+          fvgMitigated: fvg.mitigated || false,
+          obDetected: useOB
+        };
       }
-      _entryAlertQueue.push({ symbol: asset.symbol, dir, tfs: ready.map(t=>TF_LABELS[t]), ts: Date.now(), confirmed: false, suggested, tradeType });
+      // Killzone context (using existing session detector)
+      const sess = getCurrentSession(getGST());
+      const inKillzone = sess && sess.type === 'active';
+      const sessionName = sess ? sess.name : 'Off-session';
+      const sessionType = sess ? sess.type : null;
+      // Precision quality score 0-4
+      let qualityScore = 0;
+      if (suggested) {
+        if (suggested.obDetected) qualityScore++;       // sharper entry
+        if (suggested.pdAligned) qualityScore++;         // right side of PD
+        if (!suggested.fvgMitigated) qualityScore++;     // fresh FVG
+        if (inKillzone) qualityScore++;                  // killzone time
+      }
+      _entryAlertQueue.push({
+        symbol: asset.symbol, dir, tfs: ready.map(t=>TF_LABELS[t]),
+        ts: Date.now(), confirmed: false, suggested, tradeType,
+        inKillzone, sessionName, sessionType, qualityScore
+      });
       const dirLabel = dir === 'bull' ? '🟢 LONG' : '🔴 SHORT';
       const typeBadge = isScalp ? '🔥 SCALP' : '🎯 SWING';
-      try { showToast(`🔔 ${typeBadge} · ${asset.symbol} · ${dirLabel} · ${ready.map(t=>TF_LABELS[t]).join(' · ')}`, 'ok'); } catch(e) {}
+      try { showToast(`🔔 ${typeBadge} · ${asset.symbol} · ${dirLabel} · Q${qualityScore}/4 · ${ready.map(t=>TF_LABELS[t]).join(' · ')}`, 'ok'); } catch(e) {}
       try { playAlertSound('entry'); } catch(e) {}
       if ('Notification' in window && Notification.permission === 'granted') {
         try {
-          const body = suggested ? `Entry $${suggested.entry} · SL $${suggested.sl} · TP $${suggested.tp} (1:${suggested.rr})` : `${ready.length} TFs aligned: ${ready.map(t=>TF_LABELS[t]).join(', ')}`;
+          const tags = [];
+          if (suggested?.obDetected) tags.push('OB+FVG');
+          if (suggested?.pdAligned) tags.push(suggested.pdPos);
+          if (suggested && !suggested.fvgMitigated) tags.push('fresh');
+          if (inKillzone) tags.push('KZ');
+          const body = suggested
+            ? `Entry $${suggested.entry} · SL $${suggested.sl} · TP $${suggested.tp} (1:${suggested.rr}) · Q${qualityScore}/4${tags.length?' · '+tags.join(', '):''}`
+            : `${ready.length} TFs aligned: ${ready.map(t=>TF_LABELS[t]).join(', ')}`;
           new Notification(`${typeBadge} · ${asset.symbol} · ${dirLabel}`, { body, tag: `ict-entry-${asset.symbol}` });
         } catch(e) {}
       }
@@ -4700,23 +4800,40 @@
     if (!el) return;
     const active = _entryAlertQueue.filter(x => !x.confirmed);
     if (active.length === 0) { el.innerHTML = ''; return; }
+    const pill = (text, color, bg) => `<span style="background:${bg};color:${color};padding:2px 7px;border-radius:4px;font-size:9px;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;">${text}</span>`;
     el.innerHTML = active.map(a => {
       const dirColor = a.dir === 'bull' ? 'var(--bull)' : 'var(--bear)';
       const dirLabel = a.dir === 'bull' ? '🟢 LONG' : '🔴 SHORT';
       const ago = Math.max(0, Math.round((Date.now() - a.ts)/1000));
       const isScalp = a.tradeType === 'scalp';
       const typeBadge = isScalp
-        ? `<span style="background:rgba(242,179,61,0.18);color:var(--liq);padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;">🔥 SCALP</span>`
-        : `<span style="background:rgba(92,184,138,0.18);color:var(--bull);padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;">🎯 SWING</span>`;
+        ? pill('🔥 SCALP', 'var(--liq)', 'rgba(242,179,61,0.18)')
+        : pill('🎯 SWING', 'var(--bull)', 'rgba(92,184,138,0.18)');
       const s = a.suggested;
       const appliedTag = a.applied ? `<span style="color:var(--bull);font-size:10px;margin-left:6px;">✓ applied</span>` : '';
+
+      // Quality pills (OB+FVG, PD alignment, freshness, killzone)
+      const tags = [];
+      if (s?.obDetected) tags.push(pill('OB+FVG', 'var(--gold)', 'rgba(201,169,97,0.18)'));
+      if (s?.pdAligned) tags.push(pill('✓ ' + (s.pdPos || '').toUpperCase(), 'var(--bull)', 'rgba(92,184,138,0.18)'));
+      else if (s?.pdPos) tags.push(pill('⚠ ' + s.pdPos.toUpperCase(), 'var(--bear)', 'rgba(224,93,93,0.15)'));
+      if (s && !s.fvgMitigated) tags.push(pill('FRESH', 'var(--bull)', 'rgba(92,184,138,0.15)'));
+      else if (s?.fvgMitigated) tags.push(pill('⚠ MITIGATED', 'var(--liq)', 'rgba(242,179,61,0.15)'));
+      if (a.inKillzone) tags.push(pill('🟢 ' + (a.sessionName || 'KZ'), 'var(--bull)', 'rgba(92,184,138,0.18)'));
+      else if (a.sessionType === 'dead') tags.push(pill('⛔ DEAD ZONE', 'var(--bear)', 'rgba(224,93,93,0.15)'));
+      else tags.push(pill(a.sessionName || 'OFF-SESSION', 'var(--text-mute)', 'rgba(101,101,109,0.15)'));
+      const qScore = a.qualityScore ?? 0;
+      const qColor = qScore >= 3 ? 'var(--bull)' : qScore === 2 ? 'var(--liq)' : 'var(--bear)';
+      const qBadge = pill(`Q${qScore}/4`, qColor, 'transparent') + '';
+
+      const sourceTxt = s ? (s.entrySource === 'ob+fvg' ? `from ${s.baseTf} OB inside FVG` : `from ${s.baseTf} FVG${s.slSource==='sweep'?' + sweep':''}`) : '';
       const suggestedHtml = s
         ? `<div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,0.25);border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;align-items:center;">
             <span><span style="color:var(--text-mute);">Entry:</span> <span style="color:var(--bull);font-weight:700;">$${s.entry}</span></span>
             <span><span style="color:var(--text-mute);">SL:</span> <span style="color:var(--bear);font-weight:700;">$${s.sl}</span></span>
             <span><span style="color:var(--text-mute);">TP:</span> <span style="color:var(--gold);font-weight:700;">$${s.tp}</span></span>
             <span style="color:var(--text-mute);">R:R 1:${s.rr}</span>
-            <span style="color:var(--text-mute);font-size:10px;">from ${s.baseTf} FVG${s.slSource==='sweep'?' + sweep':''}</span>
+            <span style="color:var(--text-mute);font-size:10px;">${sourceTxt}</span>
           </div>`
         : `<div style="margin-top:6px;font-size:10px;color:var(--text-mute);">No clean FVG on base TF — set entry/SL manually</div>`;
       const applyBtn = (s && !a.applied) ? `<button onclick="applyEntryAlertLevels('${a.symbol}')" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">⇣ Apply</button>` : '';
@@ -4724,8 +4841,9 @@
         <div style="display:flex;align-items:center;gap:12px;">
           <div style="font-size:22px;">🔔</div>
           <div style="flex:1;">
-            <div style="font-size:13px;font-weight:700;color:${dirColor};font-family:'JetBrains Mono',monospace;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">${typeBadge} ${a.symbol} · ${dirLabel} · ENTRY READY${appliedTag}</div>
+            <div style="font-size:13px;font-weight:700;color:${dirColor};font-family:'JetBrains Mono',monospace;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">${typeBadge} ${a.symbol} · ${dirLabel} · ENTRY READY ${qBadge}${appliedTag}</div>
             <div style="font-size:11px;color:var(--text-mute);margin-top:2px;">Aligned: ${a.tfs.join(' · ')} · ${ago}s ago</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">${tags.join('')}</div>
           </div>
           ${applyBtn}
           <button onclick="confirmEntryAlert('${a.symbol}')" style="background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">✓ Confirm</button>
