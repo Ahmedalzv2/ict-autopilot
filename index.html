@@ -2127,19 +2127,17 @@
   function distToEntry(a) { return Math.abs((a.price - a.entry) / a.entry); }
 
   // Per-TF readiness: how close the live price is to each TF's auto-detected
-  // entry zone (OB inside FVG preferred, falls back to FVG mid). Returns one
-  // entry per TF with: dist (fractional), score, ready flag, dir, target price.
+  // entry (uses _suggestedEntryForTf so the value matches what shows in the
+  // modal table and the alert banner exactly). Returns one row per TF.
   function _computeTfReadiness(asset) {
     if (!asset.tfEntries || asset.tfEntries.closed) return null;
     return TF_LIST.map(tf => {
       const e = asset.tfEntries[tf];
       if (!e || e.error) return { tf, label: TF_LABELS[tf], dist: null, score: 0, ready: false };
-      const fvg = e.fvgZone;
-      const ob = e.obZone;
-      const target = (ob && ob.dir === e.dir) ? ob.mid
-                   : (fvg && fvg.dir === e.dir) ? fvg.mid : null;
+      const sug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(e, tf) : null;
+      const target = sug ? sug.entry : null;
       const dist = (target && asset.price) ? Math.abs((asset.price - target) / asset.price) : null;
-      return { tf, label: TF_LABELS[tf], dist, score: e.score || 0, ready: !!e.entryReady, dir: e.dir, target };
+      return { tf, label: TF_LABELS[tf], dist, score: e.score || 0, ready: !!e.entryReady, dir: e.dir, target, suggested: sug };
     });
   }
 
@@ -2167,14 +2165,15 @@
     if (next) {
       const distPct = next.dist < 0.001 ? (next.dist * 100).toFixed(3) : (next.dist * 100).toFixed(2);
       const dirLabel = next.dir === 'bull' ? '🟢 LONG' : next.dir === 'bear' ? '🔴 SHORT' : '';
+      const entryStr = next.target ? `@ $${next.target.toLocaleString(undefined,{maximumFractionDigits:6})}` : '';
       const isHot = next.dist < 0.005 && next.score >= 2;
       const isWarm = next.dist < 0.01 && next.score >= 2;
       const bg = isHot ? 'rgba(92,184,138,0.18)' : isWarm ? 'rgba(242,179,61,0.15)' : 'rgba(101,101,109,0.12)';
       const color = isHot ? 'var(--bull)' : isWarm ? 'var(--liq)' : 'var(--text-mute)';
       const icon = isHot ? '🔥' : isWarm ? '⚡' : '👁';
       const label = isHot ? 'CLOSE TO ENTER' : isWarm ? 'APPROACHING' : 'WATCHING';
-      banner = `<div style="background:${bg};border-radius:6px;padding:6px 10px;margin:8px 0 6px;font-size:11px;font-family:'JetBrains Mono',monospace;color:${color};display:flex;justify-content:space-between;align-items:center;gap:8px;">
-        <span><strong>${icon} ${label}: ${next.label}</strong> · ${distPct}% away ${dirLabel}</span>
+      banner = `<div style="background:${bg};border-radius:6px;padding:6px 10px;margin:8px 0 6px;font-size:11px;font-family:'JetBrains Mono',monospace;color:${color};display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span><strong>${icon} ${label}: ${next.label}</strong> · ${distPct}% away ${dirLabel} ${entryStr}</span>
         <span style="opacity:0.85;font-weight:700;">${next.score}/4</span>
       </div>`;
     }
@@ -2190,7 +2189,8 @@
       const bg = isHot ? 'rgba(92,184,138,0.18)' : isWarm ? 'rgba(242,179,61,0.13)' : isCool ? 'rgba(101,101,109,0.12)' : 'transparent';
       const color = isHot ? 'var(--bull)' : isWarm ? 'var(--liq)' : 'var(--text-mute)';
       const fw = isHot ? 700 : 500;
-      return `<span style="font-size:9px;color:${color};font-family:'JetBrains Mono',monospace;background:${bg};padding:2px 6px;border-radius:4px;font-weight:${fw};">${d.label} ${distPct}% · ${d.score}/4</span>`;
+      const entryTxt = d.target ? ` @$${d.target.toLocaleString(undefined,{maximumFractionDigits:6})}` : '';
+      return `<span style="font-size:9px;color:${color};font-family:'JetBrains Mono',monospace;background:${bg};padding:2px 6px;border-radius:4px;font-weight:${fw};" title="${d.label}: entry ${d.target||'—'} · ${d.score}/4 confluences">${d.label} ${distPct}%${entryTxt} · ${d.score}/4</span>`;
     }).join(' ');
 
     return `${banner}<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;">${ladder}</div>`;
@@ -4588,6 +4588,45 @@
     return 'equilibrium';
   }
 
+  // Compute the suggested entry / SL / TP for a single TF analysis. Each TF has
+  // its own FVG/OB/sweep, so each TF gets its own price targets — lower TFs
+  // are tighter (1.5 R:R), higher TFs target wider runs (2.0 R:R).
+  function _suggestedEntryForTf(analysis, tf) {
+    if (!analysis || !analysis.dir) return null;
+    const dir = analysis.dir;
+    const fvg = analysis.fvgZone;
+    const ob = analysis.obZone;
+    const sweep = analysis.sweepLevel;
+    if (!fvg || fvg.dir !== dir) return null;
+    let entry, sl, source;
+    const useOB = ob && ob.dir === dir && (
+      (ob.hi >= fvg.lo && ob.lo <= fvg.hi) ||
+      (dir === 'bull' ? ob.mid <= fvg.mid : ob.mid >= fvg.mid)
+    );
+    if (useOB) {
+      entry = ob.mid;
+      const obBody = Math.abs(ob.hi - ob.lo);
+      sl = dir === 'bull' ? ob.lo - obBody * 0.10 : ob.hi + obBody * 0.10;
+      source = 'ob+fvg';
+    } else {
+      entry = fvg.mid;
+      if (sweep && sweep.dir === dir) {
+        const buf = Math.abs(entry - sweep.level) * 0.10;
+        sl = dir === 'bull' ? sweep.level - buf : sweep.level + buf;
+        source = 'fvg+sweep';
+      } else {
+        sl = dir === 'bull' ? fvg.lo * 0.998 : fvg.hi * 1.002;
+        source = 'fvg-edge';
+      }
+    }
+    const stopDist = Math.abs(entry - sl);
+    const SCALP_TFS = ['1m','5m','15m'];
+    const rr = SCALP_TFS.includes(tf) ? 1.5 : 2.0;
+    const tp = dir === 'bull' ? entry + stopDist * rr : entry - stopDist * rr;
+    const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
+    return { entry: round(entry), sl: round(sl), tp: round(tp), rr, source, dir };
+  }
+
   function _detectSweep(k) {
     if (k.length < 22) return null;
     const last = k[k.length - 1];
@@ -4683,60 +4722,32 @@
       const SCALP_TFS = ['1m','5m','15m'];
       const isScalp = ready.every(tf => SCALP_TFS.includes(tf));
       const tradeType = isScalp ? 'scalp' : 'swing';
-      // Derive suggested entry/SL/TP from the lowest aligned TF (TF_LIST is ordered)
+      // Each aligned TF gets its OWN entry/SL/TP via _suggestedEntryForTf.
+      // The "headline" suggestion (used for the Apply button) is the lowest
+      // aligned TF — sharpest entry. Per-TF entries are stashed on the alert
+      // so the modal table + readiness chips can show all of them.
       const baseTf = ready[0];
       const baseAnalysis = tfEntries[baseTf];
-      const fvg = baseAnalysis?.fvgZone;
-      const sweep = baseAnalysis?.sweepLevel;
-      const ob = baseAnalysis?.obZone;
-      const pd = baseAnalysis?.pd;
-      let suggested = null;
-      let entrySource = null;
-      // Prefer OB-inside-FVG entry (sharper) when both exist on the right side
-      // For longs: OB should sit at or below FVG mid (deeper, discount within zone)
-      // For shorts: OB should sit at or above FVG mid (deeper, premium within zone)
-      let useOB = false;
-      if (ob && fvg && ob.dir === dir && fvg.dir === dir) {
-        const obInsideFvg = ob.hi >= fvg.lo && ob.lo <= fvg.hi;
-        const obDeeper = dir === 'bull' ? ob.mid <= fvg.mid : ob.mid >= fvg.mid;
-        if (obInsideFvg || obDeeper) useOB = true;
+      const baseSuggestion = _suggestedEntryForTf(baseAnalysis, baseTf);
+      const perTfEntries = {};
+      for (const tf of ready) {
+        const sug = _suggestedEntryForTf(tfEntries[tf], tf);
+        if (sug) perTfEntries[tf] = sug;
       }
-      if (fvg && fvg.dir === dir) {
-        let entry, sl, slSource;
-        if (useOB) {
-          entry = ob.mid;
-          // SL just past OB extreme + 10% of OB body
-          const obBody = Math.abs(ob.hi - ob.lo);
-          const buffer = obBody * 0.10;
-          sl = dir === 'bull' ? ob.lo - buffer : ob.hi + buffer;
-          slSource = 'ob';
-          entrySource = 'ob+fvg';
-        } else {
-          entry = fvg.mid;
-          if (sweep && sweep.dir === dir) {
-            const buffer = Math.abs(entry - sweep.level) * 0.10;
-            sl = dir === 'bull' ? sweep.level - buffer : sweep.level + buffer;
-            slSource = 'sweep';
-          } else {
-            sl = dir === 'bull' ? fvg.lo * 0.998 : fvg.hi * 1.002;
-            slSource = 'fvg-edge';
-          }
-          entrySource = 'fvg';
-        }
-        const stopDist = Math.abs(entry - sl);
-        const rrTarget = isScalp ? 1.5 : 2.0;
-        const tp = dir === 'bull' ? entry + stopDist * rrTarget : entry - stopDist * rrTarget;
-        const round = (v) => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
-        // Premium/Discount classification of entry location
-        const pdPos = _classifyPD(entry, pd);
-        // For ICT: longs from discount, shorts from premium = "with PD"
+      let suggested = null;
+      if (baseSuggestion) {
+        const pd = baseAnalysis?.pd;
+        const pdPos = _classifyPD(baseSuggestion.entry, pd);
         const pdAligned = (dir === 'bull' && pdPos === 'discount') || (dir === 'bear' && pdPos === 'premium');
         suggested = {
-          entry: round(entry), sl: round(sl), tp: round(tp),
-          type: tradeType, baseTf: TF_LABELS[baseTf], rr: rrTarget,
-          slSource, entrySource, pdPos, pdAligned,
-          fvgMitigated: fvg.mitigated || false,
-          obDetected: useOB
+          entry: baseSuggestion.entry, sl: baseSuggestion.sl, tp: baseSuggestion.tp,
+          type: tradeType, baseTf: TF_LABELS[baseTf], rr: baseSuggestion.rr,
+          slSource: baseSuggestion.source === 'ob+fvg' ? 'ob' : baseSuggestion.source === 'fvg+sweep' ? 'sweep' : 'fvg-edge',
+          entrySource: baseSuggestion.source === 'ob+fvg' ? 'ob+fvg' : 'fvg',
+          pdPos, pdAligned,
+          fvgMitigated: baseAnalysis?.fvgZone?.mitigated || false,
+          obDetected: baseSuggestion.source === 'ob+fvg',
+          perTf: perTfEntries
         };
       }
       // Killzone context (using existing session detector)
@@ -4802,12 +4813,15 @@
     if (tfEntries.closed) return `<div style="font-size:12px;color:var(--liq);font-family:'JetBrains Mono',monospace;padding:8px 4px;">🔒 Market closed for the weekend · reopens ${tfEntries.reopens || 'Sunday 22:00 GST'}. Auto-analysis paused.</div>`;
     const rows = TF_LIST.map(tf => {
       const e = tfEntries[tf];
-      if (!e || e.error) return `<tr><td style="padding:6px 8px;color:var(--text-mute);">${TF_LABELS[tf]}</td><td colspan="6" style="padding:6px 8px;color:var(--text-mute);font-size:10px;">no data</td></tr>`;
+      if (!e || e.error) return `<tr><td style="padding:6px 8px;color:var(--text-mute);">${TF_LABELS[tf]}</td><td colspan="8" style="padding:6px 8px;color:var(--text-mute);font-size:10px;">no data</td></tr>`;
       const dirColor = e.dir === 'bull' ? 'var(--bull)' : e.dir === 'bear' ? 'var(--bear)' : 'var(--text-mute)';
       const dirLabel = e.dir === 'bull' ? '🟢 LONG' : e.dir === 'bear' ? '🔴 SHORT' : '—';
+      const sug = _suggestedEntryForTf(e, tf);
+      const entryCell = sug ? `<span style="color:var(--bull);font-weight:600;">$${sug.entry}</span>` : '<span style="color:var(--text-mute);">—</span>';
+      const slCell = sug ? `<span style="color:var(--bear);">$${sug.sl}</span>` : '<span style="color:var(--text-mute);">—</span>';
       const status = e.entryReady
-        ? `<span style="color:var(--bull);font-weight:700;">✓ ENTRY</span>`
-        : `<span style="color:var(--text-mute);">${e.score}/4 · waiting</span>`;
+        ? `<span style="color:var(--bull);font-weight:700;">✓ READY</span>`
+        : `<span style="color:var(--text-mute);">${e.score}/4</span>`;
       const tick = v => v ? '<span style="color:var(--bull);">✓</span>' : '<span style="color:var(--text-mute);">·</span>';
       return `<tr style="${e.entryReady?'background:rgba(92,184,138,0.06);':''}border-top:1px solid var(--border);">
         <td style="padding:6px 8px;color:var(--gold);font-weight:600;">${TF_LABELS[tf]}</td>
@@ -4816,6 +4830,8 @@
         <td style="padding:6px 8px;text-align:center;">${tick(e.sweep)}</td>
         <td style="padding:6px 8px;text-align:center;">${tick(e.displacement)}</td>
         <td style="padding:6px 8px;text-align:center;">${tick(e.choch)}</td>
+        <td style="padding:6px 8px;text-align:right;">${entryCell}</td>
+        <td style="padding:6px 8px;text-align:right;">${slCell}</td>
         <td style="padding:6px 8px;font-size:10px;">${status}</td>
       </tr>`;
     }).join('');
@@ -4829,6 +4845,8 @@
             <th style="padding:4px 8px;">Sweep</th>
             <th style="padding:4px 8px;">Disp</th>
             <th style="padding:4px 8px;">CHoCH</th>
+            <th style="padding:4px 8px;text-align:right;">Entry</th>
+            <th style="padding:4px 8px;text-align:right;">SL</th>
             <th style="padding:4px 8px;text-align:left;">Status</th>
           </tr>
         </thead>
