@@ -1533,9 +1533,12 @@
 
         <!-- ═══ My Wallet ═══ -->
         <div class="ap-card full" style="margin-bottom:14px;border-color:rgba(247,147,26,0.25);">
-          <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
             <span>👛 My Wallet · MetaMask</span>
-            <button id="mmConnectBtn" onclick="connectMetaMask()" style="background:rgba(247,147,26,0.15);border:1px solid rgba(247,147,26,0.4);border-radius:6px;padding:5px 12px;color:#f7931a;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">Connect</button>
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+              <span id="bscGasTracker" style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">⛽ —</span>
+              <button id="mmConnectBtn" onclick="connectMetaMask()" style="background:rgba(247,147,26,0.15);border:1px solid rgba(247,147,26,0.4);border-radius:6px;padding:5px 12px;color:#f7931a;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">Connect</button>
+            </div>
           </div>
           <div id="mmStatus" style="font-size:12px;color:var(--text-mute);padding:8px 0;">Click Connect to link your MetaMask wallet. View-only — no transactions ever sent from here.</div>
           <div id="mmBalances"></div>
@@ -1564,6 +1567,19 @@
             <button onclick="addWhaleWatch()" style="background:rgba(92,184,138,0.15);border:1px solid rgba(92,184,138,0.4);border-radius:6px;padding:7px 14px;color:var(--bull);font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">＋ Add</button>
           </div>
           <div id="whaleListHost"></div>
+        </div>
+
+        <!-- ═══ Token Lookup ═══ -->
+        <div class="ap-card full" style="margin-bottom:14px;border-color:rgba(98,126,234,0.25);">
+          <div class="ap-card-title">🔍 Token Lookup · Analyze Any BSC Contract</div>
+          <div style="font-size:11px;color:var(--text-mute);margin-bottom:10px;line-height:1.6;">Paste any BSC token contract address (from a tip, X post, Telegram, etc.) to instantly pull price, MC, liquidity, security flags, snipe/long-term scores, and buy/sell pressure — same Insights format as the meme hunter cards.</div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:14px;">
+            <input type="text" id="tokenLookupInput" placeholder="0x… (paste BSC token contract)"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();lookupBscToken();}"
+              style="width:100%;box-sizing:border-box;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none;">
+            <button onclick="lookupBscToken()" style="background:rgba(98,126,234,0.15);border:1px solid rgba(98,126,234,0.4);border-radius:6px;padding:7px 14px;color:#627eea;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔍 Analyze</button>
+          </div>
+          <div id="tokenLookupHost"></div>
         </div>
 
         <!-- ═══ BSC Meme Hunter · Insights ═══ -->
@@ -6551,6 +6567,92 @@
     } catch(e) { return null; }
   }
 
+  // ═══════════════════════════════════════════════════════
+  // 🔍 Token Lookup — paste any BSC contract → full Insights card
+  // ═══════════════════════════════════════════════════════
+  async function lookupBscToken() {
+    const input = document.getElementById('tokenLookupInput');
+    const host = document.getElementById('tokenLookupHost');
+    if (!input || !host) return;
+    const addr = (input.value || '').trim();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) {
+      try { showToast('Invalid BSC contract address (must be 0x… 40 hex chars)', 'warn'); } catch(e) {}
+      return;
+    }
+    host.innerHTML = '<div style="color:var(--text-mute);font-size:11px;padding:14px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;">⟳ analyzing token across GeckoTerminal + GoPlus…</div>';
+    try {
+      const opts = {};
+      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(15000);
+      const tokenLower = addr.toLowerCase();
+      const [tokenRes, poolsRes] = await Promise.all([
+        fetch(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${tokenLower}`, opts),
+        fetch(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${tokenLower}/pools?page=1`, opts)
+      ]);
+      if (!tokenRes.ok) throw new Error(`Token not found on BSC (${tokenRes.status})`);
+      const tokenJson = await tokenRes.json();
+      const t = tokenJson.data?.attributes;
+      if (!t) throw new Error('No token data returned');
+      // Find the deepest pool
+      const poolsJson = poolsRes.ok ? await poolsRes.json() : { data: [] };
+      const pools = (poolsJson.data || []).map(p => ({ ...p, _liq: parseFloat(p.attributes?.reserve_in_usd || 0) }));
+      pools.sort((a,b) => b._liq - a._liq);
+      const topPool = pools[0];
+      const meta = topPool ? topPool.attributes : {};
+      const item = {
+        pairAddr: meta.address || '',
+        name: t.name || '',
+        symbol: t.symbol || '',
+        contract: addr,
+        imageUrl: t.image_url,
+        price: parseFloat(t.price_usd) || parseFloat(meta.base_token_price_usd) || 0,
+        fdv: parseFloat(t.fdv_usd) || parseFloat(meta.fdv_usd) || 0,
+        mc: parseFloat(t.market_cap_usd) || parseFloat(t.fdv_usd) || 0,
+        vol24h: parseFloat(meta.volume_usd?.h24 || t.volume_usd?.h24) || 0,
+        vol1h: parseFloat(meta.volume_usd?.h1) || 0,
+        change24h: parseFloat(meta.price_change_percentage?.h24) || 0,
+        change1h: parseFloat(meta.price_change_percentage?.h1) || 0,
+        buys24h: parseInt(meta.transactions?.h24?.buys || 0, 10),
+        sells24h: parseInt(meta.transactions?.h24?.sells || 0, 10),
+        reserveUsd: parseFloat(meta.reserve_in_usd) || 0,
+        poolAge: meta.pool_created_at,
+        dex: topPool?.relationships?.dex?.data?.id || 'pancakeswap'
+      };
+      // Bulk-scan via GoPlus (will populate cache → security flags become available)
+      await _bulkFetchGoplus([addr]);
+      item._snipeScore = _computeSnipeScore(item);
+      item._longScore = _computeLongTermScore(item);
+      host.innerHTML = _renderMemeInsight(item);
+    } catch(e) {
+      host.innerHTML = `<div style="background:rgba(224,93,93,0.08);border:1px solid var(--bear);border-radius:10px;padding:14px;font-size:11px;color:var(--bear);">⚠ ${e.message}. The contract may not have a tradeable pool on BSC, or GeckoTerminal hasn't indexed it yet.</div>`;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // ⛽ BSC Gas Tracker — public RPC, no key
+  // ═══════════════════════════════════════════════════════
+  async function _renderGasTracker() {
+    const el = document.getElementById('bscGasTracker');
+    if (!el) return;
+    try {
+      const r = await fetch('https://bsc-dataseed.binance.org/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_gasPrice', params: [], id: 1 })
+      });
+      const j = await r.json();
+      if (!j.result) throw new Error('no result');
+      const gwei = Number(BigInt(j.result)) / 1e9;
+      // Estimate ~150k gas for a PancakeSwap V2 swap
+      const bnbCost = (gwei * 150000) / 1e9;
+      const bnbAsset = ASSETS.find(a => a.symbol === 'BNB');
+      const usdCost = bnbAsset?.price ? bnbCost * bnbAsset.price : null;
+      const color = gwei < 3 ? 'var(--bull)' : gwei < 5 ? 'var(--liq)' : 'var(--bear)';
+      el.innerHTML = `⛽ BSC <span style="color:${color};font-weight:700;">${gwei.toFixed(1)} gwei</span>${usdCost ? ` · swap ≈ <span style="color:var(--gold);">$${usdCost.toFixed(2)}</span>` : ''}`;
+    } catch(e) {
+      el.innerHTML = '<span style="color:var(--text-mute);">⛽ gas: unavailable</span>';
+    }
+  }
+
   async function _renderMyWallet() {
     const statusEl = document.getElementById('mmStatus');
     const balEl = document.getElementById('mmBalances');
@@ -6841,6 +6943,7 @@
     _renderWhaleList();
     fetchBscMemes(false);
     fetchDefiOverview(false);
+    _renderGasTracker();
   }
 
   // ═══════════════════════════════════════════════════════
@@ -7667,6 +7770,11 @@
     if (typeof fetchBscMemes === 'function') {
       fetchBscMemes(true).catch(()=>{});
       setInterval(() => fetchBscMemes(true).catch(()=>{}), 5*60*1000);
+    }
+    // ⛽ BSC gas tracker — refresh every 30s
+    if (typeof _renderGasTracker === 'function') {
+      _renderGasTracker();
+      setInterval(_renderGasTracker, 30000);
     }
     setInterval(fetchFearGreed, 300000);
     setInterval(fetchFundingRates, 120000);
