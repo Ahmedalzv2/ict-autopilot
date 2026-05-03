@@ -1372,6 +1372,7 @@
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcBI" checked onchange="_onNewsFilterChange()"> BeInCrypto</label>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcUT" checked onchange="_onNewsFilterChange()"> U.Today</label>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcSOC" checked onchange="_onNewsFilterChange()"> 𝕏 Pulse</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcXLIVE" checked onchange="_onNewsFilterChange()"> 𝕏 Live (accounts)</label>
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Category</span>
@@ -2947,6 +2948,10 @@
     if (tab==='calendar') {
       try { _loadCalendarFilters(); } catch(e) {}
       try { renderCalendarPage(); } catch(e) {}
+      // Pull live ForexFactory data in background, re-render when it arrives
+      if (typeof fetchForexFactoryCalendar === 'function') {
+        fetchForexFactoryCalendar(false).then(() => { try { renderCalendarPage(); } catch(e) {} }).catch(()=>{});
+      }
     }
   }
 
@@ -3811,6 +3816,178 @@
     return results.flat();
   }
 
+  // ═══════════════════════════════════════════════════════
+  // 🦡 ScrapeBadger generic helper — used for Nitter X feeds + ForexFactory
+  // Nitter mirrors are unstable; we try several until one responds. Cached
+  // 10 min for X, 30 min for ForexFactory.
+  // ═══════════════════════════════════════════════════════
+  async function _scrapeBadgerFetch(url, opts={}) {
+    if (!SCRAPEBADGER_API_KEY) return null;
+    const apiUrl = `https://api.scrapebadger.com/v1/?api_key=${encodeURIComponent(SCRAPEBADGER_API_KEY)}&url=${encodeURIComponent(url)}`;
+    const fetchOpts = {};
+    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) fetchOpts.signal = AbortSignal.timeout(opts.timeout || 15000);
+    try {
+      const r = await fetch(apiUrl, fetchOpts);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.text();
+    } catch(e) {
+      console.warn('[ScrapeBadger]', url, e.message);
+      return null;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 𝕏 LIVE FEED — Nitter RSS for high-signal crypto accounts via ScrapeBadger
+  // ═══════════════════════════════════════════════════════
+  const NITTER_MIRRORS = [
+    'https://nitter.privacydev.net',
+    'https://nitter.poast.org',
+    'https://nitter.cz',
+    'https://nitter.fdn.fr',
+    'https://nitter.net'
+  ];
+  const X_TRACKED_ACCOUNTS = [
+    { handle:'WatcherGuru',   label:'Watcher.Guru',  desc:'breaking crypto + macro' },
+    { handle:'whale_alert',   label:'Whale Alert',   desc:'$1M+ on-chain moves' },
+    { handle:'CoinDesk',      label:'CoinDesk',      desc:'institutional news' },
+    { handle:'Cointelegraph', label:'Cointelegraph', desc:'broad crypto news' },
+    { handle:'APompliano',    label:'Pomp',          desc:'macro/BTC commentary' }
+  ];
+
+  async function _fetchNitterFeed(handle, label) {
+    for (const mirror of NITTER_MIRRORS) {
+      const url = `${mirror}/${handle}/rss`;
+      const xml = await _scrapeBadgerFetch(url, { timeout: 12000 });
+      if (!xml || xml.length < 100) continue;
+      try {
+        const doc = new DOMParser().parseFromString(xml, 'application/xml');
+        const items = doc.querySelectorAll('item');
+        if (items.length === 0) continue;
+        const out = [];
+        items.forEach((item, i) => {
+          if (i >= 6) return;
+          const title = (item.querySelector('title')?.textContent || '').replace(/<[^>]+>/g,'').trim();
+          let link = item.querySelector('link')?.textContent || '';
+          // Rewrite to public x.com link
+          link = link.replace(/^https?:\/\/[^/]+/, 'https://x.com');
+          const pubDate = item.querySelector('pubDate')?.textContent || '';
+          const t = pubDate ? Math.floor(new Date(pubDate).getTime()/1000) : 0;
+          if (!title) return;
+          out.push({
+            id: 'xlive-' + handle + '-' + (link || i),
+            title: title.slice(0, 280),
+            url: link || '#',
+            source: 'social',
+            sourceLabel: '𝕏 @' + handle + ' · ' + label,
+            published: t || 0,
+            categories: [],
+            body: '',
+            engagement: 0,
+            sentiment: null,
+            symbol: null,
+            _sourceKey: 'xlive',
+            _xHandle: handle
+          });
+        });
+        if (out.length) return out;
+      } catch(e) { continue; }
+    }
+    return [];
+  }
+
+  async function _fetchAllXFeeds() {
+    if (!SCRAPEBADGER_API_KEY) return [];
+    const tasks = X_TRACKED_ACCOUNTS.map(a => _fetchNitterFeed(a.handle, a.label));
+    const results = await Promise.all(tasks);
+    return results.flat();
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 🏛 ForexFactory weekly econ calendar via ScrapeBadger
+  // ═══════════════════════════════════════════════════════
+  let _forexFactoryCache = null;
+  let _forexFactoryTs = 0;
+  const FF_TTL = 30 * 60 * 1000;
+
+  async function fetchForexFactoryCalendar(force) {
+    if (!force && _forexFactoryCache && Date.now() - _forexFactoryTs < FF_TTL) return _forexFactoryCache;
+    if (!SCRAPEBADGER_API_KEY) return [];
+    const html = await _scrapeBadgerFetch('https://www.forexfactory.com/calendar', { timeout: 20000 });
+    if (!html) { _forexFactoryCache = []; _forexFactoryTs = Date.now(); return []; }
+    try {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const rows = doc.querySelectorAll('tr.calendar__row');
+      const out = [];
+      let currentDate = null;
+      rows.forEach(row => {
+        const dateCell = row.querySelector('.calendar__cell--date, .calendar__date');
+        if (dateCell?.textContent.trim()) {
+          const dateText = dateCell.textContent.trim();
+          // ForexFactory shows "Mon May 4" — assume current year (or next year if month already passed)
+          const yr = new Date().getFullYear();
+          const parsed = new Date(`${dateText} ${yr} 00:00:00 GMT`);
+          if (!isNaN(parsed)) {
+            // If the parsed date is more than 60 days in the past, shift to next year
+            const now = Date.now();
+            if (parsed.getTime() < now - 60*86400000) parsed.setFullYear(yr + 1);
+            currentDate = parsed.toISOString().slice(0,10);
+          }
+        }
+        const time = (row.querySelector('.calendar__time')?.textContent || '').trim();
+        const currency = (row.querySelector('.calendar__currency')?.textContent || '').trim();
+        const event = (row.querySelector('.calendar__event')?.textContent || '').trim();
+        const impactSpan = row.querySelector('.calendar__impact span, .calendar__impact-icon');
+        const impactTitle = impactSpan?.title || impactSpan?.getAttribute('data-tooltip') || '';
+        const actual = (row.querySelector('.calendar__actual')?.textContent || '').trim();
+        const forecast = (row.querySelector('.calendar__forecast')?.textContent || '').trim();
+        const previous = (row.querySelector('.calendar__previous')?.textContent || '').trim();
+        if (!event || !currentDate) return;
+        // Only USD (drives BTC/US100/Gold) and EUR (US100 sometimes reacts)
+        if (currency !== 'USD' && currency !== 'EUR') return;
+        // Skip "All Day" / no-time entries
+        if (!time || /day/i.test(time)) return;
+        // Convert FF time (typically 12h with am/pm in EST) to UTC. Best effort.
+        // FF page time defaults to local of the user's IP; via ScrapeBadger
+        // it's usually US Eastern (EST/EDT). For simplicity, store time as UTC
+        // approximation — user's countdown still works since dates dominate.
+        let timeUtc = time;
+        const m12 = time.match(/^(\d{1,2}):(\d{2})\s?(am|pm)$/i);
+        if (m12) {
+          let h = parseInt(m12[1],10);
+          const min = m12[2];
+          const ap = m12[3].toLowerCase();
+          if (ap === 'pm' && h < 12) h += 12;
+          if (ap === 'am' && h === 12) h = 0;
+          // Add 5h to convert EST→UTC (good enough; ignores DST 1h drift)
+          h = (h + 5) % 24;
+          timeUtc = String(h).padStart(2,'0') + ':' + min;
+        }
+        let impact = 'medium';
+        if (/high/i.test(impactTitle)) impact = 'high';
+        else if (/low/i.test(impactTitle)) impact = 'low';
+        else if (/non-economic|holiday/i.test(impactTitle)) impact = 'low';
+        const note = [
+          actual ? `Actual: ${actual}` : '',
+          forecast ? `Fcst: ${forecast}` : '',
+          previous ? `Prev: ${previous}` : ''
+        ].filter(Boolean).join(' · ') || 'Live ForexFactory data';
+        out.push({
+          date: currentDate, time: timeUtc,
+          event: `[${currency}] ${event}`,
+          impact, category: 'econ', source: 'forexfactory', note
+        });
+      });
+      _forexFactoryCache = out;
+      _forexFactoryTs = Date.now();
+      return out;
+    } catch(e) {
+      console.warn('[ForexFactory] parse failed:', e.message);
+      _forexFactoryCache = [];
+      _forexFactoryTs = Date.now();
+      return [];
+    }
+  }
+
   async function _fetchCryptoCompareGlobal() {
     try {
       const _ccKey = CRYPTOCOMPARE_API_KEY ? `&api_key=${CRYPTOCOMPARE_API_KEY}` : '';
@@ -3843,16 +4020,17 @@
     const btn = document.getElementById('newsRefreshBtn');
     if (btn) btn.textContent = '⟳ refreshing…';
     const rssTasks = RSS_FEEDS.map(f => _fetchRSSFeed(f));
-    const [cc, cg, social, ...rssResults] = await Promise.all([
+    const [cc, cg, social, xlive, ...rssResults] = await Promise.all([
       _fetchCryptoCompareGlobal(),
       _fetchCoinGeckoGlobal(),
       _fetchLunarCrushSocial(),
+      _fetchAllXFeeds(),
       ...rssTasks
     ]);
     const allRss = rssResults.flat();
     // Dedupe by URL
     const byUrl = new Map();
-    [...cc, ...cg, ...allRss, ...social].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
+    [...cc, ...cg, ...allRss, ...social, ...xlive].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
     _newsAggregateItems = Array.from(byUrl.values()).sort((a,b) => (b.published||0) - (a.published||0));
     _newsAggregateTs = Date.now();
     if (btn) btn.textContent = '↻ Refresh';
@@ -3895,6 +4073,7 @@
         beincrypto:    document.getElementById('newsSrcBI')?.checked,
         utoday:        document.getElementById('newsSrcUT')?.checked,
         social:        document.getElementById('newsSrcSOC')?.checked,
+        xlive:         document.getElementById('newsSrcXLIVE')?.checked,
       },
       cats: {
         btc: document.getElementById('newsCatBTC')?.checked,
@@ -3917,7 +4096,10 @@
     return items.filter(it => {
       if (filters.sources.cc === false && it.source === 'cryptocompare') return false;
       if (filters.sources.cg === false && it.source === 'coingecko') return false;
-      if (filters.sources.social === false && it.source === 'social') return false;
+      // Distinguish: 𝕏 Pulse (LunarCrush) vs 𝕏 Live (Nitter via ScrapeBadger)
+      if (it.source === 'social' && it._sourceKey === 'xlive') {
+        if (filters.sources.xlive === false) return false;
+      } else if (filters.sources.social === false && it.source === 'social') return false;
       if (it.source === 'rss') {
         const sk = it._sourceKey;
         if (sk === 'coindesk'      && filters.sources.coindesk      === false) return false;
@@ -3954,6 +4136,7 @@
       set('newsSrcCD', f.sources?.coindesk); set('newsSrcCT', f.sources?.cointelegraph);
       set('newsSrcTB', f.sources?.theblock); set('newsSrcBI', f.sources?.beincrypto);
       set('newsSrcUT', f.sources?.utoday); set('newsSrcSOC', f.sources?.social);
+      set('newsSrcXLIVE', f.sources?.xlive);
       set('newsCatBTC', f.cats?.btc); set('newsCatETH', f.cats?.eth); set('newsCatALT', f.cats?.alt);
       set('newsCatREG', f.cats?.reg); set('newsCatMAC', f.cats?.macro); set('newsCatTECH', f.cats?.tech);
       set('newsRecency', String(f.recencySec ?? 86400));
@@ -3977,7 +4160,7 @@
     let srcCode = 'NEWS';
     if (item.source === 'cryptocompare') srcCode = 'CC';
     else if (item.source === 'coingecko') srcCode = 'CG';
-    else if (item.source === 'social') srcCode = '𝕏';
+    else if (item.source === 'social') srcCode = item._sourceKey === 'xlive' ? '𝕏 @' + (item._xHandle || 'live') : '𝕏';
     else if (item.source === 'rss') {
       const m = { coindesk:'CoinDesk', cointelegraph:'CT', theblock:'Block', beincrypto:'BeIn', utoday:'U.Today' };
       srcCode = m[item._sourceKey] || 'RSS';
@@ -4327,10 +4510,12 @@
   const FUTURES_EXPIRIES = _generateFuturesExpiries();
 
   function _getAllCalendarEvents() {
+    const ff = (_forexFactoryCache || []).map(e => ({ ...e, category: e.category || 'econ' }));
     return [
       ...ECON_EVENTS.map(e => ({ ...e, category: e.category || 'econ' })),
       ...CME_HOLIDAYS.map(e => ({ ...e, time: e.time || '00:00' })),
-      ...FUTURES_EXPIRIES
+      ...FUTURES_EXPIRIES,
+      ...ff
     ].sort((a,b) => new Date(a.date+'T'+a.time) - new Date(b.date+'T'+b.time));
   }
 
@@ -4407,8 +4592,9 @@
     return { dots:'·', color:'var(--text-mute)', bd:'var(--border)', bg:'var(--bg-elevated)' };
   }
 
-  function _calCategoryBadge(cat) {
-    if (cat === 'econ')   return `<span style="font-size:9px;color:var(--gold);background:rgba(201,169,97,0.15);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;">🏛 ECON</span>`;
+  function _calCategoryBadge(cat, source) {
+    const liveBadge = source === 'forexfactory' ? `<span style="font-size:9px;color:var(--bull);background:rgba(92,184,138,0.15);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;margin-left:4px;" title="Live data from ForexFactory">🌐 LIVE</span>` : '';
+    if (cat === 'econ')   return `<span style="font-size:9px;color:var(--gold);background:rgba(201,169,97,0.15);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;">🏛 ECON</span>${liveBadge}`;
     if (cat === 'cme')    return `<span style="font-size:9px;color:var(--text-mute);background:rgba(101,101,109,0.20);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;">🏢 CME</span>`;
     if (cat === 'expiry') return `<span style="font-size:9px;color:#1d9bf0;background:rgba(29,155,240,0.15);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;">📈 EXPIRY</span>`;
     return '';
@@ -4476,7 +4662,7 @@
       </div>
       <div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:3px;">
-          ${_calCategoryBadge(e.category)}
+          ${_calCategoryBadge(e.category, e.source)}
           <span style="font-size:10px;">${imp.dots}</span>
           <span style="font-size:13px;font-weight:600;color:var(--text);">${e.event}</span>
         </div>
@@ -6426,6 +6612,11 @@
     _try('loadNewsFilters', _loadNewsFilters);
     fetchAllNewsAggregate(true).catch(()=>{});
     setInterval(() => fetchAllNewsAggregate(true).catch(()=>{}), 5*60*1000);
+    // ForexFactory live calendar (via ScrapeBadger) — initial pull + refresh every 30 min
+    if (typeof fetchForexFactoryCalendar === 'function') {
+      fetchForexFactoryCalendar(true).catch(()=>{});
+      setInterval(() => fetchForexFactoryCalendar(true).catch(()=>{}), 30*60*1000);
+    }
     setInterval(fetchFearGreed, 300000);
     setInterval(fetchFundingRates, 120000);
     setInterval(fetchNews, 300000);
