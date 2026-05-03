@@ -1298,6 +1298,190 @@
   body[data-density="compact"] #cmdkInput { font-size: 14px; }
   body[data-density="compact"] .cmdk-item { padding: 7px 10px; font-size: 12px; }
 
+  /* ═══════════════════════════════════
+     CONFLUENCE ENGINE WIDGET
+  ═══════════════════════════════════ */
+  .cf-hero {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .cf-symbol {
+    font-family: 'Instrument Serif', serif;
+    font-size: 28px;
+    color: var(--gold);
+    line-height: 1;
+  }
+  .cf-bias-pill {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.05em;
+  }
+  .cf-bias-LONG { background: rgba(92,184,138,0.2); color: var(--bull); }
+  .cf-bias-SHORT { background: rgba(224,93,93,0.2); color: var(--bear); }
+  .cf-bias-NEUTRAL { background: rgba(101,101,109,0.2); color: var(--text-mute); }
+  .cf-percent {
+    font-size: 32px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1;
+  }
+  .cf-grade-pill {
+    font-size: 14px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border: 1px solid;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .cf-expected {
+    font-size: 12px;
+    color: var(--text-mute);
+    margin-bottom: 14px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .cf-factors {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 14px;
+  }
+  .cf-factor {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .cf-factor-name {
+    width: 110px;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+    flex-shrink: 0;
+  }
+  .cf-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--bg);
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: 60px;
+  }
+  .cf-bar-fill {
+    height: 100%;
+    transition: width 0.4s ease, background 0.4s;
+    border-radius: 3px;
+  }
+  .cf-factor-val {
+    width: 38px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+  .cf-factor-note {
+    font-size: 10px;
+    color: var(--text-mute);
+    padding-left: 120px;
+    margin-top: -2px;
+    margin-bottom: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .cf-reasoning {
+    padding: 12px 14px;
+    background: var(--bg);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.6;
+  }
+  .cf-reasoning .cf-r-label {
+    color: var(--gold);
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .cf-rank-section {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .cf-rank-title {
+    font-size: 10px;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    margin-bottom: 10px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .cf-rank-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 6px;
+  }
+  .cf-rank-cell {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .cf-rank-cell:hover { border-color: var(--text-dim); transform: translateY(-1px); }
+  .cf-rank-cell.active { border-color: var(--gold); background: rgba(201,169,97,0.08); }
+  .cf-rank-sym {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--gold);
+  }
+  .cf-rank-grade {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+  }
+  .cf-rank-pct {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    font-weight: 600;
+    margin-top: 3px;
+  }
+  .cf-rank-bias {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    margin-top: 1px;
+  }
+
+  /* Compact density overrides for confluence */
+  body[data-density="compact"] .cf-symbol { font-size: 22px; }
+  body[data-density="compact"] .cf-percent { font-size: 26px; }
+  body[data-density="compact"] .cf-factor-name { width: 90px; font-size: 10px; }
+  body[data-density="compact"] .cf-factor-note { padding-left: 100px; font-size: 9px; }
+  body[data-density="compact"] .cf-reasoning { padding: 9px 11px; font-size: 11px; }
+  body[data-density="compact"] .cf-rank-cell { padding: 6px 8px; }
+  body[data-density="compact"] .cf-rank-pct { font-size: 13px; }
+
+  /* Mobile overrides for confluence */
+  @media (max-width: 640px) {
+    .cf-factor-name { width: 80px; font-size: 10px; }
+    .cf-factor-note { padding-left: 90px; font-size: 9px; }
+    .cf-percent { font-size: 26px; }
+    .cf-symbol { font-size: 22px; }
+    .cf-rank-strip { grid-template-columns: repeat(3, 1fr); }
+  }
+
   </style>
 </head>
 <body>
@@ -1374,6 +1558,14 @@
         <div class="page-header">
           <h1>⭐ Top Setup — New Entry Zones</h1>
           <p>Assets at or approaching new entry zones — ENTER NOW 🔴 means price is within 0.05% of entry (execute trade), ALMOST ENTRY POINT means ICT conditions fully met and close, ALMOST ENTRY means approaching. All 10 assets monitored. Prices auto-sync every 30s.</p>
+        </div>
+
+        <!-- Confluence Engine — single-glance multi-factor confidence -->
+        <div class="ap-card full gold-border" id="confluenceCard" style="margin-bottom:16px;">
+          <div class="ap-card-title">🧠 Confluence Engine — Smart ICT Master</div>
+          <div id="confluenceContent">
+            <div style="color:var(--text-mute);padding:14px 0;font-family:'JetBrains Mono',monospace;font-size:11px;">Computing confluence…</div>
+          </div>
         </div>
 
         <div class="ap-grid">
@@ -2386,6 +2578,245 @@
     return 'wait';
   }
 
+  // ═══════════════════════════════════════════════════════
+  // 🧠 CONFLUENCE ENGINE — multi-factor scoring
+  // 8 weighted factors per asset → percent + grade + reasoning.
+  // BTC Correlation only applies to altcoins (skipped for BTC,
+  // GOLD, SILVER, US100 — score normalised over available weights).
+  // ═══════════════════════════════════════════════════════
+  let cfSelected = null; // symbol shown as hero; null = top-scored
+
+  function computeConfluence(asset, gst) {
+    const session = getCurrentSession(gst);
+    const sessionType = session ? session.type : null;
+    const isCrypto = !NON_BINANCE_ASSETS.includes(asset.symbol);
+    const checks = asset.checks || [];
+    const score = checks.reduce((a,b)=>a+b, 0);
+    const biasUp = (asset.bias||'').toUpperCase();
+    const bias = biasUp.includes('BULL') ? 'LONG' : biasUp.includes('BEAR') ? 'SHORT' : 'NEUTRAL';
+    const factors = [];
+
+    // 1) Kill Zone Alignment — crypto vs market-hours behave differently
+    let kzScore, kzNote;
+    if (isCrypto) {
+      if (sessionType === 'active') { kzScore = 100; kzNote = 'In ' + session.name; }
+      else if (sessionType === 'macro') { kzScore = 90; kzNote = 'In ' + session.name; }
+      else if (sessionType === 'dead') { kzScore = 60; kzNote = 'Off-peak (crypto trades 24/7)'; }
+      else { kzScore = 70; kzNote = 'Off-session'; }
+    } else {
+      if (sessionType === 'active') { kzScore = 100; kzNote = 'In ' + session.name; }
+      else if (sessionType === 'macro') { kzScore = 80; kzNote = 'In ' + session.name; }
+      else if (sessionType === 'dead') { kzScore = 0; kzNote = 'Dead zone — market closed'; }
+      else { kzScore = 30; kzNote = 'Off-session'; }
+    }
+    factors.push({ name: 'Kill Zone', score: kzScore, weight: 12, note: kzNote });
+
+    // 2) Timeframe Confluence (1H/4H/D1)
+    const mtf = getMTFAligned(asset);
+    let mtfScore, mtfNote;
+    if (mtf.pending) { mtfScore = 60; mtfNote = 'Loading 1H/4H/D…'; }
+    else {
+      mtfScore = (mtf.score / 3) * 100;
+      const want = bias === 'LONG' ? 'bull' : 'bear';
+      const aligned = [];
+      if (mtf.h1 === want) aligned.push('1H');
+      if (mtf.h4 === want) aligned.push('4H');
+      if (mtf.d1 === want) aligned.push('D');
+      mtfNote = aligned.length ? aligned.join('+') + ' aligned ' + bias.toLowerCase()
+                               : '0/3 aligned with ' + bias.toLowerCase();
+    }
+    factors.push({ name: 'Timeframes', score: mtfScore, weight: 18, note: mtfNote });
+
+    // 3) FVG / OB — checks[4]=OB, checks[5]=FVG
+    const obOk = checks[4] || 0;
+    const fvgOk = checks[5] || 0;
+    const fvgObScore = ((fvgOk + obOk) / 2) * 100;
+    const fvgObNote = fvgOk && obOk ? 'FVG + OB confirmed'
+                    : fvgOk ? 'FVG marked, OB pending'
+                    : obOk ? 'OB rejected, FVG pending'
+                    : 'Neither confirmed';
+    factors.push({ name: 'FVG / OB', score: fvgObScore, weight: 14, note: fvgObNote });
+
+    // 4) BTC Correlation — altcoins only
+    const isAltcoin = isCrypto && asset.symbol !== 'BTC';
+    if (isAltcoin) {
+      const btc = ASSETS.find(a => a.symbol === 'BTC');
+      if (btc && isFinite(btc.change24h)) {
+        const ch = btc.change24h;
+        const btcDir = ch > 0.5 ? 'up' : ch < -0.5 ? 'down' : 'flat';
+        let btcScore, btcNote;
+        if (bias === 'LONG' && btcDir === 'up') { btcScore = 100; btcNote = 'BTC ' + ch.toFixed(2) + '% — bull tailwind'; }
+        else if (bias === 'SHORT' && btcDir === 'down') { btcScore = 100; btcNote = 'BTC ' + ch.toFixed(2) + '% — bear tailwind'; }
+        else if (btcDir === 'flat') { btcScore = 60; btcNote = 'BTC flat ' + ch.toFixed(2) + '%'; }
+        else { btcScore = 30; btcNote = 'BTC ' + btcDir + ' ' + ch.toFixed(2) + '%, opposes ' + bias.toLowerCase(); }
+        factors.push({ name: 'BTC Correl', score: btcScore, weight: 10, note: btcNote });
+      }
+    }
+
+    // 5) Liquidity sweep — checks[3]
+    const liqOk = checks[3] || 0;
+    factors.push({ name: 'Liquidity', score: liqOk * 100, weight: 14,
+                   note: liqOk ? 'Sweep completed' : 'No sweep yet' });
+
+    // 6) News / Event Risk — placeholder neutral
+    factors.push({ name: 'News Risk', score: 70, weight: 8,
+                   note: 'No high-impact events tracked' });
+
+    // 7) F&G + Funding — sentiment vs bias
+    let sentScore = 50;
+    const sentParts = [];
+    if (lastFearGreed && isFinite(lastFearGreed.value)) {
+      const fg = lastFearGreed.value;
+      if (bias === 'SHORT') {
+        if (fg >= 70) { sentScore += 20; sentParts.push('F&G ' + fg + ' (' + lastFearGreed.classification + ')'); }
+        else if (fg <= 30) { sentScore -= 10; sentParts.push('F&G ' + fg + ' (Fear) — counter-trend'); }
+        else sentParts.push('F&G ' + fg);
+      } else if (bias === 'LONG') {
+        if (fg <= 30) { sentScore += 20; sentParts.push('F&G ' + fg + ' (' + lastFearGreed.classification + ')'); }
+        else if (fg >= 70) { sentScore -= 10; sentParts.push('F&G ' + fg + ' (Greed) — counter-trend'); }
+        else sentParts.push('F&G ' + fg);
+      } else {
+        sentParts.push('F&G ' + fg);
+      }
+    }
+    if (isCrypto && fundingByAsset[asset.symbol] !== undefined) {
+      const fr = fundingByAsset[asset.symbol];
+      const sign = fr >= 0 ? '+' : '';
+      if (bias === 'SHORT' && fr > 0.02) { sentScore += 25; sentParts.push(sign + fr.toFixed(3) + '% funding (longs paying)'); }
+      else if (bias === 'LONG' && fr < -0.02) { sentScore += 25; sentParts.push(fr.toFixed(3) + '% funding (shorts paying)'); }
+      else if (bias === 'SHORT' && fr < -0.02) { sentScore -= 15; sentParts.push(fr.toFixed(3) + '% funding (counter-trend)'); }
+      else if (bias === 'LONG' && fr > 0.02) { sentScore -= 15; sentParts.push(sign + fr.toFixed(3) + '% funding (counter-trend)'); }
+      else sentParts.push('Funding ' + sign + fr.toFixed(3) + '%');
+    }
+    sentScore = Math.max(0, Math.min(100, sentScore));
+    factors.push({ name: 'F&G + Fund', score: sentScore, weight: 12,
+                   note: sentParts.join(' · ') || 'Sentiment data loading' });
+
+    // 8) Trigger Quality — HTF + Judas + Displacement + CHoCH (checks 0,2,6,7)
+    const trigSum = (checks[0]||0) + (checks[2]||0) + (checks[6]||0) + (checks[7]||0);
+    const triggerScore = (trigSum / 4) * 100;
+    const tParts = [];
+    if (checks[0]) tParts.push('HTF aligned');
+    if (checks[2]) tParts.push('Judas');
+    if (checks[6]) tParts.push('displacement');
+    if (checks[7]) tParts.push('1m CHoCH');
+    factors.push({ name: 'Triggers', score: triggerScore, weight: 12,
+                   note: tParts.length ? tParts.join(' + ') : 'No triggers fired yet' });
+
+    // Weighted total — normalised over available weights (BTC Correl optional)
+    const totalWeight = factors.reduce((a,f) => a + f.weight, 0);
+    const weighted   = factors.reduce((a,f) => a + f.score * f.weight, 0);
+    const percent = Math.round(weighted / totalWeight);
+
+    const grade = percent >= 90 ? 'A+' : percent >= 80 ? 'A'
+                : percent >= 70 ? 'B' : percent >= 60 ? 'C' : 'D';
+
+    // Expected move = entry → TP1 in %, signed by bias
+    let expectedMove = null;
+    const tp = asset.tp || asset.tp1;
+    if (asset.entry && tp) {
+      const m = ((tp - asset.entry) / asset.entry) * 100;
+      expectedMove = bias === 'SHORT' ? -Math.abs(m) : Math.abs(m);
+    }
+
+    // Reasoning — top positives + any concerning negatives
+    const positives = factors.filter(f => f.score >= 75)
+      .sort((a,b) => b.score - a.score).slice(0, 3).map(f => f.note);
+    const negatives = factors.filter(f => f.score < 50)
+      .sort((a,b) => a.score - b.score).slice(0, 2).map(f => f.note);
+    let reasoning;
+    if (positives.length >= 1) {
+      reasoning = positives.join(', ');
+      if (negatives.length) reasoning += '. Watch: ' + negatives.join(', ');
+      else reasoning += '.';
+    } else {
+      reasoning = negatives.length ? 'Setup weak: ' + negatives.join(', ')
+                                   : 'Setup forming, awaiting confluence.';
+    }
+
+    return { percent, grade, bias, factors, reasoning, expectedMove };
+  }
+
+  function cfBarColor(score) {
+    if (score >= 75) return 'var(--bull)';
+    if (score >= 50) return 'var(--liq)';
+    return 'var(--bear)';
+  }
+  function cfGradeColor(percent) {
+    if (percent >= 90) return 'var(--bull)';
+    if (percent >= 80) return 'var(--gold)';
+    if (percent >= 70) return 'var(--liq)';
+    return 'var(--text-mute)';
+  }
+
+  function cfSelect(symbol) {
+    cfSelected = symbol;
+    renderConfluence();
+  }
+
+  function renderConfluence() {
+    const root = document.getElementById('confluenceContent');
+    if (!root || typeof ASSETS === 'undefined') return;
+    const gst = getGST();
+    const computed = ASSETS.map(a => ({ asset: a, c: computeConfluence(a, gst) }));
+    computed.sort((a,b) => b.c.percent - a.c.percent);
+    if (!computed.length) { root.innerHTML = ''; return; }
+
+    const heroSym = cfSelected && computed.find(x => x.asset.symbol === cfSelected)
+      ? cfSelected : computed[0].asset.symbol;
+    const hero = computed.find(x => x.asset.symbol === heroSym);
+
+    const gColor = cfGradeColor(hero.c.percent);
+    const expMove = hero.c.expectedMove;
+    const expStr = expMove !== null
+      ? (expMove >= 0 ? '+' : '') + expMove.toFixed(2) + '% to TP'
+      : '—';
+
+    const factorsHtml = hero.c.factors.map(f => `
+      <div class="cf-factor">
+        <span class="cf-factor-name">${f.name}</span>
+        <div class="cf-bar"><div class="cf-bar-fill" style="width:${Math.max(2,Math.min(100,f.score))}%;background:${cfBarColor(f.score)};"></div></div>
+        <span class="cf-factor-val" style="color:${cfBarColor(f.score)}">${Math.round(f.score)}%</span>
+      </div>
+      <div class="cf-factor-note">${f.note}</div>
+    `).join('');
+
+    const rankHtml = computed.map(({asset, c}) => {
+      const isActive = asset.symbol === heroSym;
+      const rc = cfGradeColor(c.percent);
+      return `
+        <div class="cf-rank-cell ${isActive ? 'active' : ''}" onclick="cfSelect('${asset.symbol}')">
+          <div class="cf-rank-sym">
+            <span>${asset.symbol}</span>
+            <span class="cf-rank-grade" style="color:${rc}">${c.grade}</span>
+          </div>
+          <div class="cf-rank-pct" style="color:${rc}">${c.percent}%</div>
+          <div class="cf-rank-bias">${c.bias}</div>
+        </div>
+      `;
+    }).join('');
+
+    root.innerHTML = `
+      <div class="cf-hero">
+        <div class="cf-symbol">${hero.asset.symbol}</div>
+        <div class="cf-bias-pill cf-bias-${hero.c.bias}">${hero.c.bias}</div>
+        <div style="flex:1"></div>
+        <div class="cf-percent" style="color:${gColor}">${hero.c.percent}%</div>
+        <div class="cf-grade-pill" style="color:${gColor};border-color:${gColor};">${hero.c.grade}</div>
+      </div>
+      <div class="cf-expected">Expected move: <span style="color:${gColor}">${expStr}</span> · ${hero.c.bias} setup · entry $${(hero.asset.entry||0).toLocaleString(undefined,{maximumFractionDigits:4})}</div>
+      <div class="cf-factors">${factorsHtml}</div>
+      <div class="cf-reasoning">
+        <span class="cf-r-label">Reasoning</span>
+        ${hero.c.reasoning}
+      </div>
+      <div class="cf-rank-section">
+        <div class="cf-rank-title">All assets, ranked · click to inspect</div>
+        <div class="cf-rank-strip">${rankHtml}</div>
+      </div>
+    `;
+  }
+
   function renderSignals() {
     const grid = document.getElementById('signalsGrid');
     if (!grid) return;
@@ -3116,7 +3547,7 @@
     // Scroll to top on mobile tab switch
     if (window.innerWidth <= 900) window.scrollTo({top:0, behavior:'smooth'});
     if (tab==='ict-methods') renderMethods();
-    if (tab==='autopilot') { renderSignals(); renderMarketRead(); }
+    if (tab==='autopilot') { renderSignals(); renderMarketRead(); renderConfluence(); }
     if (tab==='live-chart') {
       if (!tvWidget) {
         tvCurrentSymbol = getBestAsset();
@@ -3265,6 +3696,7 @@
     if (el) el.textContent = `Last sync: ${timeStr} · ${ok}/${BINANCE_SYMBOLS.length} updated${srcTag}`;
     const gstForAlert = getGST();
     try { renderSignals(); } catch(e) {}
+    try { renderConfluence(); } catch(e) {}
     requestAnimationFrame(() => {
       try { renderAssets(); } catch(e) {}
       requestAnimationFrame(() => {
@@ -3293,7 +3725,7 @@
         const a=ASSETS.find(x=>x.symbol===sym.trim());
         if (a&&price){a.price=parseFloat(price);n++;}
       });
-      renderAssets(); renderSignals(); renderMarketRead();
+      renderAssets(); renderSignals(); renderMarketRead(); renderConfluence();
       showToast(`✓ ${n} prices updated from CSV`, 'ok');
     }
   }
@@ -3828,6 +4260,7 @@
         </div>`;
       }).filter(Boolean);
       content.innerHTML = rows.join('') || '<div style="color:var(--text-mute)">No data</div>';
+      try { renderConfluence && renderConfluence(); } catch(e) {}
     } catch(e) { if (content) content.innerHTML = '<div style="color:var(--text-mute)">Unavailable</div>'; }
   }
 
@@ -4730,6 +5163,7 @@
       renderAssets();
       try { renderAnalysis(); } catch(e) {}
       try { renderMarketRead(); } catch(e) {}
+      try { renderConfluence(); } catch(e) {}
       if (typeof updateTVAnalysis === 'function' && tvCurrentSymbol) updateTVAnalysis(tvCurrentSymbol);
     }
   }
@@ -5126,6 +5560,7 @@
     _try('renderMethods', renderMethods);
     _try('renderSignals', renderSignals);
     _try('renderMarketRead', renderMarketRead);
+    _try('renderConfluence', renderConfluence);
     _try('renderAnalysis', renderAnalysis);
     _try('renderAlertLog', renderAlertLog);
     _try('renderJournal', renderJournal);
