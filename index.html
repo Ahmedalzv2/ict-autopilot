@@ -1476,7 +1476,7 @@
       <div id="live-chart" class="tab-content">
         <div class="page-header">
           <h1>📈 Live Chart</h1>
-          <p>Price syncs every 30s. Crypto via Binance SPOT (MEXC perp fallback), GOLD/SILVER via MEXC perp (XAUT_USDT / XAG_USDT), US100 via FP Markets (TradingView). Chart and dashboard always show the same price.</p>
+          <p>Price syncs every 30s. Crypto via MEXC perp (Binance SPOT fallback), GOLD/SILVER via MEXC perp (XAUT_USDT / XAG_USDT), US100 via FP Markets (TradingView). Chart and dashboard always show the same price.</p>
         </div>
         <div style="margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
           <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Asset:</div>
@@ -3175,36 +3175,37 @@
   }
 
   async function syncBinance(silent=false) {
-    if (!silent) showToast('⟳ Syncing Binance prices…', 'info');
+    if (!silent) showToast('⟳ Syncing prices (MEXC perp)…', 'info');
     const results = await Promise.allSettled(BINANCE_SYMBOLS.map(async sym => {
       let lastErr;
-      for (const host of BINANCE_HOSTS) {
-        try { const d = await fetchTicker(sym, host); return {sym, d, src:'binance'}; }
-        catch(e) { lastErr=e; }
-      }
-      // Fallback: MEXC perp ticker (e.g. BTC_USDT)
+      // Primary: MEXC perp ticker (e.g. XRP_USDT)
       const mexcSym = MEXC_PERP_MAP[sym];
       if (mexcSym) {
         try { const d = await fetchMexcPerpTicker(mexcSym); return {sym, d, src:'mexc'}; }
         catch(e) { lastErr = e; }
       }
+      // Fallback: Binance spot
+      for (const host of BINANCE_HOSTS) {
+        try { const d = await fetchTicker(sym, host); return {sym, d, src:'binance'}; }
+        catch(e) { lastErr=e; }
+      }
       throw lastErr;
     }));
-    let ok=0, mexcCount=0;
+    let ok=0, fallbackCount=0;
     results.forEach((r,i)=>{
       const assetSym = BINANCE_SYMBOLS[i].replace('USDT','');
       const a = ASSETS.find(x=>x.symbol===assetSym);
       if (r.status==='fulfilled' && r.value.d && r.value.d.lastPrice) {
         if (a) { a.price=parseFloat(r.value.d.lastPrice); a.change24h=parseFloat(r.value.d.priceChangePercent); } if (a) autoUpdateChecks(a);
         ok++;
-        if (r.value.src === 'mexc') mexcCount++;
+        if (r.value.src === 'binance') fallbackCount++;
       }
     });
     lastSyncTime = getGST();
     const timeStr = `${fmtTime(lastSyncTime)} GST`;
     document.getElementById('barSyncTime').textContent = timeStr;
     const el = document.getElementById('dashSyncStatus');
-    const srcTag = mexcCount > 0 ? ` · ${mexcCount} via MEXC perp` : '';
+    const srcTag = fallbackCount > 0 ? ` · ${fallbackCount} via Binance fallback` : '';
     if (el) el.textContent = `Last sync: ${timeStr} · ${ok}/${BINANCE_SYMBOLS.length} updated${srcTag}`;
     const gstForAlert = getGST();
     try { renderSignals(); } catch(e) {}
@@ -3221,7 +3222,7 @@
     });
     if (document.getElementById('top-setup').classList.contains('active')) renderSetups();
     if (!silent && ok > 0) showToast(`✓ ${ok} prices updated${srcTag}`, 'ok');
-    if (!silent && ok===0) showToast('✗ Sync failed (Binance + MEXC). Check connection.', 'err');
+    if (!silent && ok===0) showToast('✗ Sync failed (MEXC + Binance). Check connection.', 'err');
     // Phase 2: auto-push to sheet if URL is configured
     if (APPS_SCRIPT_URL) pushToSheet();
   }
