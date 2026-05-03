@@ -1555,6 +1555,88 @@
     .trade-act-btn { padding: 14px; }
   }
 
+  /* ═══════════════════════════════════
+     MULTI-TIMEFRAME ENTRY PLAN
+  ═══════════════════════════════════ */
+  .tf-plan-card {
+    margin-top: 14px;
+    padding: 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .tf-plan-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--gold);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .tf-plan-sub {
+    font-size: 10px;
+    color: var(--text-mute);
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
+  .tf-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .tf-row {
+    display: grid;
+    grid-template-columns: 130px 1fr 1fr 1fr 60px 50px 80px;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .tf-row:hover {
+    border-color: var(--gold);
+    transform: translateX(2px);
+    background: rgba(201,169,97,0.04);
+  }
+  .tf-row:focus { outline: 2px solid var(--gold); outline-offset: 2px; }
+  .tf-cell { display: flex; flex-direction: column; gap: 2px; }
+  .tf-cell-lbl {
+    font-size: 8px;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .tf-label strong { color: var(--gold); font-size: 13px; }
+  .tf-label .tf-note { font-size: 9px; color: var(--text-mute); margin-top: 1px; }
+  .tf-num { text-align: left; }
+  .tf-bias { font-weight: 700; font-size: 11px; text-align: right; letter-spacing: 0.05em; }
+  .tf-plan-hint {
+    margin-top: 9px;
+    font-size: 10px;
+    color: var(--text-mute);
+    line-height: 1.5;
+  }
+
+  body[data-density="compact"] .tf-plan-card { padding: 10px; margin-top: 10px; }
+  body[data-density="compact"] .tf-row { padding: 7px 9px; font-size: 11px; }
+  body[data-density="compact"] .tf-plan-sub { font-size: 9px; }
+
+  @media (max-width: 640px) {
+    /* Two-row stacked layout per TF on phones */
+    .tf-row {
+      grid-template-columns: 1fr 1fr 1fr;
+      grid-auto-rows: auto;
+    }
+    .tf-cell.tf-label { grid-column: 1 / -1; padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+    .tf-bias { grid-column: 1 / -1; text-align: left; padding-top: 4px; }
+  }
+
   </style>
 </head>
 <body>
@@ -3878,11 +3960,13 @@
 
         <div class="alert-analysis">${analysis}</div>
 
-        <button class="alert-dismiss-btn" style="background:${color}" onclick="dismissAlert()">
-          ✓ Acknowledge · Mark as Seen
+        <button class="alert-dismiss-btn" style="background:${color}" onclick="openOnLiveChart('${asset.symbol}')">
+          📈 Open on Live Chart · See Multi-TF Plan
         </button>
-        <div style="margin-top:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">
-          Alert logged to history · monitoring continues
+        <div style="margin-top:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;display:flex;gap:14px;justify-content:center;align-items:center;">
+          <span>Alert logged · monitoring continues</span>
+          <span>·</span>
+          <a href="javascript:void(0)" onclick="dismissAlert()" style="color:var(--text-dim);text-decoration:underline;">Dismiss</a>
         </div>
       </div>
     `;
@@ -4885,6 +4969,87 @@
     }
   }
 
+  // Navigate from an alert (or anywhere) to the Live Chart for an asset.
+  // Switches tab, loads the asset's chart, and scrolls the multi-TF plan
+  // into view so the user lands on something actionable.
+  function openOnLiveChart(symbol) {
+    try { dismissAlert(); } catch (e) {}
+    try { switchTab('live-chart'); } catch (e) {}
+    setTimeout(() => {
+      try { if (typeof switchTVChart === 'function') switchTVChart(symbol); } catch (e) {}
+      setTimeout(() => {
+        const el = document.getElementById('tfEntryPlan_' + symbol);
+        if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 350);
+    }, 80);
+  }
+
+  // Per-timeframe risk profile — SL distance as % of price, with a target R:R.
+  // Tuned to typical ICT scalp → swing risk envelopes.
+  const TIMEFRAME_PROFILES = [
+    { tf: '1m',  label: '1m Scalp',    slPct: 0.0010, tpRR: 1.5, note: 'Tight stop · scalp size' },
+    { tf: '5m',  label: '5m Scalp',    slPct: 0.0025, tpRR: 1.8, note: 'CHoCH-driven entry' },
+    { tf: '15m', label: '15m Intra',   slPct: 0.0050, tpRR: 2.0, note: 'OB / FVG retest' },
+    { tf: '1H',  label: '1H Intra',    slPct: 0.0100, tpRR: 2.5, note: 'Session structure' },
+    { tf: '4H',  label: '4H Swing',    slPct: 0.0200, tpRR: 3.0, note: 'PD-array swing' },
+    { tf: 'D',   label: 'Daily Swing', slPct: 0.0400, tpRR: 3.5, note: 'HTF liquidity raid' }
+  ];
+
+  function buildTimeframeEntries(asset) {
+    if (!asset || !isFinite(asset.price) || asset.price <= 0) return [];
+    const isBull = (asset.bias || '').toUpperCase().includes('BULL');
+    const px = asset.price;
+    return TIMEFRAME_PROFILES.map(p => {
+      const slDist = px * p.slPct;
+      const sl = isBull ? px - slDist : px + slDist;
+      const tp = isBull ? px + slDist * p.tpRR : px - slDist * p.tpRR;
+      return {
+        tf: p.tf, label: p.label, note: p.note,
+        bias: isBull ? 'LONG' : 'SHORT',
+        entry: px, sl, tp,
+        slPct: p.slPct * 100,
+        rr: p.tpRR
+      };
+    });
+  }
+
+  // Multi-Timeframe Entry Plan — clickable rows, each → MEXC deep-link.
+  function tfEntryPlanHTML(symbol) {
+    const asset = ASSETS.find(a => a.symbol === symbol);
+    if (!asset) return '';
+    const rows = buildTimeframeEntries(asset);
+    if (!rows.length) return '';
+    const onMexc = !!MEXC_FUTURES_URL_MAP[symbol];
+    const fmt = (v) => '$' + v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+
+    const rowsHtml = rows.map(r => {
+      const biasColor = r.bias === 'LONG' ? 'var(--bull)' : 'var(--bear)';
+      const clickAttr = onMexc
+        ? 'onclick="openOnMEXC(\'' + symbol + '\')"'
+        : 'onclick="showToast(\'' + symbol + ' is not on MEXC futures\', \'warn\')"';
+      return '<div class="tf-row" ' + clickAttr + ' role="button" tabindex="0">' +
+             '  <div class="tf-cell tf-label"><strong>' + r.tf + '</strong><span class="tf-note">' + r.note + '</span></div>' +
+             '  <div class="tf-cell"><span class="tf-cell-lbl">Entry</span>' + fmt(r.entry) + '</div>' +
+             '  <div class="tf-cell"><span class="tf-cell-lbl">SL</span><span style="color:var(--bear)">' + fmt(r.sl) + '</span></div>' +
+             '  <div class="tf-cell"><span class="tf-cell-lbl">TP</span><span style="color:var(--bull)">' + fmt(r.tp) + '</span></div>' +
+             '  <div class="tf-cell tf-num"><span class="tf-cell-lbl">SL%</span>' + r.slPct.toFixed(2) + '%</div>' +
+             '  <div class="tf-cell tf-num"><span class="tf-cell-lbl">R:R</span>' + r.rr.toFixed(1) + '</div>' +
+             '  <div class="tf-cell tf-bias" style="color:' + biasColor + '">' + r.bias + ' →</div>' +
+             '</div>';
+    }).join('');
+
+    const mexcHint = onMexc
+      ? 'Click a timeframe to open ' + (MEXC_FUTURES_URL_MAP[symbol]) + ' on MEXC.'
+      : symbol + ' is not on MEXC — rows are read-only for this asset.';
+
+    return '<div class="tf-plan-card" id="tfEntryPlan_' + symbol + '">' +
+           '<div class="tf-plan-title">📐 Multi-Timeframe Entry Plan</div>' +
+           '<div class="tf-plan-sub">Computed from current price ' + fmt(asset.price) + ' · ' + (asset.bias || '—') + ' · SL scaled by TF risk profile, not chart-derived levels</div>' +
+           '<div class="tf-rows">' + rowsHtml + '</div>' +
+           '<div class="tf-plan-hint">' + mexcHint + ' Pick the timeframe that matches your hold horizon — 1m/5m for scalps, 4H/D for swings.</div>' +
+           '</div>';
+  }
+
   // Returns HTML for the "Open on MEXC" + "Mark as Taken" button row.
   // Used by Live Chart analysis panel and asset detail modal.
   function tradeActionsHTML(symbol) {
@@ -5506,6 +5671,7 @@
         </div>
       </div>
       ${tradeActionsHTML(symbol)}
+      ${tfEntryPlanHTML(symbol)}
     `;
   }
 
