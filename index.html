@@ -2131,13 +2131,15 @@
   // modal table and the alert banner exactly). Returns one row per TF.
   function _computeTfReadiness(asset) {
     if (!asset.tfEntries || asset.tfEntries.closed) return null;
+    const stackingMap = (typeof _detectFVGStacking === 'function') ? _detectFVGStacking(asset.tfEntries) : {};
     return TF_LIST.map(tf => {
       const e = asset.tfEntries[tf];
       if (!e || e.error) return { tf, label: TF_LABELS[tf], dist: null, score: 0, ready: false };
       const sug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(e, tf) : null;
       const target = sug ? sug.entry : null;
       const dist = (target && asset.price) ? Math.abs((asset.price - target) / asset.price) : null;
-      return { tf, label: TF_LABELS[tf], dist, score: e.score || 0, ready: !!e.entryReady, dir: e.dir, target, suggested: sug };
+      const stacked = (stackingMap[tf] || []).map(t => TF_LABELS[t]);
+      return { tf, label: TF_LABELS[tf], dist, score: e.score || 0, ready: !!e.entryReady, dir: e.dir, target, suggested: sug, rejection: !!e.rejection, stacked };
     });
   }
 
@@ -2190,7 +2192,9 @@
       const color = isHot ? 'var(--bull)' : isWarm ? 'var(--liq)' : 'var(--text-mute)';
       const fw = isHot ? 700 : 500;
       const entryTxt = d.target ? ` @$${d.target.toLocaleString(undefined,{maximumFractionDigits:6})}` : '';
-      return `<span style="font-size:9px;color:${color};font-family:'JetBrains Mono',monospace;background:${bg};padding:2px 6px;border-radius:4px;font-weight:${fw};" title="${d.label}: entry ${d.target||'—'} · ${d.score}/4 confluences">${d.label} ${distPct}%${entryTxt} · ${d.score}/4</span>`;
+      const stackIcon = d.stacked && d.stacked.length ? `<span style="color:var(--gold);margin-left:3px;" title="Stacked with ${d.stacked.join(', ')}">⛁</span>` : '';
+      const rejIcon = d.rejection ? `<span style="color:var(--bull);margin-left:3px;" title="Wick rejection confirmed">✓</span>` : '';
+      return `<span style="font-size:9px;color:${color};font-family:'JetBrains Mono',monospace;background:${bg};padding:2px 6px;border-radius:4px;font-weight:${fw};" title="${d.label}: entry ${d.target||'—'} · ${d.score}/4 confluences${d.rejection?' · rejected':''}${d.stacked&&d.stacked.length?' · stacked '+d.stacked.join('/'):''}">${d.label} ${distPct}%${entryTxt} · ${d.score}/4${stackIcon}${rejIcon}</span>`;
     }).join(' ');
 
     return `${banner}<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;">${ladder}</div>`;
@@ -4588,6 +4592,51 @@
     return 'equilibrium';
   }
 
+  // Wick rejection: latest closed candle wicked into the zone but body closed
+  // back outside it, with a wick longer than the body. Signals the zone has
+  // been respected — high-confidence confirmation before entry.
+  function _detectRejection(k, zone, dir) {
+    if (!k || !zone || !dir || k.length < 2) return false;
+    const last = k[k.length - 1];
+    const body = Math.abs(last.c - last.o);
+    if (dir === 'bull') {
+      const wickEntered = last.l <= zone.hi && last.l >= zone.lo - (zone.hi - zone.lo);
+      const closedAbove = last.c > zone.hi;
+      const lowerWick = Math.min(last.o, last.c) - last.l;
+      const longWick = body > 0 ? lowerWick > body * 0.5 : lowerWick > 0;
+      return wickEntered && closedAbove && longWick;
+    }
+    const wickEntered = last.h >= zone.lo && last.h <= zone.hi + (zone.hi - zone.lo);
+    const closedBelow = last.c < zone.lo;
+    const upperWick = last.h - Math.max(last.o, last.c);
+    const longWick = body > 0 ? upperWick > body * 0.5 : upperWick > 0;
+    return wickEntered && closedBelow && longWick;
+  }
+
+  // Stacking: which OTHER TFs have a same-direction FVG whose price range
+  // overlaps with this TF's FVG. Returns a {tf: [otherTfs]} map. A 5m FVG
+  // sitting inside a 1h FVG is a "stacked" zone — much higher probability.
+  function _detectFVGStacking(tfEntries) {
+    if (!tfEntries) return {};
+    const out = {};
+    for (const tf of TF_LIST) {
+      const e = tfEntries[tf];
+      if (!e || e.error || !e.fvgZone) continue;
+      const fvg = e.fvgZone;
+      const stacked = [];
+      for (const tf2 of TF_LIST) {
+        if (tf2 === tf) continue;
+        const e2 = tfEntries[tf2];
+        if (!e2 || e2.error || !e2.fvgZone) continue;
+        const fvg2 = e2.fvgZone;
+        if (fvg2.dir !== fvg.dir) continue;
+        if (fvg2.hi >= fvg.lo && fvg2.lo <= fvg.hi) stacked.push(tf2);
+      }
+      if (stacked.length) out[tf] = stacked;
+    }
+    return out;
+  }
+
   // Compute the suggested entry / SL / TP for a single TF analysis. Each TF has
   // its own FVG/OB/sweep, so each TF gets its own price targets — lower TFs
   // are tighter (1.5 R:R), higher TFs target wider runs (2.0 R:R).
@@ -4671,12 +4720,15 @@
     const dir = bull > bear ? 'bull' : bear > bull ? 'bear' : null;
     const ob = _detectOB(k, disp?.dir || dir);
     const pd = _calcPDArray(k, 50);
+    // Rejection check on the more refined zone (OB if available, else FVG)
+    const rejectionZone = (ob && ob.dir === dir) ? ob : (fvg && fvg.dir === dir) ? fvg : null;
+    const rejection = _detectRejection(k, rejectionZone, dir);
     const score = (fvg?1:0) + (sweep?1:0) + (disp?1:0) + (choch?1:0);
     return {
       bias: last.c > last.o ? 'bull' : 'bear',
       dir,
       fvg:!!fvg, sweep:!!sweep, displacement:!!disp, choch:!!choch,
-      fvgZone: fvg, sweepLevel: sweep, obZone: ob, pd,
+      fvgZone: fvg, sweepLevel: sweep, obZone: ob, pd, rejection,
       score,
       entryReady: score >= 3 && dir !== null,
       price: last.c
@@ -4755,13 +4807,25 @@
       const inKillzone = sess && sess.type === 'active';
       const sessionName = sess ? sess.name : 'Off-session';
       const sessionType = sess ? sess.type : null;
-      // Precision quality score 0-4
+      // Stacking: is the base TF FVG aligned with any higher-TF FVG?
+      const stackingMap = _detectFVGStacking(tfEntries);
+      const baseStackedWith = (stackingMap[baseTf] || []).map(t => TF_LABELS[t]);
+      const baseStacked = baseStackedWith.length > 0;
+      const baseRejection = !!baseAnalysis?.rejection;
+      if (suggested) {
+        suggested.stacked = baseStacked;
+        suggested.stackedWith = baseStackedWith;
+        suggested.rejection = baseRejection;
+      }
+      // Precision quality score 0-6
       let qualityScore = 0;
       if (suggested) {
         if (suggested.obDetected) qualityScore++;       // sharper entry
         if (suggested.pdAligned) qualityScore++;         // right side of PD
         if (!suggested.fvgMitigated) qualityScore++;     // fresh FVG
         if (inKillzone) qualityScore++;                  // killzone time
+        if (baseRejection) qualityScore++;               // wick rejection confirmed
+        if (baseStacked) qualityScore++;                 // stacked with HTF FVG
       }
       _entryAlertQueue.push({
         symbol: asset.symbol, dir, tfs: ready.map(t=>TF_LABELS[t]),
@@ -4770,7 +4834,7 @@
       });
       const dirLabel = dir === 'bull' ? '🟢 LONG' : '🔴 SHORT';
       const typeBadge = isScalp ? '🔥 SCALP' : '🎯 SWING';
-      try { showToast(`🔔 ${typeBadge} · ${asset.symbol} · ${dirLabel} · Q${qualityScore}/4 · ${ready.map(t=>TF_LABELS[t]).join(' · ')}`, 'ok'); } catch(e) {}
+      try { showToast(`🔔 ${typeBadge} · ${asset.symbol} · ${dirLabel} · Q${qualityScore}/6 · ${ready.map(t=>TF_LABELS[t]).join(' · ')}`, 'ok'); } catch(e) {}
       try { playAlertSound('entry'); } catch(e) {}
       if ('Notification' in window && Notification.permission === 'granted') {
         try {
@@ -4778,9 +4842,11 @@
           if (suggested?.obDetected) tags.push('OB+FVG');
           if (suggested?.pdAligned) tags.push(suggested.pdPos);
           if (suggested && !suggested.fvgMitigated) tags.push('fresh');
+          if (baseRejection) tags.push('rejected');
+          if (baseStacked) tags.push('stacked·' + baseStackedWith.join('/'));
           if (inKillzone) tags.push('KZ');
           const body = suggested
-            ? `Entry $${suggested.entry} · SL $${suggested.sl} · TP $${suggested.tp} (1:${suggested.rr}) · Q${qualityScore}/4${tags.length?' · '+tags.join(', '):''}`
+            ? `Entry $${suggested.entry} · SL $${suggested.sl} · TP $${suggested.tp} (1:${suggested.rr}) · Q${qualityScore}/6${tags.length?' · '+tags.join(', '):''}`
             : `${ready.length} TFs aligned: ${ready.map(t=>TF_LABELS[t]).join(', ')}`;
           new Notification(`${typeBadge} · ${asset.symbol} · ${dirLabel}`, { body, tag: `ict-entry-${asset.symbol}` });
         } catch(e) {}
@@ -4811,13 +4877,17 @@
   function renderTFEntryHTML(tfEntries) {
     if (!tfEntries) return '<div style="font-size:11px;color:var(--text-mute);font-family:\'JetBrains Mono\',monospace;">⟳ Auto-analyzing across timeframes…</div>';
     if (tfEntries.closed) return `<div style="font-size:12px;color:var(--liq);font-family:'JetBrains Mono',monospace;padding:8px 4px;">🔒 Market closed for the weekend · reopens ${tfEntries.reopens || 'Sunday 22:00 GST'}. Auto-analysis paused.</div>`;
+    const stackingMap = (typeof _detectFVGStacking === 'function') ? _detectFVGStacking(tfEntries) : {};
     const rows = TF_LIST.map(tf => {
       const e = tfEntries[tf];
       if (!e || e.error) return `<tr><td style="padding:6px 8px;color:var(--text-mute);">${TF_LABELS[tf]}</td><td colspan="8" style="padding:6px 8px;color:var(--text-mute);font-size:10px;">no data</td></tr>`;
       const dirColor = e.dir === 'bull' ? 'var(--bull)' : e.dir === 'bear' ? 'var(--bear)' : 'var(--text-mute)';
       const dirLabel = e.dir === 'bull' ? '🟢 LONG' : e.dir === 'bear' ? '🔴 SHORT' : '—';
       const sug = _suggestedEntryForTf(e, tf);
-      const entryCell = sug ? `<span style="color:var(--bull);font-weight:600;">$${sug.entry}</span>` : '<span style="color:var(--text-mute);">—</span>';
+      const stacked = stackingMap[tf] || [];
+      const stackBadge = stacked.length ? `<span style="color:var(--gold);font-size:9px;font-weight:700;margin-left:4px;" title="Stacked with ${stacked.map(t=>TF_LABELS[t]).join(', ')}">⛁${stacked.length}</span>` : '';
+      const rejBadge = e.rejection ? `<span style="color:var(--bull);font-size:9px;font-weight:700;margin-left:4px;" title="Wick rejection confirmed on latest candle">✓rej</span>` : '';
+      const entryCell = sug ? `<span style="color:var(--bull);font-weight:600;">$${sug.entry}</span>${stackBadge}${rejBadge}` : '<span style="color:var(--text-mute);">—</span>';
       const slCell = sug ? `<span style="color:var(--bear);">$${sug.sl}</span>` : '<span style="color:var(--text-mute);">—</span>';
       const status = e.entryReady
         ? `<span style="color:var(--bull);font-weight:700;">✓ READY</span>`
@@ -4906,19 +4976,22 @@
       const s = a.suggested;
       const appliedTag = a.applied ? `<span style="color:var(--bull);font-size:10px;margin-left:6px;">✓ applied</span>` : '';
 
-      // Quality pills (OB+FVG, PD alignment, freshness, killzone)
+      // Quality pills (OB+FVG, PD alignment, freshness, killzone, rejection, stacking)
       const tags = [];
       if (s?.obDetected) tags.push(pill('OB+FVG', 'var(--gold)', 'rgba(201,169,97,0.18)'));
       if (s?.pdAligned) tags.push(pill('✓ ' + (s.pdPos || '').toUpperCase(), 'var(--bull)', 'rgba(92,184,138,0.18)'));
       else if (s?.pdPos) tags.push(pill('⚠ ' + s.pdPos.toUpperCase(), 'var(--bear)', 'rgba(224,93,93,0.15)'));
       if (s && !s.fvgMitigated) tags.push(pill('FRESH', 'var(--bull)', 'rgba(92,184,138,0.15)'));
       else if (s?.fvgMitigated) tags.push(pill('⚠ MITIGATED', 'var(--liq)', 'rgba(242,179,61,0.15)'));
+      if (s?.rejection) tags.push(pill('✓ REJECTED', 'var(--bull)', 'rgba(92,184,138,0.18)'));
+      else tags.push(pill('⏸ NO REJECTION', 'var(--text-mute)', 'rgba(101,101,109,0.12)'));
+      if (s?.stacked) tags.push(pill('⛁ STACKED·' + s.stackedWith.join('/'), 'var(--gold)', 'rgba(201,169,97,0.18)'));
       if (a.inKillzone) tags.push(pill('🟢 ' + (a.sessionName || 'KZ'), 'var(--bull)', 'rgba(92,184,138,0.18)'));
       else if (a.sessionType === 'dead') tags.push(pill('⛔ DEAD ZONE', 'var(--bear)', 'rgba(224,93,93,0.15)'));
       else tags.push(pill(a.sessionName || 'OFF-SESSION', 'var(--text-mute)', 'rgba(101,101,109,0.15)'));
       const qScore = a.qualityScore ?? 0;
-      const qColor = qScore >= 3 ? 'var(--bull)' : qScore === 2 ? 'var(--liq)' : 'var(--bear)';
-      const qBadge = pill(`Q${qScore}/4`, qColor, 'transparent') + '';
+      const qColor = qScore >= 4 ? 'var(--bull)' : qScore >= 2 ? 'var(--liq)' : 'var(--bear)';
+      const qBadge = pill(`Q${qScore}/6`, qColor, 'transparent') + '';
 
       const sourceTxt = s ? (s.entrySource === 'ob+fvg' ? `from ${s.baseTf} OB inside FVG` : `from ${s.baseTf} FVG${s.slSource==='sweep'?' + sweep':''}`) : '';
       const suggestedHtml = s
