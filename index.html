@@ -1109,7 +1109,7 @@
         <button class="nav-btn active" onclick="switchTab('autopilot')">⭐ Top Setup</button>
         <button class="nav-btn" onclick="switchTab('dashboard')">🏛 Dashboard</button>
         <button class="nav-btn" onclick="switchTab('live-chart')">📈 Live Chart</button>
-        <button class="nav-btn" onclick="switchTab('journal')">📓 Journal</button>
+        <button class="nav-btn" onclick="switchTab('journal')">📰 News</button>
         <button class="nav-btn" onclick="switchTab('ict-methods')">📊 ICT Methods</button>
         <button class="nav-btn" onclick="switchTab('rules')">📋 Rules</button>
       </div>
@@ -1346,51 +1346,113 @@
 
       <!-- ═══ JOURNAL TAB ═══ -->
       <div id="journal" class="tab-content">
-        <div class="page-header">
-          <h1>Trade Journal · Performance</h1>
-          <p>Every ARMED and WATCH signal is logged here. Outcomes are checked automatically via Binance candle data at 30min · 1hr · 4hr · 8hr after the call.</p>
+        <div class="page-header" style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <div>
+            <h1>📰 News & Market Intelligence</h1>
+            <p>Aggregated headlines from CryptoCompare and CoinGecko · auto-refresh every 5 min · filter by source, category, tracked assets, or recency.</p>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="alert-log-clear" onclick="fetchAllNewsAggregate(true)" id="newsRefreshBtn" title="Force refresh now">↻ Refresh</button>
+            <button class="alert-log-clear" onclick="openTradeLog()" style="color:var(--gold);border-color:rgba(201,169,97,0.4);">📓 Trade Log</button>
+          </div>
         </div>
-        <div class="ap-grid">
-          <!-- Stats row -->
-          <div class="ap-card" style="text-align:center;">
-            <div class="ap-card-title">Total Calls</div>
-            <div style="font-size:36px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--gold);" id="statTotal">0</div>
-            <div style="font-size:11px;color:var(--text-mute);margin-top:4px;" id="statPending"></div>
+
+        <!-- ═══ Filters ═══ -->
+        <div class="ap-card full" style="margin-bottom:14px;">
+          <div class="ap-card-title">Filters</div>
+          <div style="display:grid;grid-template-columns:1fr;gap:10px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Sources</span>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCC" checked onchange="_onNewsFilterChange()"> CryptoCompare</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCG" checked onchange="_onNewsFilterChange()"> CoinGecko</label>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Category</span>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsCatBTC" checked onchange="_onNewsFilterChange()"> BTC</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsCatETH" checked onchange="_onNewsFilterChange()"> ETH</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsCatALT" checked onchange="_onNewsFilterChange()"> Altcoins</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsCatREG" onchange="_onNewsFilterChange()"> Regulation</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsCatMAC" onchange="_onNewsFilterChange()"> Macro / Fiat</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsCatTECH" onchange="_onNewsFilterChange()"> Tech</label>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Recency</span>
+              <select id="newsRecency" onchange="_onNewsFilterChange()" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:5px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;">
+                <option value="3600">Last 1h</option>
+                <option value="14400">Last 4h</option>
+                <option value="86400" selected>Last 24h</option>
+                <option value="259200">Last 3 days</option>
+                <option value="604800">Last 7 days</option>
+                <option value="0">All</option>
+              </select>
+              <label class="news-chip" style="font-size:11px;margin-left:8px;"><input type="checkbox" id="newsOnlyMyAssets" onchange="_onNewsFilterChange()"> Only mention my tracked assets</label>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Search</span>
+              <input type="text" id="newsSearch" placeholder="Filter by keyword (e.g. ETF, fed, hack)" oninput="_onNewsFilterChange()"
+                style="flex:1;min-width:240px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none;">
+            </div>
           </div>
-          <div class="ap-card" style="text-align:center;">
-            <div class="ap-card-title">Win Rate</div>
-            <div style="font-size:36px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--bull);" id="statWinRate">—</div>
-            <div style="font-size:11px;color:var(--text-mute);margin-top:4px;" id="statWL"></div>
-          </div>
-          <div class="ap-card" style="text-align:center;">
-            <div class="ap-card-title">Current Streak</div>
-            <div style="font-size:36px;font-weight:700;font-family:'JetBrains Mono',monospace;" id="statStreak">—</div>
-            <div style="font-size:11px;color:var(--text-mute);margin-top:4px;" id="statStreakLabel"></div>
-          </div>
-          <!-- Best patterns -->
-          <div class="ap-card full" style="border-color:rgba(201,169,97,0.3);">
-            <div class="ap-card-title">🏆 Performance Breakdown</div>
-            <div id="statPatterns" style="font-size:13px;color:var(--text-mute);padding:8px 0;">Log at least 3 resolved calls to see breakdown.</div>
-          </div>
-          <!-- Adaptive intelligence -->
-          <div class="ap-card full" style="border-color:rgba(92,184,138,0.2);">
-            <div class="ap-card-title">⚡ Adaptive Intelligence</div>
-            <div id="adaptivePanel" style="font-size:13px;color:var(--text-mute);padding:8px 0;">Needs 10+ resolved calls to generate recommendations.</div>
-          </div>
-          <!-- Call log table -->
-          <div class="ap-card full">
-            <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;">
-              <span>📋 All Logged Calls</span>
-              <div style="display:flex;gap:8px;">
-                <button class="alert-log-clear" onclick="exportJournal()">Export CSV</button>
-                <button class="alert-log-clear" onclick="clearJournal()" style="color:var(--bear);">Clear All</button>
+        </div>
+
+        <!-- ═══ Quick stats bar ═══ -->
+        <div id="newsStatsBar" style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:11px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
+          <span style="color:var(--text-mute);">⟳ loading…</span>
+        </div>
+
+        <!-- ═══ News feed grid ═══ -->
+        <div id="newsFeedHost"></div>
+
+        <!-- ═══ Trade Log modal (preserves the existing journal) ═══ -->
+        <div id="tradeLogModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:600;align-items:center;justify-content:center;padding:20px;" onclick="if(event.target===this)closeTradeLog()">
+          <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:14px;width:100%;max-width:1100px;max-height:90vh;overflow-y:auto;padding:24px;" onclick="event.stopPropagation()">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+              <div>
+                <div style="font-size:18px;font-weight:700;color:var(--gold);">📓 Trade Journal · Performance</div>
+                <div style="font-size:11px;color:var(--text-mute);margin-top:2px;">Every ARMED and WATCH signal logged · outcomes auto-checked at 30m / 1h / 4h / 8h.</div>
+              </div>
+              <button onclick="closeTradeLog()" style="background:none;border:none;color:var(--text-mute);font-size:24px;cursor:pointer;line-height:1;">×</button>
+            </div>
+            <div class="ap-grid">
+              <div class="ap-card" style="text-align:center;">
+                <div class="ap-card-title">Total Calls</div>
+                <div style="font-size:36px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--gold);" id="statTotal">0</div>
+                <div style="font-size:11px;color:var(--text-mute);margin-top:4px;" id="statPending"></div>
+              </div>
+              <div class="ap-card" style="text-align:center;">
+                <div class="ap-card-title">Win Rate</div>
+                <div style="font-size:36px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--bull);" id="statWinRate">—</div>
+                <div style="font-size:11px;color:var(--text-mute);margin-top:4px;" id="statWL"></div>
+              </div>
+              <div class="ap-card" style="text-align:center;">
+                <div class="ap-card-title">Current Streak</div>
+                <div style="font-size:36px;font-weight:700;font-family:'JetBrains Mono',monospace;" id="statStreak">—</div>
+                <div style="font-size:11px;color:var(--text-mute);margin-top:4px;" id="statStreakLabel"></div>
+              </div>
+              <div class="ap-card full" style="border-color:rgba(201,169,97,0.3);">
+                <div class="ap-card-title">🏆 Performance Breakdown</div>
+                <div id="statPatterns" style="font-size:13px;color:var(--text-mute);padding:8px 0;">Log at least 3 resolved calls to see breakdown.</div>
+              </div>
+              <div class="ap-card full" style="border-color:rgba(92,184,138,0.2);">
+                <div class="ap-card-title">⚡ Adaptive Intelligence</div>
+                <div id="adaptivePanel" style="font-size:13px;color:var(--text-mute);padding:8px 0;">Needs 10+ resolved calls to generate recommendations.</div>
+              </div>
+              <div class="ap-card full">
+                <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;">
+                  <span>📋 All Logged Calls</span>
+                  <div style="display:flex;gap:8px;">
+                    <button class="alert-log-clear" onclick="exportJournal()">Export CSV</button>
+                    <button class="alert-log-clear" onclick="clearJournal()" style="color:var(--bear);">Clear All</button>
+                  </div>
+                </div>
+                <div id="journalTable" style="overflow-x:auto;"></div>
               </div>
             </div>
-            <div id="journalTable" style="overflow-x:auto;"></div>
           </div>
         </div>
-        <!-- Journal detail modal -->
-        <div id="journalDetailModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:500;display:none;align-items:center;justify-content:center;" onclick="if(event.target===this)closeJournalDetail()">
+
+        <!-- Journal call detail (existing modal, now scoped under news tab so handlers still work) -->
+        <div id="journalDetailModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:700;display:none;align-items:center;justify-content:center;" onclick="if(event.target===this)closeJournalDetail()">
           <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:12px;padding:28px;min-width:360px;max-width:520px;width:90%;max-height:80vh;overflow-y:auto;" onclick="event.stopPropagation()">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
               <div style="font-weight:700;font-size:16px;font-family:'JetBrains Mono',monospace;" id="jdTitle">—</div>
@@ -1400,6 +1462,11 @@
           </div>
         </div>
       </div>
+
+      <style>
+        .news-chip { display:inline-flex;align-items:center;gap:5px;cursor:pointer;color:var(--text-dim);user-select:none; }
+        .news-chip input { accent-color: #c9a961; cursor:pointer; }
+      </style>
 
       <div id="ict-methods" class="tab-content">
         <div class="page-header">
@@ -2817,6 +2884,12 @@
       }
       updateTVAnalysis(tvCurrentSymbol);
     }
+    if (tab==='journal') {
+      // News page: load saved filters, render whatever's cached, kick off fetch if stale
+      try { _loadNewsFilters(); } catch(e) {}
+      try { _renderNewsPage(); } catch(e) {}
+      try { fetchAllNewsAggregate(false); } catch(e) {}
+    }
   }
 
   function filterSetup(type) {
@@ -3539,6 +3612,240 @@
         </div>
       </a>`;
     }).join('');
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 📰 NEWS PAGE — multi-source aggregator (CryptoCompare + CoinGecko)
+  // Filters: source, category, recency, only-tracked-assets, search
+  // ═══════════════════════════════════════════════════════
+  let _newsAggregateItems = [];
+  let _newsAggregateTs = 0;
+  const NEWS_AGGREGATE_TTL = 5 * 60 * 1000;
+  let _newsRefreshTimer = null;
+
+  // Map our tracked symbols → keyword variants we look for in headlines/categories
+  const NEWS_SYMBOL_KEYWORDS = {
+    BTC:['bitcoin','btc'], ETH:['ethereum','eth','ether'], SOL:['solana','sol'],
+    BNB:['bnb','binance coin'], XRP:['xrp','ripple'], SUI:['sui'],
+    ASTR:['astar','astr','aster'], ASTER:['aster','astar'],
+    GOLD:['gold','xau'], SILVER:['silver','xag'], US100:['nasdaq','us100','ndx']
+  };
+
+  function _normalizeNewsItem(raw, source) {
+    // Returns { id, title, url, source, sourceLabel, published (unix sec), categories[], body }
+    if (source === 'cryptocompare') {
+      return {
+        id: 'cc-' + (raw.id || raw.guid || raw.url),
+        title: raw.title || '',
+        url: raw.url || '#',
+        source: 'cryptocompare',
+        sourceLabel: raw.source_info?.name || raw.source || 'CryptoCompare',
+        published: raw.published_on || 0,
+        categories: (raw.categories || '').split('|').filter(Boolean).map(c => c.toUpperCase()),
+        body: (raw.body || '').slice(0, 220)
+      };
+    }
+    if (source === 'coingecko') {
+      const t = raw.updated_at || raw.created_at || 0;
+      return {
+        id: 'cg-' + (raw.id || raw.url || raw.title),
+        title: raw.title || raw.name || '',
+        url: raw.url || raw.news_url || '#',
+        source: 'coingecko',
+        sourceLabel: raw.author?.name || raw.news_site || 'CoinGecko',
+        published: typeof t === 'number' ? t : Math.floor(new Date(t).getTime()/1000) || 0,
+        categories: [],
+        body: (raw.description || '').slice(0, 220)
+      };
+    }
+    return null;
+  }
+
+  async function _fetchCryptoCompareGlobal() {
+    try {
+      const url = 'https://min-api.cryptocompare.com/data/v2/news/?excludeCategories=Sponsored&lang=EN';
+      const opts = {};
+      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(10000);
+      const r = await fetch(url, opts);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      return (j.Data || []).map(n => _normalizeNewsItem(n, 'cryptocompare')).filter(Boolean);
+    } catch(e) { console.warn('CryptoCompare news fetch failed:', e.message); return []; }
+  }
+
+  async function _fetchCoinGeckoGlobal() {
+    try {
+      const opts = {};
+      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(10000);
+      const r = await fetch('https://api.coingecko.com/api/v3/news?per_page=30', opts);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const list = j.data || j;
+      return (Array.isArray(list) ? list : []).map(n => _normalizeNewsItem(n, 'coingecko')).filter(Boolean);
+    } catch(e) { console.warn('CoinGecko news fetch failed:', e.message); return []; }
+  }
+
+  async function fetchAllNewsAggregate(force) {
+    if (!force && _newsAggregateItems.length && Date.now() - _newsAggregateTs < NEWS_AGGREGATE_TTL) {
+      return _newsAggregateItems;
+    }
+    const btn = document.getElementById('newsRefreshBtn');
+    if (btn) btn.textContent = '⟳ refreshing…';
+    const [cc, cg] = await Promise.all([_fetchCryptoCompareGlobal(), _fetchCoinGeckoGlobal()]);
+    // Dedupe by URL
+    const byUrl = new Map();
+    [...cc, ...cg].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
+    _newsAggregateItems = Array.from(byUrl.values()).sort((a,b) => (b.published||0) - (a.published||0));
+    _newsAggregateTs = Date.now();
+    if (btn) btn.textContent = '↻ Refresh';
+    _renderNewsPage();
+    return _newsAggregateItems;
+  }
+
+  function _detectAssetMentions(item) {
+    const txt = (item.title + ' ' + (item.body||'') + ' ' + (item.categories||[]).join(' ')).toLowerCase();
+    const found = new Set();
+    for (const a of ASSETS) {
+      const keys = NEWS_SYMBOL_KEYWORDS[a.symbol] || [a.symbol.toLowerCase()];
+      if (keys.some(k => txt.includes(k))) found.add(a.symbol);
+    }
+    return Array.from(found);
+  }
+
+  function _itemMatchesCategory(item, cats) {
+    // Map filter checkbox state → categories
+    if (cats.all) return true;
+    const itemCats = (item.categories || []).map(c => c.toUpperCase());
+    const txt = (item.title + ' ' + (item.body||'')).toLowerCase();
+    if (cats.btc && (itemCats.includes('BTC') || itemCats.includes('BITCOIN') || txt.includes('bitcoin') || txt.includes('btc'))) return true;
+    if (cats.eth && (itemCats.includes('ETH') || itemCats.includes('ETHEREUM') || txt.includes('ethereum') || txt.includes('ether '))) return true;
+    if (cats.alt && (itemCats.includes('ALTCOIN') || itemCats.includes('ALT') || /\b(sol|bnb|xrp|sui|aster|altcoin|ada|dot|avax|matic|link|doge|shib)\b/i.test(item.title))) return true;
+    if (cats.reg && (itemCats.includes('REGULATION') || /\b(sec|cftc|regulat|lawsuit|fine|sanction|ban)\b/i.test(item.title))) return true;
+    if (cats.macro && (itemCats.includes('FIAT') || /\b(fed|fomc|cpi|inflation|nfp|gdp|rate cut|nasdaq|s&p|gold|silver|dxy|jobs|economy)\b/i.test(item.title))) return true;
+    if (cats.tech && (itemCats.includes('TECHNOLOGY') || itemCats.includes('MINING') || itemCats.includes('TRADING') || /\b(upgrade|fork|protocol|layer|zkproof|rollup|wallet|exchange hack)\b/i.test(item.title))) return true;
+    return false;
+  }
+
+  function _readNewsFilters() {
+    return {
+      sources: { cc: document.getElementById('newsSrcCC')?.checked, cg: document.getElementById('newsSrcCG')?.checked },
+      cats: {
+        btc: document.getElementById('newsCatBTC')?.checked,
+        eth: document.getElementById('newsCatETH')?.checked,
+        alt: document.getElementById('newsCatALT')?.checked,
+        reg: document.getElementById('newsCatREG')?.checked,
+        macro: document.getElementById('newsCatMAC')?.checked,
+        tech: document.getElementById('newsCatTECH')?.checked,
+      },
+      recencySec: parseInt(document.getElementById('newsRecency')?.value || '86400', 10),
+      onlyMyAssets: document.getElementById('newsOnlyMyAssets')?.checked,
+      search: (document.getElementById('newsSearch')?.value || '').trim().toLowerCase()
+    };
+  }
+
+  function _filterNewsItems(items, filters) {
+    const noCatSelected = !filters.cats.btc && !filters.cats.eth && !filters.cats.alt && !filters.cats.reg && !filters.cats.macro && !filters.cats.tech;
+    const catState = noCatSelected ? { all: true } : filters.cats;
+    const now = Math.floor(Date.now()/1000);
+    return items.filter(it => {
+      if (filters.sources.cc === false && it.source === 'cryptocompare') return false;
+      if (filters.sources.cg === false && it.source === 'coingecko') return false;
+      if (filters.recencySec > 0 && it.published && now - it.published > filters.recencySec) return false;
+      if (filters.search && !it.title.toLowerCase().includes(filters.search)) return false;
+      if (filters.onlyMyAssets) {
+        const mentions = it._mentions || (it._mentions = _detectAssetMentions(it));
+        if (mentions.length === 0) return false;
+      }
+      if (!_itemMatchesCategory(it, catState)) return false;
+      return true;
+    });
+  }
+
+  function _saveNewsFilters() {
+    try { localStorage.setItem('ict_news_filters', JSON.stringify(_readNewsFilters())); } catch(e) {}
+  }
+  function _loadNewsFilters() {
+    try {
+      const f = JSON.parse(localStorage.getItem('ict_news_filters') || 'null');
+      if (!f) return;
+      const set = (id, val) => { const el = document.getElementById(id); if (el && typeof val === 'boolean') el.checked = val; else if (el && val != null) el.value = val; };
+      set('newsSrcCC', f.sources?.cc); set('newsSrcCG', f.sources?.cg);
+      set('newsCatBTC', f.cats?.btc); set('newsCatETH', f.cats?.eth); set('newsCatALT', f.cats?.alt);
+      set('newsCatREG', f.cats?.reg); set('newsCatMAC', f.cats?.macro); set('newsCatTECH', f.cats?.tech);
+      set('newsRecency', String(f.recencySec ?? 86400));
+      set('newsOnlyMyAssets', f.onlyMyAssets);
+      set('newsSearch', f.search || '');
+    } catch(e) {}
+  }
+  function _onNewsFilterChange() { _saveNewsFilters(); _renderNewsPage(); }
+
+  function _renderNewsCard(item) {
+    const ago = item.published ? Math.round(Date.now()/1000 - item.published) : 0;
+    const agoStr = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago/60)}m ago` : ago < 86400 ? `${Math.round(ago/3600)}h ago` : `${Math.round(ago/86400)}d ago`;
+    const isBreaking = ago > 0 && ago < 600;
+    const isRecent = ago > 0 && ago < 7200;
+    const bg = isBreaking ? 'rgba(224,93,93,0.08)' : isRecent ? 'rgba(201,169,97,0.06)' : 'var(--bg-elevated)';
+    const bd = isBreaking ? 'var(--bear)' : isRecent ? 'rgba(201,169,97,0.3)' : 'var(--border)';
+    const mentions = item._mentions || (item._mentions = _detectAssetMentions(item));
+    const tagHtml = mentions.map(m => `<span style="background:rgba(201,169,97,0.15);color:var(--gold);font-size:9px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;">${m}</span>`).join(' ');
+    const srcBadge = `<span style="font-size:9px;color:var(--text-mute);background:rgba(101,101,109,0.15);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;">${item.source==='cryptocompare'?'CC':'CG'}</span>`;
+    const safeTitle = (item.title || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const safeBody = (item.body || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const safeSource = (item.sourceLabel || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return `<a href="${item.url}" target="_blank" rel="noopener noreferrer" style="display:block;background:${bg};border:1px solid ${bd};border-radius:10px;padding:12px 14px;text-decoration:none;color:var(--text);transition:transform .1s ease;">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap;">${srcBadge}${isBreaking?'<span style="color:var(--bear);font-size:9px;font-weight:700;font-family:\'JetBrains Mono\',monospace;">🔥 BREAKING</span>':''}${tagHtml}</div>
+      <div style="font-size:13px;line-height:1.4;font-weight:500;margin-bottom:6px;color:var(--text);">${safeTitle}</div>
+      ${safeBody ? `<div style="font-size:11px;line-height:1.5;color:var(--text-dim);margin-bottom:6px;">${safeBody}…</div>` : ''}
+      <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;display:flex;gap:8px;align-items:center;">
+        <span>${safeSource}</span><span>·</span><span>${agoStr}</span>
+      </div>
+    </a>`;
+  }
+
+  function _renderNewsPage() {
+    const host = document.getElementById('newsFeedHost');
+    const stats = document.getElementById('newsStatsBar');
+    if (!host || !stats) return;
+    if (!_newsAggregateItems.length) {
+      stats.innerHTML = '<span style="color:var(--text-mute);">⟳ loading first batch from CryptoCompare + CoinGecko…</span>';
+      host.innerHTML = '<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:48px 24px;text-align:center;color:var(--text-mute);">Fetching headlines…</div>';
+      return;
+    }
+    const filters = _readNewsFilters();
+    const filtered = _filterNewsItems(_newsAggregateItems, filters);
+    // Stats
+    const now = Math.floor(Date.now()/1000);
+    const lastHour = filtered.filter(i => i.published && now - i.published < 3600).length;
+    const breaking = filtered.filter(i => i.published && now - i.published < 600).length;
+    const tagCounts = {};
+    filtered.forEach(i => {
+      const m = i._mentions || _detectAssetMentions(i);
+      m.forEach(s => tagCounts[s] = (tagCounts[s]||0) + 1);
+    });
+    const topTags = Object.entries(tagCounts).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([s,n])=>`<span style="color:var(--gold);font-weight:700;">${s}</span>(${n})`).join(' ');
+    stats.innerHTML = `
+      <span><strong style="color:var(--gold);">${filtered.length}</strong> articles</span>
+      <span>·</span>
+      <span>Last 1h: <strong style="color:var(--bull);">${lastHour}</strong></span>
+      ${breaking ? `<span>·</span><span style="color:var(--bear);font-weight:700;">🔥 BREAKING: ${breaking}</span>` : ''}
+      ${topTags ? `<span>·</span><span>Top mentions: ${topTags}</span>` : ''}
+      <span style="margin-left:auto;color:var(--text-mute);font-size:10px;">cached ${Math.round((Date.now()-_newsAggregateTs)/1000)}s ago</span>`;
+    if (!filtered.length) {
+      host.innerHTML = '<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:48px 24px;text-align:center;color:var(--text-mute);">No headlines match the current filters. Try widening recency or unchecking categories.</div>';
+      return;
+    }
+    host.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px;">${filtered.map(_renderNewsCard).join('')}</div>`;
+  }
+
+  function openTradeLog() {
+    const m = document.getElementById('tradeLogModal');
+    if (!m) return;
+    m.style.display = 'flex';
+    try { renderJournal(); } catch(e) {}
+  }
+  function closeTradeLog() {
+    const m = document.getElementById('tradeLogModal');
+    if (m) m.style.display = 'none';
   }
 
   function renderSocialPulseHTML(asset) {
@@ -5660,6 +5967,10 @@
     fetchFearGreed();
     fetchFundingRates();
     fetchNews();
+    // 📰 News page aggregator — load saved filters, kick off first fetch, refresh every 5 min
+    _try('loadNewsFilters', _loadNewsFilters);
+    fetchAllNewsAggregate(true).catch(()=>{});
+    setInterval(() => fetchAllNewsAggregate(true).catch(()=>{}), 5*60*1000);
     setInterval(fetchFearGreed, 300000);
     setInterval(fetchFundingRates, 120000);
     setInterval(fetchNews, 300000);
@@ -5696,8 +6007,8 @@
       <span class="mob-label">Chart</span>
     </button>
     <button class="mob-nav-btn" id="mobBtn-journal" onclick="switchTab('journal',this)">
-      <span class="mob-icon">📓</span>
-      <span class="mob-label">Journal</span>
+      <span class="mob-icon">📰</span>
+      <span class="mob-label">News</span>
     </button>
     <button class="mob-nav-btn" id="mobBtn-ict-methods" onclick="switchTab('ict-methods',this)">
       <span class="mob-icon">📊</span>
