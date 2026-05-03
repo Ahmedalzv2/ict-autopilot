@@ -1110,6 +1110,7 @@
         <button class="nav-btn" onclick="switchTab('dashboard')">🏛 Dashboard</button>
         <button class="nav-btn" onclick="switchTab('live-chart')">📈 Live Chart</button>
         <button class="nav-btn" onclick="switchTab('journal')">📰 News</button>
+        <button class="nav-btn" onclick="switchTab('calendar')">📅 Calendar</button>
         <button class="nav-btn" onclick="switchTab('ict-methods')">📊 ICT Methods</button>
         <button class="nav-btn" onclick="switchTab('rules')">📋 Rules</button>
       </div>
@@ -1473,6 +1474,53 @@
         .news-chip { display:inline-flex;align-items:center;gap:5px;cursor:pointer;color:var(--text-dim);user-select:none; }
         .news-chip input { accent-color: #c9a961; cursor:pointer; }
       </style>
+
+      <!-- ═══ CALENDAR TAB ═══ -->
+      <div id="calendar" class="tab-content">
+        <div class="page-header">
+          <h1>📅 Calendar · Macro · CME · Futures</h1>
+          <p>Upcoming high-impact events that move BTC/ETH/US100. Color-coded by impact. Crypto markets stay open during CME holidays but liquidity thins.</p>
+        </div>
+
+        <!-- Hero: next critical event -->
+        <div id="calendarHero" style="margin-bottom:14px;"></div>
+
+        <!-- Filters -->
+        <div class="ap-card full" style="margin-bottom:14px;">
+          <div class="ap-card-title">Filters</div>
+          <div style="display:grid;grid-template-columns:1fr;gap:10px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Categories</span>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="calCatEcon" checked onchange="_onCalendarFilterChange()"> 🏛 Econ (FOMC/CPI/NFP)</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="calCatCme" checked onchange="_onCalendarFilterChange()"> 🏢 CME Holidays</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="calCatExpiry" checked onchange="_onCalendarFilterChange()"> 📈 Futures Expiry</label>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Impact</span>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="calImpCritical" checked onchange="_onCalendarFilterChange()"> 🔴 Critical</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="calImpHigh" checked onchange="_onCalendarFilterChange()"> 🟡 High</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="calImpMedium" checked onchange="_onCalendarFilterChange()"> ⚪ Medium</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="calImpLow" onchange="_onCalendarFilterChange()"> · Low</label>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Range</span>
+              <select id="calRange" onchange="_onCalendarFilterChange()" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:5px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;">
+                <option value="7">Next 7 days</option>
+                <option value="30" selected>Next 30 days</option>
+                <option value="90">Next 90 days</option>
+                <option value="365">Full year</option>
+              </select>
+              <input type="text" id="calSearch" placeholder="Search events…" oninput="_onCalendarFilterChange()" style="flex:1;min-width:200px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none;">
+            </div>
+          </div>
+        </div>
+
+        <!-- Stats bar -->
+        <div id="calendarStatsBar" style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:11px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;display:flex;gap:16px;flex-wrap:wrap;align-items:center;"></div>
+
+        <!-- Grouped event list -->
+        <div id="calendarFeedHost"></div>
+      </div>
 
       <div id="ict-methods" class="tab-content">
         <div class="page-header">
@@ -2896,6 +2944,10 @@
       try { _renderNewsPage(); } catch(e) {}
       try { fetchAllNewsAggregate(false); } catch(e) {}
     }
+    if (tab==='calendar') {
+      try { _loadCalendarFilters(); } catch(e) {}
+      try { renderCalendarPage(); } catch(e) {}
+    }
   }
 
   function filterSetup(type) {
@@ -4193,20 +4245,93 @@
   // 📅 ECONOMIC CALENDAR (hard-coded upcoming + always-relevant events)
   // ═══════════════════════════════════════════════════════
   const ECON_EVENTS = [
-    // Format: { date: 'YYYY-MM-DD', time: 'HH:MM', event, impact, note }
-    { date:'2026-04-29', time:'17:30', event:'US GDP Q1 Advance', impact:'high', note:'GDP miss = risk-off, DXY pump, crypto dump' },
-    { date:'2026-04-30', time:'17:30', event:'Core PCE Price Index', impact:'high', note:'Fed\'s preferred inflation gauge — moves all markets' },
-    { date:'2026-05-02', time:'17:30', event:'US NFP (Non-Farm Payrolls)', impact:'high', note:'Strong jobs = less Fed cuts = risk-off' },
-    { date:'2026-05-06', time:'23:00', event:'FOMC Meeting Begins', impact:'high', note:'No trading during FOMC window — Dead Zone applies' },
-    { date:'2026-05-07', time:'23:00', event:'Fed Interest Rate Decision', impact:'critical', note:'Rate hold or cut announcement — massive volatility' },
-    { date:'2026-05-13', time:'17:30', event:'US CPI (Inflation)', impact:'high', note:'Hot CPI = Fed hawkish = sell risk assets' },
-    { date:'2026-05-15', time:'17:30', event:'US PPI', impact:'medium', note:'Producer prices — leading indicator for CPI' },
-    { date:'2026-05-22', time:'17:30', event:'Weekly Jobless Claims', impact:'medium', note:'Weekly check on US labor market' },
-    { date:'2026-06-04', time:'17:30', event:'US NFP (Non-Farm Payrolls)', impact:'high', note:'Monthly jobs report — high volatility event' },
-    { date:'2026-06-11', time:'17:30', event:'US CPI (June)', impact:'high', note:'Monthly inflation — moves BTC and US100 strongly' },
-    { date:'2026-06-17', time:'23:00', event:'FOMC Meeting Begins', impact:'high', note:'No new positions during FOMC window' },
-    { date:'2026-06-18', time:'23:00', event:'Fed Interest Rate Decision', impact:'critical', note:'Rate decision + press conference — expect 5-7% candles' },
+    // Format: { date: 'YYYY-MM-DD', time: 'HH:MM' (UTC), event, impact, note, category? }
+    // Q2 2026
+    { date:'2026-04-29', time:'17:30', event:'US GDP Q1 Advance', impact:'high', note:'GDP miss = risk-off, DXY pump, crypto dump', category:'econ' },
+    { date:'2026-04-30', time:'17:30', event:'Core PCE Price Index', impact:'high', note:'Fed\'s preferred inflation gauge — moves all markets', category:'econ' },
+    { date:'2026-05-02', time:'17:30', event:'US NFP (Non-Farm Payrolls)', impact:'high', note:'Strong jobs = less Fed cuts = risk-off', category:'econ' },
+    { date:'2026-05-06', time:'23:00', event:'FOMC Meeting Begins', impact:'high', note:'No trading during FOMC window — Dead Zone applies', category:'econ' },
+    { date:'2026-05-07', time:'23:00', event:'Fed Interest Rate Decision', impact:'critical', note:'Rate hold or cut announcement — massive volatility', category:'econ' },
+    { date:'2026-05-13', time:'17:30', event:'US CPI (Inflation)', impact:'high', note:'Hot CPI = Fed hawkish = sell risk assets', category:'econ' },
+    { date:'2026-05-15', time:'17:30', event:'US PPI', impact:'medium', note:'Producer prices — leading indicator for CPI', category:'econ' },
+    { date:'2026-05-22', time:'17:30', event:'Weekly Jobless Claims', impact:'medium', note:'Weekly check on US labor market', category:'econ' },
+    { date:'2026-05-30', time:'17:30', event:'Core PCE Price Index', impact:'high', note:'Fed\'s key inflation read — strong dollar reactions', category:'econ' },
+    { date:'2026-06-04', time:'17:30', event:'US NFP (Non-Farm Payrolls)', impact:'high', note:'Monthly jobs report — high volatility event', category:'econ' },
+    { date:'2026-06-11', time:'17:30', event:'US CPI (June)', impact:'high', note:'Monthly inflation — moves BTC and US100 strongly', category:'econ' },
+    { date:'2026-06-17', time:'23:00', event:'FOMC Meeting Begins', impact:'high', note:'No new positions during FOMC window', category:'econ' },
+    { date:'2026-06-18', time:'23:00', event:'Fed Interest Rate Decision', impact:'critical', note:'Rate decision + press conference — expect 5-7% candles', category:'econ' },
+    { date:'2026-06-26', time:'17:30', event:'Core PCE Price Index', impact:'high', note:'Fed\'s preferred inflation read', category:'econ' },
+    // Q3 2026
+    { date:'2026-07-02', time:'17:30', event:'US NFP (Non-Farm Payrolls)', impact:'high', note:'Monthly jobs report', category:'econ' },
+    { date:'2026-07-15', time:'17:30', event:'US CPI', impact:'high', note:'Mid-year inflation reading', category:'econ' },
+    { date:'2026-07-29', time:'17:30', event:'US GDP Q2 Advance', impact:'high', note:'Quarterly growth read', category:'econ' },
+    { date:'2026-07-29', time:'23:00', event:'FOMC Meeting + Rate Decision', impact:'critical', note:'Mid-cycle rate decision — high volatility', category:'econ' },
+    { date:'2026-07-31', time:'17:30', event:'Core PCE Price Index', impact:'high', note:'July PCE', category:'econ' },
+    { date:'2026-08-07', time:'17:30', event:'US NFP (Non-Farm Payrolls)', impact:'high', note:'Monthly jobs report', category:'econ' },
+    { date:'2026-08-13', time:'17:30', event:'US CPI', impact:'high', note:'August inflation reading', category:'econ' },
+    { date:'2026-08-29', time:'17:30', event:'Core PCE Price Index', impact:'high', note:'August PCE', category:'econ' },
+    { date:'2026-09-04', time:'17:30', event:'US NFP (Non-Farm Payrolls)', impact:'high', note:'Monthly jobs report', category:'econ' },
+    { date:'2026-09-11', time:'17:30', event:'US CPI', impact:'high', note:'September inflation', category:'econ' },
+    { date:'2026-09-16', time:'23:00', event:'FOMC Meeting Begins', impact:'high', note:'Two-day Fed meeting', category:'econ' },
+    { date:'2026-09-17', time:'23:00', event:'Fed Interest Rate Decision + SEP', impact:'critical', note:'Rate decision + Summary of Economic Projections (dot plot)', category:'econ' },
+    { date:'2026-09-25', time:'17:30', event:'Core PCE Price Index', impact:'high', note:'September PCE', category:'econ' },
+    // Q4 2026
+    { date:'2026-10-02', time:'17:30', event:'US NFP (Non-Farm Payrolls)', impact:'high', note:'Q4 starts', category:'econ' },
+    { date:'2026-10-15', time:'17:30', event:'US CPI', impact:'high', note:'October inflation', category:'econ' },
+    { date:'2026-10-29', time:'17:30', event:'US GDP Q3 Advance', impact:'high', note:'Q3 growth read', category:'econ' },
+    { date:'2026-10-29', time:'23:00', event:'FOMC Meeting + Rate Decision', impact:'critical', note:'Pre-election Fed decision', category:'econ' },
+    { date:'2026-11-06', time:'17:30', event:'US NFP (Non-Farm Payrolls)', impact:'high', note:'November jobs', category:'econ' },
+    { date:'2026-11-12', time:'17:30', event:'US CPI', impact:'high', note:'November inflation', category:'econ' },
+    { date:'2026-12-04', time:'17:30', event:'US NFP (Non-Farm Payrolls)', impact:'high', note:'December jobs report', category:'econ' },
+    { date:'2026-12-10', time:'17:30', event:'US CPI', impact:'high', note:'December inflation', category:'econ' },
+    { date:'2026-12-15', time:'23:00', event:'FOMC Meeting Begins', impact:'high', note:'Final FOMC of 2026', category:'econ' },
+    { date:'2026-12-16', time:'23:00', event:'Fed Interest Rate Decision + SEP', impact:'critical', note:'Year-end rate decision + dot plot', category:'econ' },
   ];
+
+  // CME / NYSE holidays — futures and US100 markets are closed or shortened.
+  // Crypto markets stay open but liquidity thins.
+  const CME_HOLIDAYS = [
+    { date:'2026-01-01', event:'New Year\'s Day', note:'CME closed · light crypto liquidity', category:'cme', impact:'medium' },
+    { date:'2026-01-19', event:'MLK Day', note:'CME equity closed · partial energy/metals', category:'cme', impact:'low' },
+    { date:'2026-02-16', event:'Presidents Day', note:'CME equity closed · partial trading elsewhere', category:'cme', impact:'low' },
+    { date:'2026-04-03', event:'Good Friday', note:'CME closed · NFP Friday was 04-03 — historically gappy', category:'cme', impact:'medium' },
+    { date:'2026-05-25', event:'Memorial Day', note:'CME closed · thin Asian session in crypto', category:'cme', impact:'low' },
+    { date:'2026-06-19', event:'Juneteenth', note:'CME equity closed', category:'cme', impact:'low' },
+    { date:'2026-07-03', event:'Independence Day (observed)', note:'CME closes early (early-close day on the 3rd, full close 4th)', category:'cme', impact:'low' },
+    { date:'2026-09-07', event:'Labor Day', note:'CME closed · low volume', category:'cme', impact:'low' },
+    { date:'2026-11-26', event:'Thanksgiving', note:'CME closed · early close on the 27th', category:'cme', impact:'low' },
+    { date:'2026-12-25', event:'Christmas Day', note:'CME closed · shortened Christmas Eve session 12-24', category:'cme', impact:'medium' },
+  ];
+
+  // Generate CME BTC/ETH futures expirations: last Friday of each month
+  function _generateFuturesExpiries() {
+    const out = [];
+    const today = new Date();
+    // Generate from current month through 6 months ahead
+    for (let m = 0; m < 8; m++) {
+      const d = new Date(today.getFullYear(), today.getMonth() + m, 1);
+      // Find last Friday of this month
+      const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+      const lastFri = new Date(last);
+      lastFri.setDate(last.getDate() - ((last.getDay() + 2) % 7));
+      const dateStr = lastFri.toISOString().slice(0,10);
+      out.push({
+        date: dateStr, time:'21:00', event:'CME BTC/ETH Futures Expiration',
+        impact: 'medium', category:'expiry',
+        note:'Monthly futures roll · expect basis decay and gap risk into close'
+      });
+    }
+    return out;
+  }
+  const FUTURES_EXPIRIES = _generateFuturesExpiries();
+
+  function _getAllCalendarEvents() {
+    return [
+      ...ECON_EVENTS.map(e => ({ ...e, category: e.category || 'econ' })),
+      ...CME_HOLIDAYS.map(e => ({ ...e, time: e.time || '00:00' })),
+      ...FUTURES_EXPIRIES
+    ].sort((a,b) => new Date(a.date+'T'+a.time) - new Date(b.date+'T'+b.time));
+  }
 
   function renderEconCalendar() {
     const el = document.getElementById('econCalendar');
@@ -4237,6 +4362,186 @@
           <div style="font-size:11px;color:${impactColor};margin-top:6px;line-height:1.5;">${e.note}</div>
         </div>`;
       }).join('') + '</div>';
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 📅 CALENDAR TAB — full event view (econ + CME + futures expiry)
+  // ═══════════════════════════════════════════════════════
+  function _readCalendarFilters() {
+    return {
+      cats: {
+        econ: document.getElementById('calCatEcon')?.checked,
+        cme: document.getElementById('calCatCme')?.checked,
+        expiry: document.getElementById('calCatExpiry')?.checked,
+      },
+      impact: {
+        critical: document.getElementById('calImpCritical')?.checked,
+        high: document.getElementById('calImpHigh')?.checked,
+        medium: document.getElementById('calImpMedium')?.checked,
+        low: document.getElementById('calImpLow')?.checked,
+      },
+      rangeDays: parseInt(document.getElementById('calRange')?.value || '30', 10),
+      search: (document.getElementById('calSearch')?.value || '').trim().toLowerCase()
+    };
+  }
+  function _saveCalendarFilters() { try { localStorage.setItem('ict_cal_filters', JSON.stringify(_readCalendarFilters())); } catch(e) {} }
+  function _loadCalendarFilters() {
+    try {
+      const f = JSON.parse(localStorage.getItem('ict_cal_filters') || 'null');
+      if (!f) return;
+      const set = (id, val) => { const el = document.getElementById(id); if (el && typeof val === 'boolean') el.checked = val; else if (el && val != null) el.value = val; };
+      set('calCatEcon', f.cats?.econ); set('calCatCme', f.cats?.cme); set('calCatExpiry', f.cats?.expiry);
+      set('calImpCritical', f.impact?.critical); set('calImpHigh', f.impact?.high);
+      set('calImpMedium', f.impact?.medium); set('calImpLow', f.impact?.low);
+      set('calRange', String(f.rangeDays ?? 30));
+      set('calSearch', f.search || '');
+    } catch(e) {}
+  }
+  function _onCalendarFilterChange() { _saveCalendarFilters(); renderCalendarPage(); }
+
+  function _impactStyle(impact) {
+    if (impact === 'critical') return { dots:'🔴🔴🔴', color:'var(--bear)', bd:'rgba(224,93,93,0.4)', bg:'rgba(224,93,93,0.06)' };
+    if (impact === 'high')     return { dots:'🟡🟡',   color:'var(--liq)',  bd:'rgba(242,179,61,0.4)', bg:'rgba(242,179,61,0.06)' };
+    if (impact === 'medium')   return { dots:'⚪',      color:'var(--text-dim)', bd:'var(--border)', bg:'var(--bg-elevated)' };
+    return { dots:'·', color:'var(--text-mute)', bd:'var(--border)', bg:'var(--bg-elevated)' };
+  }
+
+  function _calCategoryBadge(cat) {
+    if (cat === 'econ')   return `<span style="font-size:9px;color:var(--gold);background:rgba(201,169,97,0.15);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;">🏛 ECON</span>`;
+    if (cat === 'cme')    return `<span style="font-size:9px;color:var(--text-mute);background:rgba(101,101,109,0.20);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;">🏢 CME</span>`;
+    if (cat === 'expiry') return `<span style="font-size:9px;color:#1d9bf0;background:rgba(29,155,240,0.15);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;">📈 EXPIRY</span>`;
+    return '';
+  }
+
+  function _formatGSTDate(d) {
+    return d.toLocaleString('en-GB', { weekday:'short', day:'2-digit', month:'short', timeZone:'Asia/Dubai' });
+  }
+  function _formatGSTTime(d) {
+    return d.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', timeZone:'Asia/Dubai' });
+  }
+
+  function _formatCountdown(diffMs) {
+    if (diffMs < 0) return 'past';
+    const m = Math.floor(diffMs / 60000);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ${m%60}m`;
+    const d = Math.floor(h / 24);
+    return `${d}d ${h%24}h`;
+  }
+
+  function _filterCalendarEvents(events, filters, now) {
+    const cutoff = now.getTime() + filters.rangeDays * 86400000;
+    return events.filter(e => {
+      const dt = new Date(e.date + 'T' + e.time + ':00Z');
+      const ts = dt.getTime();
+      if (ts < now.getTime() - 6*3600000) return false; // hide events that ended >6h ago
+      if (ts > cutoff) return false;
+      if (filters.cats[e.category] === false) return false;
+      const imp = e.impact || 'medium';
+      if (filters.impact[imp] === false) return false;
+      if (filters.search && !(e.event.toLowerCase().includes(filters.search) || (e.note||'').toLowerCase().includes(filters.search))) return false;
+      return true;
+    });
+  }
+
+  function _groupEventsByWeek(events, now) {
+    const groups = { 'Today': [], 'This Week': [], 'Next Week': [], 'In 2 Weeks': [], 'Later': [] };
+    const todayStart = new Date(now); todayStart.setHours(0,0,0,0);
+    const weekEnd = new Date(todayStart); weekEnd.setDate(todayStart.getDate() + (7 - todayStart.getDay()));
+    const nextWeekEnd = new Date(weekEnd); nextWeekEnd.setDate(weekEnd.getDate() + 7);
+    const twoWeekEnd = new Date(nextWeekEnd); twoWeekEnd.setDate(nextWeekEnd.getDate() + 7);
+    for (const e of events) {
+      const dt = new Date(e.date + 'T' + e.time + ':00Z');
+      if (dt < todayStart || (dt - todayStart) < 86400000) groups['Today'].push(e);
+      else if (dt < weekEnd) groups['This Week'].push(e);
+      else if (dt < nextWeekEnd) groups['Next Week'].push(e);
+      else if (dt < twoWeekEnd) groups['In 2 Weeks'].push(e);
+      else groups['Later'].push(e);
+    }
+    return groups;
+  }
+
+  function _renderCalendarRow(e, now) {
+    const dt = new Date(e.date + 'T' + e.time + ':00Z');
+    const diffMs = dt - now;
+    const counter = diffMs < 0 ? 'in progress' : _formatCountdown(diffMs) + ' away';
+    const imp = _impactStyle(e.impact || 'medium');
+    const isImminent = diffMs > 0 && diffMs < 24*3600000;
+    return `<div style="background:${imp.bg};border:1px solid ${isImminent?imp.bd:'var(--border)'};border-radius:8px;padding:10px 12px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;margin-bottom:6px;">
+      <div style="min-width:90px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text);">
+        <div style="color:var(--gold);font-weight:700;">${_formatGSTDate(dt)}</div>
+        <div style="color:var(--text-mute);font-size:10px;">${_formatGSTTime(dt)} GST</div>
+      </div>
+      <div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:3px;">
+          ${_calCategoryBadge(e.category)}
+          <span style="font-size:10px;">${imp.dots}</span>
+          <span style="font-size:13px;font-weight:600;color:var(--text);">${e.event}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);line-height:1.4;">${e.note || ''}</div>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:${isImminent?imp.color:'var(--text-mute)'};white-space:nowrap;">${counter}</div>
+    </div>`;
+  }
+
+  function renderCalendarPage() {
+    const host = document.getElementById('calendarFeedHost');
+    const stats = document.getElementById('calendarStatsBar');
+    const hero = document.getElementById('calendarHero');
+    if (!host || !stats || !hero) return;
+    const now = new Date();
+    const filters = _readCalendarFilters();
+    const all = _getAllCalendarEvents();
+    const filtered = _filterCalendarEvents(all, filters, now);
+
+    // Hero: next critical (or highest-impact) event
+    const critical = filtered.find(e => e.impact === 'critical');
+    const highImp = filtered.find(e => e.impact === 'high');
+    const heroEvent = critical || highImp || filtered[0];
+    if (heroEvent) {
+      const dt = new Date(heroEvent.date + 'T' + heroEvent.time + ':00Z');
+      const diffMs = dt - now;
+      const imp = _impactStyle(heroEvent.impact || 'medium');
+      hero.innerHTML = `<div style="background:${imp.bg};border:1.5px solid ${imp.bd};border-radius:12px;padding:18px 22px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
+        <div style="font-size:32px;">${heroEvent.impact==='critical'?'🔴':'🟡'}</div>
+        <div style="flex:1;min-width:200px;">
+          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-bottom:3px;">Next ${heroEvent.impact==='critical'?'critical':'high-impact'} event</div>
+          <div style="font-size:18px;font-weight:700;color:${imp.color};margin-bottom:4px;">${heroEvent.event}</div>
+          <div style="font-size:12px;color:var(--text-dim);line-height:1.5;">${heroEvent.note || ''}</div>
+        </div>
+        <div style="text-align:right;font-family:'JetBrains Mono',monospace;">
+          <div style="font-size:24px;font-weight:700;color:${imp.color};">${diffMs<0?'NOW':_formatCountdown(diffMs)}</div>
+          <div style="font-size:11px;color:var(--text-mute);margin-top:2px;">${_formatGSTDate(dt)} · ${_formatGSTTime(dt)} GST</div>
+        </div>
+      </div>`;
+    } else {
+      hero.innerHTML = `<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:24px;text-align:center;color:var(--text-mute);">No upcoming events match the current filters.</div>`;
+    }
+
+    // Stats
+    const critCount = filtered.filter(e => e.impact === 'critical').length;
+    const highCount = filtered.filter(e => e.impact === 'high').length;
+    const next24h = filtered.filter(e => { const t = new Date(e.date+'T'+e.time+':00Z') - now; return t > 0 && t < 86400000; }).length;
+    stats.innerHTML = `
+      <span><strong style="color:var(--gold);">${filtered.length}</strong> events in window</span>
+      <span>·</span>
+      <span>Critical: <strong style="color:var(--bear);">${critCount}</strong></span>
+      <span>·</span>
+      <span>High: <strong style="color:var(--liq);">${highCount}</strong></span>
+      <span>·</span>
+      <span>Next 24h: <strong style="color:var(--bull);">${next24h}</strong></span>`;
+
+    // Grouped list
+    if (!filtered.length) { host.innerHTML = ''; return; }
+    const groups = _groupEventsByWeek(filtered, now);
+    const sections = ['Today','This Week','Next Week','In 2 Weeks','Later'];
+    host.innerHTML = sections.filter(s => groups[s].length).map(s => `
+      <div style="margin-bottom:18px;">
+        <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.12em;font-weight:600;margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:6px;">─── ${s} (${groups[s].length}) ───</div>
+        ${groups[s].map(e => _renderCalendarRow(e, now)).join('')}
+      </div>
+    `).join('');
   }
 
   // ═══════════════════════════════════════════════════════
@@ -6124,6 +6429,8 @@
     setInterval(fetchFundingRates, 120000);
     setInterval(fetchNews, 300000);
     setInterval(renderEconCalendar, 60000);
+    // Calendar tab countdowns refresh every minute (only re-renders if visible)
+    setInterval(() => { try { if (document.getElementById('calendar')?.classList.contains('active')) renderCalendarPage(); } catch(e) {} }, 60000);
     fetchAllMTF();
     setInterval(() => fetchAllMTF().catch(()=>{}), 5*60*1000);
     // 🤖 Auto MTF entry analysis — every 60s, all assets, all TFs
@@ -6158,6 +6465,10 @@
     <button class="mob-nav-btn" id="mobBtn-journal" onclick="switchTab('journal',this)">
       <span class="mob-icon">📰</span>
       <span class="mob-label">News</span>
+    </button>
+    <button class="mob-nav-btn" id="mobBtn-calendar" onclick="switchTab('calendar',this)">
+      <span class="mob-icon">📅</span>
+      <span class="mob-label">Calendar</span>
     </button>
     <button class="mob-nav-btn" id="mobBtn-ict-methods" onclick="switchTab('ict-methods',this)">
       <span class="mob-icon">📊</span>
