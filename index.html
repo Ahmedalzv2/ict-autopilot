@@ -1067,6 +1067,110 @@
     .signals-grid { grid-template-columns: repeat(3, 1fr); }
     .ap-grid { grid-template-columns: 1fr; }
   }
+
+  /* ═══════════════════════════════════
+     COMPACT DENSITY MODE
+     Toggle via header button — body[data-density="compact"]
+     Persisted to localStorage.ict_density.
+  ═══════════════════════════════════ */
+  .density-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-mute);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .density-toggle:hover { color: var(--text); border-color: var(--gold); }
+  .density-toggle .dt-icon { font-size: 12px; line-height: 1; }
+  body[data-density="compact"] .density-toggle { color: var(--gold); border-color: rgba(201,169,97,0.4); }
+
+  body[data-density="compact"] { font-size: 13px; line-height: 1.5; }
+
+  /* Top bar slimmer */
+  body[data-density="compact"] .autopilot-bar { height: 44px; }
+  body[data-density="compact"] .shell { padding-top: 44px; }
+  body[data-density="compact"] nav.side { top: 44px; height: calc(100vh - 44px); padding: 12px 0; }
+  body[data-density="compact"] .ap-segment { padding: 0 14px; font-size: 11px; }
+  body[data-density="compact"] .ap-brand .logo { font-size: 16px; }
+
+  /* Sidebar tighter */
+  body[data-density="compact"] .brand { padding: 0 16px 14px; margin-bottom: 8px; }
+  body[data-density="compact"] .brand .logo { font-size: 18px; }
+  body[data-density="compact"] .side-nav button { padding: 7px 12px; font-size: 12px; margin-bottom: 2px; }
+
+  /* Main + page header */
+  body[data-density="compact"] main { padding: 16px 20px; }
+  body[data-density="compact"] .page-header { margin-bottom: 14px; padding-bottom: 10px; }
+  body[data-density="compact"] .page-header h1 { font-size: 20px; }
+  body[data-density="compact"] .page-header p { font-size: 11px; margin-top: 3px; }
+
+  /* AutoPilot grid + cards */
+  body[data-density="compact"] .ap-grid { gap: 10px; margin-bottom: 14px; }
+  body[data-density="compact"] .ap-card { padding: 12px; border-radius: 8px; }
+  body[data-density="compact"] .ap-card-title { margin-bottom: 8px; font-size: 9px; }
+
+  /* Sessions timeline */
+  body[data-density="compact"] .session-timeline { gap: 4px; }
+  body[data-density="compact"] .session-row { padding: 5px 9px; }
+  body[data-density="compact"] .session-name { font-size: 12px; }
+  body[data-density="compact"] .session-time { font-size: 10px; }
+
+  /* Signal cards */
+  body[data-density="compact"] .signals-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 7px; }
+  body[data-density="compact"] .signal-card { padding: 9px; border-radius: 6px; }
+  body[data-density="compact"] .sig-symbol { font-size: 16px; }
+  body[data-density="compact"] .sig-header { margin-bottom: 5px; }
+  body[data-density="compact"] .sig-price { font-size: 13px; }
+  body[data-density="compact"] .sig-entry { font-size: 10px; margin-bottom: 4px; }
+  body[data-density="compact"] .sig-reasoning { font-size: 10px; }
+
+  /* Asset tiles */
+  body[data-density="compact"] .assets-grid { gap: 8px; }
+  body[data-density="compact"] .asset-tile { padding: 11px 10px; border-radius: 7px; }
+  body[data-density="compact"] .asset-symbol { font-size: 18px; }
+  body[data-density="compact"] .asset-platform { font-size: 9px; }
+  body[data-density="compact"] .asset-price { font-size: 13px; }
+  body[data-density="compact"] .asset-change { font-size: 11px; }
+
+  /* Setup cards (Top Setup) */
+  body[data-density="compact"] .setup-card { padding: 14px; }
+  body[data-density="compact"] .setup-symbol { font-size: 22px; }
+  body[data-density="compact"] .setup-price { font-size: 14px; }
+  body[data-density="compact"] .setup-levels { font-size: 10px; line-height: 1.5; }
+
+  /* Countdown */
+  body[data-density="compact"] .countdown-big .ct-time { font-size: 30px; }
+
+  /* Sync bar */
+  body[data-density="compact"] .sync-btn { padding: 6px 10px; font-size: 11px; }
+
+  /* Filter buttons */
+  body[data-density="compact"] .filter-buttons { gap: 6px; margin-bottom: 12px; }
+  body[data-density="compact"] .filter-btn { padding: 6px 12px; font-size: 11px; }
+
+  /* Methods grid */
+  body[data-density="compact"] .methods-grid { gap: 10px; }
+  body[data-density="compact"] .method-visual { height: 100px; padding: 8px; }
+  body[data-density="compact"] .method-info { padding: 10px; }
+
+  /* Rules section */
+  body[data-density="compact"] .rules-section { padding: 14px; }
+
+  /* Modal: setup rows tighter */
+  body[data-density="compact"] .setup-row { padding: 6px 0; font-size: 12px; }
+  body[data-density="compact"] .grade-section { padding: 10px; margin: 12px 0; }
+  body[data-density="compact"] .check-item { padding: 3px 0; font-size: 11px; }
+
   </style>
 </head>
 <body>
@@ -1094,7 +1198,10 @@
       <span class="ap-label">Sync</span>
       <span class="ap-value" id="barSyncTime">—</span>
     </div>
-    <div class="ap-segment" style="border-left:1px solid var(--border);border-right:none;margin-left:auto;">
+    <div class="ap-segment" style="border-left:1px solid var(--border);border-right:none;margin-left:auto;gap:10px;">
+      <button type="button" id="densityToggle" class="density-toggle" onclick="toggleDensity()" title="Toggle compact density mode">
+        <span class="dt-icon" id="densityIcon">▦</span><span id="densityLabel">SPACIOUS</span>
+      </button>
       <span id="liveIndicator" style="font-size:11px;color:#888;font-family:'JetBrains Mono',monospace;letter-spacing:0.05em;">⟳ SYNC</span>
     </div>
   </div>
@@ -1502,6 +1609,30 @@
   </div>
 
 <script>
+  // ═══════════════════════════════════════
+  // DENSITY MODE — spacious (default) vs compact
+  // ═══════════════════════════════════════
+  function applyDensity(mode) {
+    const m = mode === 'compact' ? 'compact' : 'spacious';
+    document.body.setAttribute('data-density', m);
+    const lbl = document.getElementById('densityLabel');
+    const icon = document.getElementById('densityIcon');
+    if (lbl) lbl.textContent = m === 'compact' ? 'COMPACT' : 'SPACIOUS';
+    if (icon) icon.textContent = m === 'compact' ? '▤' : '▦';
+  }
+  function toggleDensity() {
+    const cur = document.body.getAttribute('data-density') === 'compact' ? 'compact' : 'spacious';
+    const next = cur === 'compact' ? 'spacious' : 'compact';
+    applyDensity(next);
+    try { localStorage.setItem('ict_density', next); } catch (e) {}
+  }
+  (function initDensity() {
+    let saved = 'spacious';
+    try { saved = localStorage.getItem('ict_density') || 'spacious'; } catch (e) {}
+    if (document.body) applyDensity(saved);
+    else document.addEventListener('DOMContentLoaded', () => applyDensity(saved));
+  })();
+
   // ═══════════════════════════════════════
   // ASSET DATA — seeded from ICT Master Dashboard v5 (Apr 25 2026)
   // Prices auto-updated by Binance sync
