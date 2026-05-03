@@ -1171,6 +1171,85 @@
   body[data-density="compact"] .grade-section { padding: 10px; margin: 12px 0; }
   body[data-density="compact"] .check-item { padding: 3px 0; font-size: 11px; }
 
+  /* ═══════════════════════════════════
+     COMMAND PALETTE (⌘K / Ctrl+K)
+  ═══════════════════════════════════ */
+  .cmdk-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(6px);
+    z-index: 999;
+    display: none;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 14vh;
+  }
+  .cmdk-overlay.open { display: flex; }
+  .cmdk-modal {
+    width: 92%;
+    max-width: 580px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.7);
+    overflow: hidden;
+    animation: cmdkPop 0.15s ease-out;
+  }
+  @keyframes cmdkPop { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+  .cmdk-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .cmdk-input-wrap .cmdk-prompt { color: var(--gold); font-family: 'JetBrains Mono', monospace; font-size: 14px; }
+  #cmdkInput {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-family: 'Geist', system-ui, sans-serif;
+    font-size: 15px;
+  }
+  #cmdkInput::placeholder { color: var(--text-mute); }
+  .cmdk-hint { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-mute); padding: 2px 6px; border: 1px solid var(--border); border-radius: 3px; }
+  .cmdk-list {
+    max-height: 52vh;
+    overflow-y: auto;
+    padding: 6px;
+  }
+  .cmdk-section {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    padding: 10px 12px 4px;
+  }
+  .cmdk-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 13px;
+    transition: background 0.1s;
+  }
+  .cmdk-item .ci-icon { width: 18px; text-align: center; font-size: 13px; }
+  .cmdk-item .ci-label { flex: 1; }
+  .cmdk-item .ci-meta { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-mute); }
+  .cmdk-item.active { background: rgba(201,169,97,0.12); color: var(--text); }
+  .cmdk-item.active .ci-meta { color: var(--gold); }
+  .cmdk-empty { padding: 24px; text-align: center; color: var(--text-mute); font-size: 12px; }
+
+  body[data-density="compact"] .cmdk-input-wrap { padding: 10px 14px; }
+  body[data-density="compact"] #cmdkInput { font-size: 14px; }
+  body[data-density="compact"] .cmdk-item { padding: 7px 10px; font-size: 12px; }
+
   </style>
 </head>
 <body>
@@ -1198,11 +1277,29 @@
       <span class="ap-label">Sync</span>
       <span class="ap-value" id="barSyncTime">—</span>
     </div>
-    <div class="ap-segment" style="border-left:1px solid var(--border);border-right:none;margin-left:auto;gap:10px;">
+    <div class="ap-segment" style="border-left:1px solid var(--border);border-right:none;margin-left:auto;gap:8px;">
+      <button type="button" id="cmdkOpen" class="density-toggle" onclick="openCmdK()" title="Command palette (⌘K)">
+        <span class="dt-icon">⌘</span><span>K</span>
+      </button>
+      <button type="button" id="alertsToggle" class="density-toggle" onclick="toggleAlerts()" title="Toggle sound + browser notifications for entry alerts">
+        <span class="dt-icon" id="alertsIcon">🔕</span><span id="alertsLabel">ALERTS OFF</span>
+      </button>
       <button type="button" id="densityToggle" class="density-toggle" onclick="toggleDensity()" title="Toggle compact density mode">
         <span class="dt-icon" id="densityIcon">▦</span><span id="densityLabel">SPACIOUS</span>
       </button>
       <span id="liveIndicator" style="font-size:11px;color:#888;font-family:'JetBrains Mono',monospace;letter-spacing:0.05em;">⟳ SYNC</span>
+    </div>
+  </div>
+
+  <!-- ═══ COMMAND PALETTE (⌘K) ═══ -->
+  <div class="cmdk-overlay" id="cmdkOverlay" onclick="if(event.target===this) closeCmdK()">
+    <div class="cmdk-modal" role="dialog" aria-label="Command palette">
+      <div class="cmdk-input-wrap">
+        <span class="cmdk-prompt">›</span>
+        <input id="cmdkInput" type="text" placeholder="Jump to a tab, asset, or action…" autocomplete="off" spellcheck="false" />
+        <span class="cmdk-hint">ESC</span>
+      </div>
+      <div class="cmdk-list" id="cmdkList"></div>
     </div>
   </div>
 
@@ -1632,6 +1729,227 @@
     if (document.body) applyDensity(saved);
     else document.addEventListener('DOMContentLoaded', () => applyDensity(saved));
   })();
+
+  // ═══════════════════════════════════════
+  // ALERTS MODE — sound + browser notifications gate
+  // ═══════════════════════════════════════
+  window.alertsEnabled = false;
+  function paintAlertsToggle() {
+    const lbl = document.getElementById('alertsLabel');
+    const icon = document.getElementById('alertsIcon');
+    if (lbl) lbl.textContent = window.alertsEnabled ? 'ALERTS ON' : 'ALERTS OFF';
+    if (icon) icon.textContent = window.alertsEnabled ? '🔔' : '🔕';
+  }
+  async function toggleAlerts() {
+    if (!window.alertsEnabled) {
+      // Enabling — request notification permission if needed
+      if ('Notification' in window && Notification.permission === 'default') {
+        try { await Notification.requestPermission(); } catch (e) {}
+      }
+      window.alertsEnabled = true;
+      // Prime AudioContext (browsers require a user gesture)
+      try { ensureAudioCtx(); } catch (e) {}
+      // Confirmation chirp so user knows it's working
+      try { playAlertSound('watch'); } catch (e) {}
+      if (typeof showToast === 'function') {
+        const msg = ('Notification' in window && Notification.permission === 'granted')
+          ? 'Alerts ON · sound + browser notifications'
+          : 'Alerts ON · sound only (notifications denied)';
+        showToast(msg, 'good');
+      }
+    } else {
+      window.alertsEnabled = false;
+      if (typeof showToast === 'function') showToast('Alerts OFF', 'warn');
+    }
+    try { localStorage.setItem('ict_alerts', window.alertsEnabled ? '1' : '0'); } catch (e) {}
+    paintAlertsToggle();
+  }
+  (function initAlerts() {
+    try { window.alertsEnabled = localStorage.getItem('ict_alerts') === '1'; } catch (e) {}
+    if (document.body) paintAlertsToggle();
+    else document.addEventListener('DOMContentLoaded', paintAlertsToggle);
+  })();
+
+  // Web Audio — synthesized tones, no asset files
+  let _audioCtx = null;
+  function ensureAudioCtx() {
+    if (_audioCtx) return _audioCtx;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    _audioCtx = new Ctx();
+    return _audioCtx;
+  }
+  function _beep(freq, durMs, when, volume) {
+    const ctx = ensureAudioCtx();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const start = ctx.currentTime + (when || 0);
+    const stop = start + durMs / 1000;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(volume || 0.18, start + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, stop);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(start);
+    osc.stop(stop + 0.02);
+  }
+  // Override the existing stub
+  function playAlertSound(type) {
+    if (!window.alertsEnabled) return;
+    const ctx = ensureAudioCtx();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} }
+    if (type === 'enter') {
+      _beep(880, 140, 0.00, 0.22);
+      _beep(880, 140, 0.18, 0.22);
+      _beep(1100, 220, 0.36, 0.24);
+    } else if (type === 'armed') {
+      _beep(660, 160, 0.00, 0.18);
+      _beep(880, 200, 0.20, 0.20);
+    } else {
+      _beep(520, 180, 0.00, 0.15);
+    }
+  }
+  // Helper that gates a Notification behind alertsEnabled
+  function fireNotification(title, opts) {
+    if (!window.alertsEnabled) return;
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    try { new Notification(title, opts || {}); } catch (e) {}
+  }
+
+  // ═══════════════════════════════════════
+  // COMMAND PALETTE (⌘K / Ctrl+K)
+  // ═══════════════════════════════════════
+  const CMDK = {
+    open: false,
+    items: [],
+    filtered: [],
+    selected: 0,
+  };
+  function buildCmdkItems() {
+    const items = [];
+    // Tabs
+    const tabs = [
+      { name: 'Top Setup', tab: 'autopilot', icon: '⭐' },
+      { name: 'Dashboard', tab: 'dashboard', icon: '🏛' },
+      { name: 'Live Chart', tab: 'live-chart', icon: '📈' },
+      { name: 'Journal', tab: 'journal', icon: '📓' },
+      { name: 'ICT Methods', tab: 'ict-methods', icon: '📊' },
+      { name: 'Rules', tab: 'rules', icon: '📋' },
+    ];
+    tabs.forEach(t => items.push({
+      kind: 'Tab', icon: t.icon, label: 'Go to ' + t.name, meta: t.tab,
+      keywords: t.name.toLowerCase() + ' ' + t.tab,
+      run: () => { try { switchTab(t.tab); } catch (e) {} }
+    }));
+    // Actions
+    const actions = [
+      { label: 'Toggle compact density', icon: '▤', meta: 'density', run: toggleDensity, kw: 'compact spacious density layout' },
+      { label: 'Toggle alerts (sound + notifications)', icon: '🔔', meta: 'alerts', run: toggleAlerts, kw: 'sound notifications alerts mute' },
+      { label: 'Sync prices now', icon: '⚡', meta: 'sync', run: () => { try { typeof syncBinance === 'function' && syncBinance(); } catch (e) {} }, kw: 'sync refresh prices binance' },
+      { label: 'Dismiss alert overlay', icon: '✕', meta: 'dismiss', run: () => { try { typeof dismissAlert === 'function' && dismissAlert(); } catch (e) {} }, kw: 'dismiss close alert overlay' },
+      { label: 'Clear journal', icon: '🗑', meta: 'journal', run: () => { try { typeof clearJournal === 'function' && clearJournal(); } catch (e) {} }, kw: 'clear journal reset' },
+      { label: 'Scroll to top', icon: '↑', meta: 'scroll', run: () => window.scrollTo({ top: 0, behavior: 'smooth' }), kw: 'top scroll up' },
+    ];
+    actions.forEach(a => items.push({
+      kind: 'Action', icon: a.icon, label: a.label, meta: a.meta,
+      keywords: a.label.toLowerCase() + ' ' + a.kw, run: a.run
+    }));
+    // Assets — jump to setup modal
+    if (typeof ASSETS !== 'undefined' && Array.isArray(ASSETS)) {
+      ASSETS.forEach(a => items.push({
+        kind: 'Asset', icon: '◆', label: a.symbol + ' — ' + (a.platform || ''), meta: a.symbol,
+        keywords: a.symbol.toLowerCase() + ' ' + (a.platform || '').toLowerCase(),
+        run: () => { try { switchTab('autopilot'); openSetupModal(a); } catch (e) {} }
+      }));
+    }
+    return items;
+  }
+  function fuzzyMatch(q, text) {
+    if (!q) return true;
+    q = q.toLowerCase();
+    text = text.toLowerCase();
+    if (text.includes(q)) return true;
+    // Char-by-char ordered match
+    let i = 0;
+    for (const c of text) { if (c === q[i]) i++; if (i === q.length) return true; }
+    return false;
+  }
+  function renderCmdk() {
+    const list = document.getElementById('cmdkList');
+    if (!list) return;
+    if (CMDK.filtered.length === 0) {
+      list.innerHTML = '<div class="cmdk-empty">No matches</div>';
+      return;
+    }
+    let lastKind = null;
+    let html = '';
+    CMDK.filtered.forEach((it, idx) => {
+      if (it.kind !== lastKind) {
+        html += '<div class="cmdk-section">' + it.kind + 's</div>';
+        lastKind = it.kind;
+      }
+      const cls = idx === CMDK.selected ? 'cmdk-item active' : 'cmdk-item';
+      html += '<div class="' + cls + '" data-idx="' + idx + '">' +
+              '<span class="ci-icon">' + it.icon + '</span>' +
+              '<span class="ci-label">' + it.label + '</span>' +
+              '<span class="ci-meta">' + (it.meta || '') + '</span>' +
+              '</div>';
+    });
+    list.innerHTML = html;
+    list.querySelectorAll('.cmdk-item').forEach(el => {
+      el.addEventListener('mouseenter', () => { CMDK.selected = +el.dataset.idx; renderCmdk(); });
+      el.addEventListener('click', () => { runCmdkItem(+el.dataset.idx); });
+    });
+    const active = list.querySelector('.cmdk-item.active');
+    if (active) active.scrollIntoView({ block: 'nearest' });
+  }
+  function filterCmdk(q) {
+    CMDK.filtered = !q ? CMDK.items.slice() : CMDK.items.filter(it => fuzzyMatch(q, it.label + ' ' + it.keywords));
+    CMDK.selected = 0;
+    renderCmdk();
+  }
+  function runCmdkItem(idx) {
+    const it = CMDK.filtered[idx];
+    if (!it) return;
+    closeCmdK();
+    setTimeout(() => { try { it.run(); } catch (e) {} }, 0);
+  }
+  function openCmdK() {
+    CMDK.items = buildCmdkItems();
+    CMDK.filtered = CMDK.items.slice();
+    CMDK.selected = 0;
+    CMDK.open = true;
+    const overlay = document.getElementById('cmdkOverlay');
+    const input = document.getElementById('cmdkInput');
+    if (overlay) overlay.classList.add('open');
+    if (input) { input.value = ''; setTimeout(() => input.focus(), 0); }
+    renderCmdk();
+  }
+  function closeCmdK() {
+    CMDK.open = false;
+    const overlay = document.getElementById('cmdkOverlay');
+    if (overlay) overlay.classList.remove('open');
+  }
+  document.addEventListener('keydown', (e) => {
+    const isMod = e.metaKey || e.ctrlKey;
+    if (isMod && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      CMDK.open ? closeCmdK() : openCmdK();
+      return;
+    }
+    if (!CMDK.open) return;
+    if (e.key === 'Escape') { e.preventDefault(); closeCmdK(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); CMDK.selected = Math.min(CMDK.selected + 1, CMDK.filtered.length - 1); renderCmdk(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); CMDK.selected = Math.max(CMDK.selected - 1, 0); renderCmdk(); }
+    else if (e.key === 'Enter') { e.preventDefault(); runCmdkItem(CMDK.selected); }
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    const input = document.getElementById('cmdkInput');
+    if (input) input.addEventListener('input', (e) => filterCmdk(e.target.value));
+  });
 
   // ═══════════════════════════════════════
   // ASSET DATA — seeded from ICT Master Dashboard v5 (Apr 25 2026)
@@ -2934,9 +3252,8 @@
     // Notifications disabled per user preference
   }
 
-  function playAlertSound(type) {
-    // Sound disabled per user preference
-  }
+  // playAlertSound is defined at the top of the script (Web Audio synth)
+  // and gated on window.alertsEnabled.
 
   function showArmedOverlay(asset, signal, analysis) {
     // Remove any existing overlay
@@ -3053,40 +3370,34 @@
         if (sig === 'enter') {
           showArmedOverlay(asset, sig, analysis);
 
-          if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification(`🔴 ENTER NOW — ${asset.symbol}`, {
-              body: `Price is AT entry. Execute trade immediately.`,
-              icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="%23e05d5d"/><text x="50" y="65" text-anchor="middle" font-size="55" fill="white" font-weight="bold">!</text></svg>'
-            });
-          }
+          fireNotification(`🔴 ENTER NOW — ${asset.symbol}`, {
+            body: `Price is AT entry. Execute trade immediately.`,
+            icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="%23e05d5d"/><text x="50" y="65" text-anchor="middle" font-size="55" fill="white" font-weight="bold">!</text></svg>'
+          });
 
           // Urgent vibration: long-short-long-short-long
-          if (navigator.vibrate) navigator.vibrate([600, 150, 600, 150, 600]);
+          if (window.alertsEnabled && navigator.vibrate) navigator.vibrate([600, 150, 600, 150, 600]);
         }
         // ALMOST ENTRY POINT: full overlay + moderate vibration
         else if (sig === 'armed') {
           showArmedOverlay(asset, sig, analysis);
 
-          if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification(`🎯 ALMOST ENTRY POINT — ${asset.symbol}`, {
-              body: `ICT conditions met. Price within 0.15% of entry. Get ready.`
-            });
-          }
+          fireNotification(`🎯 ALMOST ENTRY POINT — ${asset.symbol}`, {
+            body: `ICT conditions met. Price within 0.15% of entry. Get ready.`
+          });
 
           // Moderate vibration
-          if (navigator.vibrate) navigator.vibrate([400, 200, 400]);
+          if (window.alertsEnabled && navigator.vibrate) navigator.vibrate([400, 200, 400]);
         }
         // ALMOST ENTRY: light toast
         else if (sig === 'watch') {
           showToast(`👁 ALMOST ENTRY — GET READY: ${asset.symbol} · ${pct}% from entry`, 'warn');
 
-          if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification(`👁 ALMOST ENTRY — ${asset.symbol}`, {
-              body: `Price approaching entry zone. Get ready.`
-            });
-          }
+          fireNotification(`👁 ALMOST ENTRY — ${asset.symbol}`, {
+            body: `Price approaching entry zone. Get ready.`
+          });
 
-          if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+          if (window.alertsEnabled && navigator.vibrate) navigator.vibrate([200, 100, 200]);
         }
       }
 
