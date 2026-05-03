@@ -6455,6 +6455,36 @@
   const _mmChainNames = { '0x1':'Ethereum', '0x38':'BSC', '0x89':'Polygon', '0xa4b1':'Arbitrum', '0xa':'Optimism', '0x2105':'Base' };
   const _mmNativeSymbols = { '0x1':'ETH','0x38':'BNB','0x89':'MATIC','0xa4b1':'ETH','0xa':'ETH','0x2105':'ETH' };
 
+  // Add-chain configs for wallet_addEthereumChain (used if chain not in MetaMask)
+  const CHAIN_CONFIGS = {
+    '0x1':    { chainId:'0x1',    chainName:'Ethereum Mainnet',  nativeCurrency:{name:'Ether',symbol:'ETH',decimals:18}, rpcUrls:['https://eth.public-rpc.com'],    blockExplorerUrls:['https://etherscan.io'] },
+    '0x38':   { chainId:'0x38',   chainName:'BNB Smart Chain',   nativeCurrency:{name:'BNB',  symbol:'BNB',decimals:18}, rpcUrls:['https://bsc-dataseed.binance.org'], blockExplorerUrls:['https://bscscan.com'] },
+    '0x89':   { chainId:'0x89',   chainName:'Polygon',           nativeCurrency:{name:'POL',  symbol:'POL',decimals:18}, rpcUrls:['https://polygon-rpc.com'],          blockExplorerUrls:['https://polygonscan.com'] },
+    '0xa4b1': { chainId:'0xa4b1', chainName:'Arbitrum One',      nativeCurrency:{name:'Ether',symbol:'ETH',decimals:18}, rpcUrls:['https://arb1.arbitrum.io/rpc'],     blockExplorerUrls:['https://arbiscan.io'] },
+    '0xa':    { chainId:'0xa',    chainName:'OP Mainnet',        nativeCurrency:{name:'Ether',symbol:'ETH',decimals:18}, rpcUrls:['https://mainnet.optimism.io'],      blockExplorerUrls:['https://optimistic.etherscan.io'] },
+    '0x2105': { chainId:'0x2105', chainName:'Base',              nativeCurrency:{name:'Ether',symbol:'ETH',decimals:18}, rpcUrls:['https://mainnet.base.org'],         blockExplorerUrls:['https://basescan.org'] }
+  };
+
+  async function switchChain(chainIdHex) {
+    if (!window.ethereum) { try { showToast('MetaMask not detected', 'warn'); } catch(e) {} return; }
+    try {
+      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainIdHex }] });
+    } catch(e) {
+      if (e.code === 4902 || /Unrecognized chain/i.test(e.message || '')) {
+        // Chain not added to MetaMask — add it
+        const cfg = CHAIN_CONFIGS[chainIdHex];
+        if (!cfg) { try { showToast('Chain config not found', 'warn'); } catch(_) {} return; }
+        try {
+          await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [cfg] });
+        } catch(addErr) {
+          if (addErr.code !== 4001) try { showToast(`Failed to add chain: ${addErr.message}`, 'warn'); } catch(_) {}
+        }
+      } else if (e.code !== 4001) {
+        try { showToast(`Switch failed: ${e.message}`, 'warn'); } catch(_) {}
+      }
+    }
+  }
+
   async function connectMetaMask() {
     if (typeof window.ethereum === 'undefined') {
       try { showToast('MetaMask not detected. Install it from metamask.io and refresh.', 'warn'); } catch(e) {}
@@ -6498,7 +6528,23 @@
     const chainName = _mmChainNames[_mmChainId] || `Chain ${_mmChainId}`;
     const nativeSym = _mmNativeSymbols[_mmChainId] || 'ETH';
     const explorer = _mmChainId === '0x38' ? 'https://bscscan.com/address/' : 'https://etherscan.io/address/';
-    statusEl.innerHTML = `<span style="color:var(--bull);font-family:'JetBrains Mono',monospace;font-weight:700;">✓ Connected</span> · <a href="${explorer}${_mmAddress}" target="_blank" rel="noopener" style="color:var(--gold);text-decoration:none;font-family:'JetBrains Mono',monospace;">${_shortAddr(_mmAddress)} ↗</a> · <span style="color:var(--text-mute);">${chainName}</span> · <button onclick="disconnectMetaMask()" style="background:none;border:none;color:var(--text-mute);font-size:10px;text-decoration:underline;cursor:pointer;">disconnect</button>`;
+    // Chain-switcher pills — clicking one prompts MetaMask to switch (or add then switch)
+    const chains = [
+      { id:'0x1',    label:'Ethereum',  color:'#627eea' },
+      { id:'0x38',   label:'BSC',       color:'#f7931a' },
+      { id:'0x89',   label:'Polygon',   color:'#8247e5' },
+      { id:'0xa4b1', label:'Arbitrum',  color:'#28a0f0' },
+      { id:'0xa',    label:'Optimism',  color:'#ff0420' },
+      { id:'0x2105', label:'Base',      color:'#0052ff' }
+    ];
+    const chainPills = chains.map(c => {
+      const active = c.id === _mmChainId;
+      return `<button onclick="switchChain('${c.id}')" style="background:${active?c.color+'33':'transparent'};border:1px solid ${active?c.color:'var(--border)'};color:${active?c.color:'var(--text-mute)'};padding:4px 10px;border-radius:6px;font-size:10px;font-weight:${active?700:500};cursor:pointer;font-family:'JetBrains Mono',monospace;">${active?'● ':''}${c.label}</button>`;
+    }).join('');
+    statusEl.innerHTML = `<div style="margin-bottom:10px;"><span style="color:var(--bull);font-family:'JetBrains Mono',monospace;font-weight:700;">✓ Connected</span> · <a href="${explorer}${_mmAddress}" target="_blank" rel="noopener" style="color:var(--gold);text-decoration:none;font-family:'JetBrains Mono',monospace;">${_shortAddr(_mmAddress)} ↗</a> · <span style="color:var(--text-mute);">${chainName}</span> · <button onclick="disconnectMetaMask()" style="background:none;border:none;color:var(--text-mute);font-size:10px;text-decoration:underline;cursor:pointer;">disconnect</button></div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">
+        <span style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.05em;font-weight:600;margin-right:4px;">Switch to:</span>${chainPills}
+      </div>`;
     if (btn) { btn.textContent = '✓ ' + _shortAddr(_mmAddress); btn.style.color = 'var(--bull)'; }
     balEl.innerHTML = `<div style="color:var(--text-mute);font-size:11px;">⟳ fetching balance…</div>`;
     const eth = await _fetchNativeBalance(_mmAddress, _mmChainId);
