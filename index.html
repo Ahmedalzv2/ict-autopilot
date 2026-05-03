@@ -1365,6 +1365,12 @@
               <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Sources</span>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCC" checked onchange="_onNewsFilterChange()"> CryptoCompare</label>
               <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCG" checked onchange="_onNewsFilterChange()"> CoinGecko</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCD" checked onchange="_onNewsFilterChange()"> CoinDesk</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcCT" checked onchange="_onNewsFilterChange()"> Cointelegraph</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcTB" checked onchange="_onNewsFilterChange()"> The Block</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcBI" checked onchange="_onNewsFilterChange()"> BeInCrypto</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcUT" checked onchange="_onNewsFilterChange()"> U.Today</label>
+              <label class="news-chip" style="font-size:11px;"><input type="checkbox" id="newsSrcSOC" checked onchange="_onNewsFilterChange()"> 𝕏 Pulse</label>
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;font-weight:600;min-width:75px;">Category</span>
@@ -3523,6 +3529,8 @@
   // Free tier = 100 calls/day, 10/min. We cache 5 min per coin.
   // ═══════════════════════════════════════════════════════
   const LUNARCRUSH_API_KEY = 'x81eei517ste2rhvh5k1c1tskmoorz3p6luvdra'; // <-- paste your key here, e.g. 'abcd1234...'
+  // CryptoCompare (Massive) API key — boosts rate limits + unlocks filtered endpoints
+  const CRYPTOCOMPARE_API_KEY = 'JitYqxoIfZ1w8XLr8rAoRtiFRZw3UgYn';
   const _socialCache = {}; // { symbol: { data, ts } }
   const SOCIAL_TTL_MS = 5 * 60 * 1000;
 
@@ -3570,7 +3578,8 @@
     const cached = _newsCache[symbol];
     if (cached && Date.now() - cached.ts < NEWS_TTL_MS) return cached.items;
     try {
-      const url = `https://min-api.cryptocompare.com/data/v2/news/?categories=${cat}&excludeCategories=Sponsored&lang=EN`;
+      const _ccKey = CRYPTOCOMPARE_API_KEY ? `&api_key=${CRYPTOCOMPARE_API_KEY}` : '';
+      const url = `https://min-api.cryptocompare.com/data/v2/news/?categories=${cat}&excludeCategories=Sponsored&lang=EN${_ccKey}`;
       const opts = {};
       if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(8000);
       const r = await fetch(url, opts);
@@ -3631,7 +3640,7 @@
     GOLD:['gold','xau'], SILVER:['silver','xag'], US100:['nasdaq','us100','ndx']
   };
 
-  function _normalizeNewsItem(raw, source) {
+  function _normalizeNewsItem(raw, source, sourceLabel) {
     // Returns { id, title, url, source, sourceLabel, published (unix sec), categories[], body }
     if (source === 'cryptocompare') {
       return {
@@ -3658,12 +3667,101 @@
         body: (raw.description || '').slice(0, 220)
       };
     }
+    if (source === 'rss') {
+      // rss2json item: { title, link, pubDate, description, content, categories, guid }
+      const t = raw.pubDate ? Math.floor(new Date(raw.pubDate).getTime()/1000) : 0;
+      const body = (raw.description || raw.content || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 220);
+      return {
+        id: 'rss-' + (raw.guid || raw.link || raw.title),
+        title: (raw.title || '').replace(/<[^>]+>/g,''),
+        url: raw.link || '#',
+        source: 'rss',
+        sourceLabel: sourceLabel || 'RSS',
+        published: t || 0,
+        categories: (raw.categories || []).map(c => String(c).toUpperCase()),
+        body
+      };
+    }
+    if (source === 'social') {
+      // LunarCrush post: { id, post_title, post_link, post_created, creator_name, interactions_24h, sentiment }
+      return {
+        id: 'lc-' + (raw.id || raw.post_link),
+        title: (raw.post_title || raw.title || '').slice(0, 280),
+        url: raw.post_link || raw.url || '#',
+        source: 'social',
+        sourceLabel: '𝕏 ' + (raw.creator_name || raw.creator_display_name || 'Post'),
+        published: raw.post_created || raw.time || 0,
+        categories: [],
+        body: '',
+        engagement: raw.interactions_24h || raw.interactions_total || 0,
+        sentiment: raw.post_sentiment || raw.sentiment || null,
+        symbol: raw._symbol || null
+      };
+    }
     return null;
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // RSS sources via rss2json proxy (free, 10k calls/day, no key required)
+  // ═══════════════════════════════════════════════════════
+  const RSS_FEEDS = [
+    { key:'coindesk',     label:'CoinDesk',     url:'https://www.coindesk.com/arc/outboundfeeds/rss/' },
+    { key:'cointelegraph',label:'Cointelegraph',url:'https://cointelegraph.com/rss' },
+    { key:'theblock',     label:'The Block',    url:'https://www.theblock.co/rss.xml' },
+    { key:'beincrypto',   label:'BeInCrypto',   url:'https://beincrypto.com/feed/' },
+    { key:'utoday',       label:'U.Today',      url:'https://u.today/rss' }
+  ];
+
+  async function _fetchRSSFeed(feed) {
+    try {
+      const proxyUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}&count=20`;
+      const opts = {};
+      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(10000);
+      const r = await fetch(proxyUrl, opts);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      if (j.status !== 'ok' || !Array.isArray(j.items)) return [];
+      return j.items.map(it => {
+        const norm = _normalizeNewsItem(it, 'rss', feed.label);
+        if (norm) norm._sourceKey = feed.key;
+        return norm;
+      }).filter(Boolean);
+    } catch(e) { console.warn(`RSS ${feed.label} fetch failed:`, e.message); return []; }
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // LunarCrush 𝕏 / social posts per tracked asset
+  // Endpoint: /api4/public/topic/{topic}/posts/v1 (uses existing LunarCrush key)
+  // ═══════════════════════════════════════════════════════
+  async function _fetchLunarCrushSocial() {
+    if (!LUNARCRUSH_API_KEY) return [];
+    // Limit to top 5 tracked symbols to stay under 10/min rate limit
+    const topAssets = ASSETS.slice(0, 5);
+    const tasks = topAssets.map(async a => {
+      const lcMap = { 'ASTR':'aster','ASTER':'aster','BTC':'btc','ETH':'ethereum','BNB':'bnb','XRP':'xrp','SUI':'sui','SOL':'solana' };
+      const topic = lcMap[a.symbol] || a.symbol.toLowerCase();
+      try {
+        const opts = { headers: { 'Authorization': 'Bearer ' + LUNARCRUSH_API_KEY } };
+        if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(8000);
+        const r = await fetch(`https://lunarcrush.com/api4/public/topic/${topic}/posts/v1`, opts);
+        if (!r.ok) return [];
+        const j = await r.json();
+        const arr = j?.data || [];
+        // Take top 4 by interactions, tag with our symbol
+        return arr.slice(0, 4).map(p => {
+          p._symbol = a.symbol;
+          return _normalizeNewsItem(p, 'social');
+        }).filter(Boolean);
+      } catch(e) { return []; }
+    });
+    const results = await Promise.all(tasks);
+    return results.flat();
   }
 
   async function _fetchCryptoCompareGlobal() {
     try {
-      const url = 'https://min-api.cryptocompare.com/data/v2/news/?excludeCategories=Sponsored&lang=EN';
+      const _ccKey = CRYPTOCOMPARE_API_KEY ? `&api_key=${CRYPTOCOMPARE_API_KEY}` : '';
+      const url = `https://min-api.cryptocompare.com/data/v2/news/?excludeCategories=Sponsored&lang=EN${_ccKey}`;
       const opts = {};
       if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(10000);
       const r = await fetch(url, opts);
@@ -3691,10 +3789,17 @@
     }
     const btn = document.getElementById('newsRefreshBtn');
     if (btn) btn.textContent = '⟳ refreshing…';
-    const [cc, cg] = await Promise.all([_fetchCryptoCompareGlobal(), _fetchCoinGeckoGlobal()]);
+    const rssTasks = RSS_FEEDS.map(f => _fetchRSSFeed(f));
+    const [cc, cg, social, ...rssResults] = await Promise.all([
+      _fetchCryptoCompareGlobal(),
+      _fetchCoinGeckoGlobal(),
+      _fetchLunarCrushSocial(),
+      ...rssTasks
+    ]);
+    const allRss = rssResults.flat();
     // Dedupe by URL
     const byUrl = new Map();
-    [...cc, ...cg].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
+    [...cc, ...cg, ...allRss, ...social].forEach(item => { if (item && item.url && !byUrl.has(item.url)) byUrl.set(item.url, item); });
     _newsAggregateItems = Array.from(byUrl.values()).sort((a,b) => (b.published||0) - (a.published||0));
     _newsAggregateTs = Date.now();
     if (btn) btn.textContent = '↻ Refresh';
@@ -3728,7 +3833,16 @@
 
   function _readNewsFilters() {
     return {
-      sources: { cc: document.getElementById('newsSrcCC')?.checked, cg: document.getElementById('newsSrcCG')?.checked },
+      sources: {
+        cc: document.getElementById('newsSrcCC')?.checked,
+        cg: document.getElementById('newsSrcCG')?.checked,
+        coindesk:      document.getElementById('newsSrcCD')?.checked,
+        cointelegraph: document.getElementById('newsSrcCT')?.checked,
+        theblock:      document.getElementById('newsSrcTB')?.checked,
+        beincrypto:    document.getElementById('newsSrcBI')?.checked,
+        utoday:        document.getElementById('newsSrcUT')?.checked,
+        social:        document.getElementById('newsSrcSOC')?.checked,
+      },
       cats: {
         btc: document.getElementById('newsCatBTC')?.checked,
         eth: document.getElementById('newsCatETH')?.checked,
@@ -3750,13 +3864,27 @@
     return items.filter(it => {
       if (filters.sources.cc === false && it.source === 'cryptocompare') return false;
       if (filters.sources.cg === false && it.source === 'coingecko') return false;
+      if (filters.sources.social === false && it.source === 'social') return false;
+      if (it.source === 'rss') {
+        const sk = it._sourceKey;
+        if (sk === 'coindesk'      && filters.sources.coindesk      === false) return false;
+        if (sk === 'cointelegraph' && filters.sources.cointelegraph === false) return false;
+        if (sk === 'theblock'      && filters.sources.theblock      === false) return false;
+        if (sk === 'beincrypto'    && filters.sources.beincrypto    === false) return false;
+        if (sk === 'utoday'        && filters.sources.utoday        === false) return false;
+      }
       if (filters.recencySec > 0 && it.published && now - it.published > filters.recencySec) return false;
       if (filters.search && !it.title.toLowerCase().includes(filters.search)) return false;
-      if (filters.onlyMyAssets) {
-        const mentions = it._mentions || (it._mentions = _detectAssetMentions(it));
-        if (mentions.length === 0) return false;
+      // Social posts always pass category filter (they're not pre-categorized)
+      if (it.source !== 'social') {
+        if (filters.onlyMyAssets) {
+          const mentions = it._mentions || (it._mentions = _detectAssetMentions(it));
+          if (mentions.length === 0) return false;
+        }
+        if (!_itemMatchesCategory(it, catState)) return false;
+      } else if (filters.onlyMyAssets && !it.symbol) {
+        return false;
       }
-      if (!_itemMatchesCategory(it, catState)) return false;
       return true;
     });
   }
@@ -3770,6 +3898,9 @@
       if (!f) return;
       const set = (id, val) => { const el = document.getElementById(id); if (el && typeof val === 'boolean') el.checked = val; else if (el && val != null) el.value = val; };
       set('newsSrcCC', f.sources?.cc); set('newsSrcCG', f.sources?.cg);
+      set('newsSrcCD', f.sources?.coindesk); set('newsSrcCT', f.sources?.cointelegraph);
+      set('newsSrcTB', f.sources?.theblock); set('newsSrcBI', f.sources?.beincrypto);
+      set('newsSrcUT', f.sources?.utoday); set('newsSrcSOC', f.sources?.social);
       set('newsCatBTC', f.cats?.btc); set('newsCatETH', f.cats?.eth); set('newsCatALT', f.cats?.alt);
       set('newsCatREG', f.cats?.reg); set('newsCatMAC', f.cats?.macro); set('newsCatTECH', f.cats?.tech);
       set('newsRecency', String(f.recencySec ?? 86400));
@@ -3784,17 +3915,35 @@
     const agoStr = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago/60)}m ago` : ago < 86400 ? `${Math.round(ago/3600)}h ago` : `${Math.round(ago/86400)}d ago`;
     const isBreaking = ago > 0 && ago < 600;
     const isRecent = ago > 0 && ago < 7200;
-    const bg = isBreaking ? 'rgba(224,93,93,0.08)' : isRecent ? 'rgba(201,169,97,0.06)' : 'var(--bg-elevated)';
-    const bd = isBreaking ? 'var(--bear)' : isRecent ? 'rgba(201,169,97,0.3)' : 'var(--border)';
-    const mentions = item._mentions || (item._mentions = _detectAssetMentions(item));
+    const isSocial = item.source === 'social';
+    const bg = isSocial ? 'rgba(29,155,240,0.06)' : isBreaking ? 'rgba(224,93,93,0.08)' : isRecent ? 'rgba(201,169,97,0.06)' : 'var(--bg-elevated)';
+    const bd = isSocial ? 'rgba(29,155,240,0.35)' : isBreaking ? 'var(--bear)' : isRecent ? 'rgba(201,169,97,0.3)' : 'var(--border)';
+    const mentions = isSocial && item.symbol ? [item.symbol] : (item._mentions || (item._mentions = _detectAssetMentions(item)));
     const tagHtml = mentions.map(m => `<span style="background:rgba(201,169,97,0.15);color:var(--gold);font-size:9px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;">${m}</span>`).join(' ');
-    const srcBadge = `<span style="font-size:9px;color:var(--text-mute);background:rgba(101,101,109,0.15);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;">${item.source==='cryptocompare'?'CC':'CG'}</span>`;
+    // Source code badge
+    let srcCode = 'NEWS';
+    if (item.source === 'cryptocompare') srcCode = 'CC';
+    else if (item.source === 'coingecko') srcCode = 'CG';
+    else if (item.source === 'social') srcCode = '𝕏';
+    else if (item.source === 'rss') {
+      const m = { coindesk:'CoinDesk', cointelegraph:'CT', theblock:'Block', beincrypto:'BeIn', utoday:'U.Today' };
+      srcCode = m[item._sourceKey] || 'RSS';
+    }
+    const srcBg = isSocial ? 'rgba(29,155,240,0.20)' : 'rgba(101,101,109,0.15)';
+    const srcColor = isSocial ? '#1d9bf0' : 'var(--text-mute)';
+    const srcBadge = `<span style="font-size:9px;color:${srcColor};background:${srcBg};padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;font-weight:${isSocial?700:500};">${srcCode}</span>`;
     const safeTitle = (item.title || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const safeBody = (item.body || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const safeSource = (item.sourceLabel || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const sentBadge = (isSocial && item.sentiment != null)
+      ? `<span style="font-size:9px;color:${item.sentiment>=4?'var(--bull)':item.sentiment<=2?'var(--bear)':'var(--text-mute)'};font-family:'JetBrains Mono',monospace;">sent ${item.sentiment}/5</span>`
+      : '';
+    const engBadge = (isSocial && item.engagement)
+      ? `<span style="font-size:9px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">⚡ ${item.engagement.toLocaleString()}</span>`
+      : '';
     return `<a href="${item.url}" target="_blank" rel="noopener noreferrer" style="display:block;background:${bg};border:1px solid ${bd};border-radius:10px;padding:12px 14px;text-decoration:none;color:var(--text);transition:transform .1s ease;">
-      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap;">${srcBadge}${isBreaking?'<span style="color:var(--bear);font-size:9px;font-weight:700;font-family:\'JetBrains Mono\',monospace;">🔥 BREAKING</span>':''}${tagHtml}</div>
-      <div style="font-size:13px;line-height:1.4;font-weight:500;margin-bottom:6px;color:var(--text);">${safeTitle}</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap;">${srcBadge}${isBreaking?'<span style="color:var(--bear);font-size:9px;font-weight:700;font-family:\'JetBrains Mono\',monospace;">🔥 BREAKING</span>':''}${tagHtml}${sentBadge}${engBadge}</div>
+      <div style="font-size:${isSocial?12:13}px;line-height:1.4;font-weight:500;margin-bottom:6px;color:var(--text);">${safeTitle}</div>
       ${safeBody ? `<div style="font-size:11px;line-height:1.5;color:var(--text-dim);margin-bottom:6px;">${safeBody}…</div>` : ''}
       <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;display:flex;gap:8px;align-items:center;">
         <span>${safeSource}</span><span>·</span><span>${agoStr}</span>
