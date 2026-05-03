@@ -2407,7 +2407,14 @@
 
   function openSetupModal(asset, _isRefresh) {
     if (!asset) return;
-    if (!_isRefresh) _openModalSymbol = asset.symbol;
+    if (!_isRefresh) {
+      _openModalSymbol = asset.symbol;
+      // Kick off a fresh MTF analysis in the background so the schematic + analysis
+      // reflect the latest candles as soon as data arrives (not just the 60s cycle)
+      if (typeof autoAnalyzeAsset === 'function') {
+        autoAnalyzeAsset(asset).then(() => { try { refreshOpenModal(); } catch(e) {} }).catch(() => {});
+      }
+    }
     const gst = getGST();
     const sig = getSignal(asset, gst);
     const conf = getConfidencePct(asset, gst);
@@ -4975,6 +4982,18 @@
             if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === symbol) {
               updateChartPriceBadge(price);
               if (typeof updateTVAnalysis === 'function') updateTVAnalysis(symbol);
+            }
+
+            // Refresh open modal schematic + analysis on live price tick (throttled 2.5s)
+            if (_openModalSymbol === symbol) {
+              const _now = Date.now();
+              if (!window._wsModalRefreshTs || _now - window._wsModalRefreshTs > 2500) {
+                window._wsModalRefreshTs = _now;
+                // Preserve any unsaved textarea before full re-render
+                const _ta = document.getElementById(`remarkInput_${symbol}`);
+                if (_ta && _ta.value) try { saveAssetRemark(symbol, _ta.value); } catch(e) {}
+                requestAnimationFrame(() => { try { refreshOpenModal(); } catch(e) {} });
+              }
             }
           }
         } catch(e) { /* silent — most messages won't match */ }
