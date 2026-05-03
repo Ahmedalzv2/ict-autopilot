@@ -2520,6 +2520,14 @@
         ${renderSocialPulseHTML(asset)}
       </div>
 
+      <!-- 📰 News Headlines · per-asset feed (CryptoCompare) -->
+      <div style="margin-bottom:16px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div style="font-size:11px;color:var(--gold);font-weight:600;text-transform:uppercase;letter-spacing:.1em;">📰 News · Recent headlines that may move ${asset.symbol}</div>
+        </div>
+        ${renderAssetNewsHTML(asset)}
+      </div>
+
       <!-- 🤖 AI Auto-Analysis · Multi-Timeframe Entry Table -->
       <div style="margin-bottom:16px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
@@ -3404,6 +3412,63 @@
       _socialCache[symbol] = { data: out, ts: Date.now() };
       return out;
     } catch(e) { return { error: e.message }; }
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 📰 PER-ASSET NEWS FEED (CryptoCompare — free, no auth)
+  // ═══════════════════════════════════════════════════════
+  const _newsCache = {}; // {symbol: {ts, items}}
+  const NEWS_TTL_MS = 5 * 60 * 1000;
+  const NEWS_CATEGORY_MAP = { BTC:'BTC', ETH:'ETH', SOL:'ALT', BNB:'ALT', XRP:'ALT', SUI:'ALT', ASTR:'ALT', ASTER:'ALT' };
+
+  async function fetchAssetNews(symbol) {
+    const cat = NEWS_CATEGORY_MAP[symbol];
+    if (!cat) return null;
+    const cached = _newsCache[symbol];
+    if (cached && Date.now() - cached.ts < NEWS_TTL_MS) return cached.items;
+    try {
+      const url = `https://min-api.cryptocompare.com/data/v2/news/?categories=${cat}&excludeCategories=Sponsored&lang=EN`;
+      const opts = {};
+      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(8000);
+      const r = await fetch(url, opts);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const items = (j.Data || []).slice(0, 6).map(n => ({
+        title: n.title || '',
+        source: n.source_info?.name || n.source || 'News',
+        url: n.url || '#',
+        published: n.published_on || 0
+      }));
+      _newsCache[symbol] = { ts: Date.now(), items };
+      return items;
+    } catch(e) { _newsCache[symbol] = { ts: Date.now(), items: [], error: e.message }; return []; }
+  }
+
+  function renderAssetNewsHTML(asset) {
+    const cat = NEWS_CATEGORY_MAP[asset.symbol];
+    if (!cat) return '<div style="font-size:11px;color:var(--text-mute);">News stream not available for this asset class.</div>';
+    const cached = _newsCache[asset.symbol];
+    if (!cached) {
+      fetchAssetNews(asset.symbol).then(() => { try { refreshOpenModal(); } catch(e) {} });
+      return '<div style="font-size:11px;color:var(--text-mute);">⟳ Fetching headlines…</div>';
+    }
+    if (cached.error) return `<div style="font-size:11px;color:var(--text-mute);">News fetch failed (${cached.error}). Retrying in 5 min.</div>`;
+    if (!cached.items?.length) return '<div style="font-size:11px;color:var(--text-mute);">No recent headlines.</div>';
+    return cached.items.map(n => {
+      const ago = n.published ? Math.round(Date.now()/1000 - n.published) : 0;
+      const agoStr = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago/60)}m ago` : ago < 86400 ? `${Math.round(ago/3600)}h ago` : `${Math.round(ago/86400)}d ago`;
+      const isRecent = ago > 0 && ago < 7200;
+      const bg = isRecent ? 'rgba(201,169,97,0.06)' : 'var(--bg-elevated)';
+      const bd = isRecent ? 'rgba(201,169,97,0.3)' : 'var(--border)';
+      const safeTitle = (n.title || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const safeSource = (n.source || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return `<a href="${n.url}" target="_blank" rel="noopener noreferrer" style="display:block;background:${bg};border:1px solid ${bd};border-radius:8px;padding:8px 10px;margin-bottom:6px;text-decoration:none;color:var(--text);">
+        <div style="font-size:12px;line-height:1.4;font-weight:500;margin-bottom:4px;">${safeTitle}</div>
+        <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;display:flex;gap:8px;align-items:center;">
+          <span>${safeSource}</span><span>·</span><span>${agoStr}</span>${isRecent ? '<span style="color:var(--gold);">· 🆕</span>' : ''}
+        </div>
+      </a>`;
+    }).join('');
   }
 
   function renderSocialPulseHTML(asset) {
@@ -4402,8 +4467,8 @@
     if (k.length < 5) return null;
     for (let i = k.length - 5; i <= k.length - 3; i++) {
       const a = k[i], c = k[i+2];
-      if (a.h < c.l) return { dir:'bull', lo:a.h, hi:c.l };
-      if (a.l > c.h) return { dir:'bear', lo:c.h, hi:a.l };
+      if (a.h < c.l) return { dir:'bull', lo:a.h, hi:c.l, mid:(a.h + c.l)/2 };
+      if (a.l > c.h) return { dir:'bear', lo:c.h, hi:a.l, mid:(c.h + a.l)/2 };
     }
     return null;
   }
@@ -4455,6 +4520,7 @@
       bias: last.c > last.o ? 'bull' : 'bear',
       dir,
       fvg:!!fvg, sweep:!!sweep, displacement:!!disp, choch:!!choch,
+      fvgZone: fvg, sweepLevel: sweep,
       score,
       entryReady: score >= 3 && dir !== null,
       price: last.c
@@ -4496,12 +4562,45 @@
     _lastEntryCount[asset.symbol] = readyCount;
     if (readyCount >= 3 && prevCount < 3) {
       const dir = tfEntries[ready[0]]?.dir;
-      _entryAlertQueue.push({ symbol: asset.symbol, dir, tfs: ready.map(t=>TF_LABELS[t]), ts: Date.now(), confirmed: false });
+      // Classify scalp vs swing based on which TFs aligned
+      const SCALP_TFS = ['1m','5m','15m'];
+      const isScalp = ready.every(tf => SCALP_TFS.includes(tf));
+      const tradeType = isScalp ? 'scalp' : 'swing';
+      // Derive suggested entry/SL/TP from the lowest aligned TF (TF_LIST is ordered)
+      const baseTf = ready[0];
+      const baseAnalysis = tfEntries[baseTf];
+      const fvg = baseAnalysis?.fvgZone;
+      const sweep = baseAnalysis?.sweepLevel;
+      let suggested = null;
+      if (fvg && fvg.dir === dir) {
+        const entry = fvg.mid;
+        let sl, slSource;
+        if (sweep && sweep.dir === dir) {
+          // SL just past the swept extreme + 10% buffer of the entry-to-sweep distance
+          const buffer = Math.abs(entry - sweep.level) * 0.10;
+          sl = dir === 'bull' ? sweep.level - buffer : sweep.level + buffer;
+          slSource = 'sweep';
+        } else {
+          // Fallback: SL at FVG opposite extreme + 0.2% safety buffer
+          sl = dir === 'bull' ? fvg.lo * 0.998 : fvg.hi * 1.002;
+          slSource = 'fvg-edge';
+        }
+        const stopDist = Math.abs(entry - sl);
+        const rrTarget = isScalp ? 1.5 : 2.0;
+        const tp = dir === 'bull' ? entry + stopDist * rrTarget : entry - stopDist * rrTarget;
+        const round = (v) => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
+        suggested = { entry: round(entry), sl: round(sl), tp: round(tp), type: tradeType, baseTf: TF_LABELS[baseTf], rr: rrTarget, slSource };
+      }
+      _entryAlertQueue.push({ symbol: asset.symbol, dir, tfs: ready.map(t=>TF_LABELS[t]), ts: Date.now(), confirmed: false, suggested, tradeType });
       const dirLabel = dir === 'bull' ? '🟢 LONG' : '🔴 SHORT';
-      try { showToast(`🔔 ${asset.symbol} entry ready · ${dirLabel} · ${ready.map(t=>TF_LABELS[t]).join(' · ')}`, 'ok'); } catch(e) {}
+      const typeBadge = isScalp ? '🔥 SCALP' : '🎯 SWING';
+      try { showToast(`🔔 ${typeBadge} · ${asset.symbol} · ${dirLabel} · ${ready.map(t=>TF_LABELS[t]).join(' · ')}`, 'ok'); } catch(e) {}
       try { playAlertSound('entry'); } catch(e) {}
       if ('Notification' in window && Notification.permission === 'granted') {
-        try { new Notification(`🔔 ${asset.symbol} · ${dirLabel} ENTRY READY`, { body: `${ready.length} TFs aligned: ${ready.map(t=>TF_LABELS[t]).join(', ')}`, tag: `ict-entry-${asset.symbol}` }); } catch(e) {}
+        try {
+          const body = suggested ? `Entry $${suggested.entry} · SL $${suggested.sl} · TP $${suggested.tp} (1:${suggested.rr})` : `${ready.length} TFs aligned: ${ready.map(t=>TF_LABELS[t]).join(', ')}`;
+          new Notification(`${typeBadge} · ${asset.symbol} · ${dirLabel}`, { body, tag: `ict-entry-${asset.symbol}` });
+        } catch(e) {}
       }
       try { renderEntryAlerts(); } catch(e) {}
     }
@@ -4576,6 +4675,26 @@
     renderEntryAlerts();
   }
 
+  // One-click write of auto-detected entry/SL/TP into the asset's level fields
+  function applyEntryAlertLevels(symbol) {
+    const item = _entryAlertQueue.find(x => x.symbol === symbol && !x.confirmed);
+    if (!item || !item.suggested) return;
+    const asset = ASSETS.find(a => a.symbol === symbol);
+    if (!asset) return;
+    const s = item.suggested;
+    asset.entry = s.entry;
+    asset.sl = s.sl;
+    asset.tp1 = s.tp;
+    asset.tp = s.tp;
+    try { saveLevels(); } catch(e) {}
+    item.applied = true;
+    try { showToast(`✓ ${symbol} levels applied · Entry $${s.entry} · SL $${s.sl} · TP $${s.tp} · 1:${s.rr} R:R`, 'ok'); } catch(e) {}
+    try { renderEntryAlerts(); } catch(e) {}
+    try { renderSetups(); } catch(e) {}
+    try { renderAssets(); } catch(e) {}
+    try { refreshOpenModal(); } catch(e) {}
+  }
+
   function renderEntryAlerts() {
     const el = document.getElementById('entryAlertsHost');
     if (!el) return;
@@ -4585,14 +4704,34 @@
       const dirColor = a.dir === 'bull' ? 'var(--bull)' : 'var(--bear)';
       const dirLabel = a.dir === 'bull' ? '🟢 LONG' : '🔴 SHORT';
       const ago = Math.max(0, Math.round((Date.now() - a.ts)/1000));
-      return `<div style="background:rgba(92,184,138,0.08);border:1px solid ${dirColor};border-radius:10px;padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;">
-        <div style="font-size:22px;">🔔</div>
-        <div style="flex:1;">
-          <div style="font-size:13px;font-weight:700;color:${dirColor};font-family:'JetBrains Mono',monospace;">${a.symbol} · ${dirLabel} · ENTRY READY</div>
-          <div style="font-size:11px;color:var(--text-mute);margin-top:2px;">Aligned timeframes: ${a.tfs.join(' · ')} · ${ago}s ago</div>
+      const isScalp = a.tradeType === 'scalp';
+      const typeBadge = isScalp
+        ? `<span style="background:rgba(242,179,61,0.18);color:var(--liq);padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;">🔥 SCALP</span>`
+        : `<span style="background:rgba(92,184,138,0.18);color:var(--bull);padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;">🎯 SWING</span>`;
+      const s = a.suggested;
+      const appliedTag = a.applied ? `<span style="color:var(--bull);font-size:10px;margin-left:6px;">✓ applied</span>` : '';
+      const suggestedHtml = s
+        ? `<div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,0.25);border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;align-items:center;">
+            <span><span style="color:var(--text-mute);">Entry:</span> <span style="color:var(--bull);font-weight:700;">$${s.entry}</span></span>
+            <span><span style="color:var(--text-mute);">SL:</span> <span style="color:var(--bear);font-weight:700;">$${s.sl}</span></span>
+            <span><span style="color:var(--text-mute);">TP:</span> <span style="color:var(--gold);font-weight:700;">$${s.tp}</span></span>
+            <span style="color:var(--text-mute);">R:R 1:${s.rr}</span>
+            <span style="color:var(--text-mute);font-size:10px;">from ${s.baseTf} FVG${s.slSource==='sweep'?' + sweep':''}</span>
+          </div>`
+        : `<div style="margin-top:6px;font-size:10px;color:var(--text-mute);">No clean FVG on base TF — set entry/SL manually</div>`;
+      const applyBtn = (s && !a.applied) ? `<button onclick="applyEntryAlertLevels('${a.symbol}')" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">⇣ Apply</button>` : '';
+      return `<div style="background:rgba(92,184,138,0.06);border:1px solid ${dirColor};border-radius:10px;padding:12px 14px;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="font-size:22px;">🔔</div>
+          <div style="flex:1;">
+            <div style="font-size:13px;font-weight:700;color:${dirColor};font-family:'JetBrains Mono',monospace;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">${typeBadge} ${a.symbol} · ${dirLabel} · ENTRY READY${appliedTag}</div>
+            <div style="font-size:11px;color:var(--text-mute);margin-top:2px;">Aligned: ${a.tfs.join(' · ')} · ${ago}s ago</div>
+          </div>
+          ${applyBtn}
+          <button onclick="confirmEntryAlert('${a.symbol}')" style="background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">✓ Confirm</button>
+          <button onclick="skipEntryAlert('${a.symbol}')" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:6px 12px;border-radius:6px;font-size:11px;cursor:pointer;">Skip</button>
         </div>
-        <button onclick="confirmEntryAlert('${a.symbol}')" style="background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">✓ Confirm</button>
-        <button onclick="skipEntryAlert('${a.symbol}')" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:6px 12px;border-radius:6px;font-size:11px;cursor:pointer;">Skip</button>
+        ${suggestedHtml}
       </div>`;
     }).join('');
   }
