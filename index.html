@@ -2133,14 +2133,85 @@
 
   function distToEntry(a) { return Math.abs((a.price - a.entry) / a.entry); }
 
+  // Per-TF readiness: how close the live price is to each TF's auto-detected
+  // entry zone (OB inside FVG preferred, falls back to FVG mid). Returns one
+  // entry per TF with: dist (fractional), score, ready flag, dir, target price.
+  function _computeTfReadiness(asset) {
+    if (!asset.tfEntries || asset.tfEntries.closed) return null;
+    return TF_LIST.map(tf => {
+      const e = asset.tfEntries[tf];
+      if (!e || e.error) return { tf, label: TF_LABELS[tf], dist: null, score: 0, ready: false };
+      const fvg = e.fvgZone;
+      const ob = e.obZone;
+      const target = (ob && ob.dir === e.dir) ? ob.mid
+                   : (fvg && fvg.dir === e.dir) ? fvg.mid : null;
+      const dist = (target && asset.price) ? Math.abs((asset.price - target) / asset.price) : null;
+      return { tf, label: TF_LABELS[tf], dist, score: e.score || 0, ready: !!e.entryReady, dir: e.dir, target };
+    });
+  }
+
+  // Returns the minimum distance (manual entry OR any actionable TF) for sort/filter
+  function _minEntryDist(asset) {
+    let minD = distToEntry(asset);
+    if (isNaN(minD) || !isFinite(minD)) minD = Infinity;
+    const tf = _computeTfReadiness(asset);
+    if (tf) {
+      for (const d of tf) {
+        if (d.dist != null && d.score >= 2 && d.dist < minD) minD = d.dist;
+      }
+    }
+    return minD;
+  }
+
+  function _renderTfReadinessHTML(asset) {
+    const data = _computeTfReadiness(asset);
+    if (!data) return '<div style="font-size:10px;color:var(--text-mute);margin:6px 0;font-family:\'JetBrains Mono\',monospace;">⟳ analyzing TFs…</div>';
+    const actionable = data.filter(d => d.dist != null && d.score >= 1);
+    actionable.sort((a, b) => a.dist - b.dist);
+    const next = actionable[0];
+
+    let banner = '';
+    if (next) {
+      const distPct = next.dist < 0.001 ? (next.dist * 100).toFixed(3) : (next.dist * 100).toFixed(2);
+      const dirLabel = next.dir === 'bull' ? '🟢 LONG' : next.dir === 'bear' ? '🔴 SHORT' : '';
+      const isHot = next.dist < 0.005 && next.score >= 2;
+      const isWarm = next.dist < 0.01 && next.score >= 2;
+      const bg = isHot ? 'rgba(92,184,138,0.18)' : isWarm ? 'rgba(242,179,61,0.15)' : 'rgba(101,101,109,0.12)';
+      const color = isHot ? 'var(--bull)' : isWarm ? 'var(--liq)' : 'var(--text-mute)';
+      const icon = isHot ? '🔥' : isWarm ? '⚡' : '👁';
+      const label = isHot ? 'CLOSE TO ENTER' : isWarm ? 'APPROACHING' : 'WATCHING';
+      banner = `<div style="background:${bg};border-radius:6px;padding:6px 10px;margin:8px 0 6px;font-size:11px;font-family:'JetBrains Mono',monospace;color:${color};display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <span><strong>${icon} ${label}: ${next.label}</strong> · ${distPct}% away ${dirLabel}</span>
+        <span style="opacity:0.85;font-weight:700;">${next.score}/4</span>
+      </div>`;
+    }
+
+    const ladder = data.map(d => {
+      if (d.dist == null) {
+        return `<span style="font-size:9px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;background:rgba(101,101,109,0.10);padding:2px 6px;border-radius:4px;opacity:0.55;">${d.label} —</span>`;
+      }
+      const distPct = d.dist < 0.001 ? (d.dist * 100).toFixed(2) : (d.dist * 100).toFixed(1);
+      const isHot = d.dist < 0.005 && d.score >= 2;
+      const isWarm = d.dist < 0.01 && d.score >= 1;
+      const isCool = d.dist < 0.03;
+      const bg = isHot ? 'rgba(92,184,138,0.18)' : isWarm ? 'rgba(242,179,61,0.13)' : isCool ? 'rgba(101,101,109,0.12)' : 'transparent';
+      const color = isHot ? 'var(--bull)' : isWarm ? 'var(--liq)' : 'var(--text-mute)';
+      const fw = isHot ? 700 : 500;
+      return `<span style="font-size:9px;color:${color};font-family:'JetBrains Mono',monospace;background:${bg};padding:2px 6px;border-radius:4px;font-weight:${fw};">${d.label} ${distPct}% · ${d.score}/4</span>`;
+    }).join(' ');
+
+    return `${banner}<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;">${ladder}</div>`;
+  }
+
   function renderSetups() {
     const list = document.getElementById('setupList');
     if (!list) return;
     let filtered = currentFilter === 'spot' ? ASSETS.filter(a=>a.type==='SPOT') :
                    currentFilter === 'futures' ? ASSETS.filter(a=>a.type==='FUTURES') : [...ASSETS];
-    filtered = filtered.filter(a => distToEntry(a) <= PROX);
+    // Include assets that are either close to manual entry OR close to any actionable TF target
+    filtered = filtered.filter(a => _minEntryDist(a) <= 0.01); // 1% combined threshold
     filtered.sort((a,b) => {
-      const da = distToEntry(a), db = distToEntry(b);
+      const da = _minEntryDist(a), db = _minEntryDist(b);
       if (Math.abs(da-db) > 0.0001) return da - db;
       const order = {'a-plus':0,'a':1,'b':2};
       return order[a.grade] - order[b.grade];
@@ -2148,34 +2219,36 @@
 
     if (filtered.length === 0) {
       list.innerHTML = `<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:48px 24px;text-align:center;">
-        <div style="font-family:'Instrument Serif',serif;font-size:20px;color:var(--gold);margin-bottom:12px;">No setups near entry zone</div>
-        <p style="color:var(--text-dim);font-size:13px;">Nothing within 0.5% of trigger right now. Stand down — wait for price to approach.</p>
+        <div style="font-family:'Instrument Serif',serif;font-size:20px;color:var(--gold);margin-bottom:12px;">No setups close to entry</div>
+        <p style="color:var(--text-dim);font-size:13px;">Nothing within 1% of any TF entry right now. Stand down — wait for price to approach.</p>
       </div>`;
       return;
     }
 
     list.innerHTML = filtered.map(a => {
       const dist = distToEntry(a);
-      const distPct = (dist * 100).toFixed(2);
-      const dir = a.price > a.entry ? 'above' : a.price < a.entry ? 'below' : 'AT';
-      const distColor = dist <= 0.001 ? 'var(--bull)' : dist <= 0.003 ? 'var(--liq)' : 'var(--text-dim)';
-      const distLabel = dir === 'AT' ? '🎯 AT ENTRY' : `${distPct}% ${dir}`;
-      const distBg = dist <= 0.001 ? 'rgba(92,184,138,0.15)' : dist <= 0.003 ? 'rgba(242,179,61,0.15)' : 'rgba(101,101,109,0.15)';
-      const cardClass = dist <= 0.001 ? 'near-armed' : dist <= 0.003 ? 'near-watch' : '';
+      const hasManualEntry = a.entry > 0 && isFinite(dist);
+      const distPct = hasManualEntry ? (dist * 100).toFixed(2) : '—';
+      const dir = !hasManualEntry ? '' : a.price > a.entry ? 'above' : a.price < a.entry ? 'below' : 'AT';
+      const distColor = hasManualEntry ? (dist <= 0.001 ? 'var(--bull)' : dist <= 0.003 ? 'var(--liq)' : 'var(--text-dim)') : 'var(--text-mute)';
+      const distLabel = !hasManualEntry ? 'no manual entry' : dir === 'AT' ? '🎯 AT ENTRY' : `${distPct}% ${dir}`;
+      const distBg = hasManualEntry ? (dist <= 0.001 ? 'rgba(92,184,138,0.15)' : dist <= 0.003 ? 'rgba(242,179,61,0.15)' : 'rgba(101,101,109,0.15)') : 'rgba(101,101,109,0.10)';
+      const cardClass = hasManualEntry && dist <= 0.001 ? 'near-armed' : hasManualEntry && dist <= 0.003 ? 'near-watch' : '';
       const biasClass = a.bias === 'BEARISH' ? 'bias-bear' : a.bias === 'BULLISH' ? 'bias-bull' : 'bias-flux';
       const priceColor = a.change24h > 0 ? 'var(--bull)' : a.change24h < 0 ? 'var(--bear)' : 'var(--text)';
       const _tp = a.tp1 || a.tp || 0;
       const rr = (a.entry && a.sl && _tp) ? Math.abs((_tp - a.entry) / (a.entry - a.sl)).toFixed(1) : null;
       return `
         <div class="setup-card ${cardClass}" onclick="openSetupModal(ASSETS.find(x=>x.symbol==='${a.symbol}'))">
-          ${dist <= 0.001 ? '<div class="setup-entry-indicator" style="background:rgba(92,184,138,0.2);color:var(--bull);">NEAR</div>' : ''}
+          ${hasManualEntry && dist <= 0.001 ? '<div class="setup-entry-indicator" style="background:rgba(92,184,138,0.2);color:var(--bull);">NEAR</div>' : ''}
           <div class="setup-symbol">${a.symbol}</div>
           <div class="setup-platform">${a.platform}</div>
           <div class="setup-price" style="color:${priceColor}">$${a.price.toLocaleString()}</div>
           <div class="setup-dist-badge" style="color:${distColor};background:${distBg};">${distLabel}</div>
+          ${_renderTfReadinessHTML(a)}
           <div class="setup-levels">
-            Entry $${a.entry}<br>
-            SL $${a.sl} · TP1 $${a.tp1}
+            Entry ${hasManualEntry ? '$'+a.entry : '—'}<br>
+            ${hasManualEntry ? `SL $${a.sl} · TP1 $${a.tp1}` : 'no levels set'}
             ${rr ? `<br><span style="color:var(--gold);font-weight:700;">R:R ${rr}:1</span>` : ''}
           </div>
           <div class="asset-bias ${biasClass}" style="margin-bottom:8px;">${a.bias}</div>
