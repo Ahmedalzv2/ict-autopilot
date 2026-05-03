@@ -1283,18 +1283,11 @@
         <div style="margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
           <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Asset:</div>
           <span id="tvLivePrice" style="display:inline-block;background:rgba(201,169,97,0.12);border:1px solid rgba(201,169,97,0.3);border-radius:20px;padding:4px 14px;font-size:14px;font-weight:700;color:#c9a961;font-family:'JetBrains Mono',monospace;margin-right:10px;">--</span>
-          <select id="tvSymbolSelect" onchange="switchTVChart(this.value)" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;cursor:pointer;">
-            <option value="BTC">BTC</option>
-            <option value="ETH">ETH</option>
-            <option value="SOL">SOL</option>
-            <option value="BNB">BNB</option>
-            <option value="XRP">XRP</option>
-            <option value="SUI">SUI</option>
-            <option value="ASTR">ASTR</option>
-            <option value="US100">US100</option>
-            <option value="GOLD">GOLD</option>
-            <option value="SILVER">SILVER</option>
-          </select>
+          <select id="tvSymbolSelect" onchange="switchTVChart(this.value)" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;cursor:pointer;"></select>
+          <input id="tvQuickTrack" type="text" placeholder="Type symbol (e.g. DOGE)" autocomplete="off" spellcheck="false"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();quickTrackAsset();}"
+            style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;width:160px;outline:none;">
+          <button onclick="quickTrackAsset()" style="background:rgba(201,169,97,0.15);border:1px solid rgba(201,169,97,0.4);border-radius:8px;padding:7px 12px;color:var(--gold);font-size:12px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Track</button>
           <div style="flex:1;"></div>
           <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Timeframe:</div>
           <div style="display:flex;gap:6px;">
@@ -4385,7 +4378,12 @@
       }
     }
 
+    // Add to TV symbol map so the Live Chart can switch to it
+    if (!TV_SYMBOLS[sym] && (platform === 'Binance SPOT' || platform === 'Binance FUTURES')) {
+      TV_SYMBOLS[sym] = 'BINANCE:' + sym + 'USDT';
+    }
     saveCustomAssets();
+    if (typeof rebuildTVSymbolSelect === 'function') rebuildTVSymbolSelect();
     closeGateway();
     renderAssets();
     renderSignals();
@@ -4409,6 +4407,7 @@
     const binIdx = BINANCE_SYMBOLS.indexOf(sym + 'USDT');
     if (binIdx > -1) BINANCE_SYMBOLS.splice(binIdx, 1);
     saveCustomAssets();
+    if (typeof rebuildTVSymbolSelect === 'function') rebuildTVSymbolSelect();
     renderAssets(); renderSignals(); renderAnalysis(); renderSetups();
     showToast(`${sym} removed from tracking`, 'info');
   }
@@ -4777,6 +4776,10 @@
       }
       try { renderEntryAlerts(); } catch(e) {}
     }
+    // Refresh Live Chart analysis panel immediately if this is the charted asset
+    if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol === asset.symbol && typeof updateTVAnalysis === 'function') {
+      try { updateTVAnalysis(asset.symbol); } catch(e) {}
+    }
   }
 
   async function autoAnalyzeAll() {
@@ -5072,6 +5075,80 @@
   let tvCurrentTimeframe = 'W';
   let tvWidget = null;
 
+  // Rebuild the chart-tab dropdown from ASSETS so custom-tracked symbols appear
+  function rebuildTVSymbolSelect() {
+    const sel = document.getElementById('tvSymbolSelect');
+    if (!sel) return;
+    const current = sel.value || tvCurrentSymbol;
+    const opts = ASSETS.filter(a => TV_SYMBOLS[a.symbol]).map(a =>
+      `<option value="${a.symbol}">${a.symbol}${a.custom ? ' ⭐' : ''}</option>`).join('');
+    sel.innerHTML = opts || `<option value="BTC">BTC</option>`;
+    if (current && ASSETS.find(a => a.symbol === current && TV_SYMBOLS[a.symbol])) sel.value = current;
+  }
+
+  // Quick-track: type a symbol, hit Enter, system validates on Binance,
+  // adds to ASSETS with default levels, kicks off auto-MTF analysis, and
+  // switches the chart to it. For non-Binance pairs, use the full Add Asset modal.
+  async function quickTrackAsset() {
+    const input = document.getElementById('tvQuickTrack');
+    if (!input) return;
+    const sym = (input.value || '').trim().toUpperCase();
+    if (!sym) return;
+    const existing = ASSETS.find(a => a.symbol === sym);
+    if (existing) {
+      try { showToast(`${sym} already tracked — switching chart to it`, 'info'); } catch(e) {}
+      if (TV_SYMBOLS[sym]) switchTVChart(sym);
+      input.value = '';
+      return;
+    }
+    try { showToast(`⟳ Validating ${sym} on Binance…`, 'info'); } catch(e) {}
+    try {
+      const data = await fetchTicker(sym + 'USDT', 'api.binance.com');
+      if (!data || !data.lastPrice) throw new Error('not found');
+      const price = parseFloat(data.lastPrice);
+      const change = parseFloat(data.priceChangePercent) || 0;
+      const newAsset = {
+        symbol: sym,
+        platform: 'Binance SPOT',
+        type: 'SPOT',
+        price,
+        change24h: change,
+        bias: change >= 0 ? 'BULLISH' : 'BEARISH',
+        entry: 0, sl: 0, tp: 0, tp1: 0,
+        grade: 'b',
+        checks: GATE_ITEMS.map(() => 1),
+        remarks: '',
+        custom: true
+      };
+      ASSETS.push(newAsset);
+      if (!BINANCE_SYMBOLS.includes(sym + 'USDT')) BINANCE_SYMBOLS.push(sym + 'USDT');
+      if (!TV_SYMBOLS[sym]) TV_SYMBOLS[sym] = 'BINANCE:' + sym + 'USDT';
+      // Subscribe the live WS to this new symbol so prices tick in real time
+      try {
+        if (typeof binanceWS !== 'undefined' && binanceWS && binanceWS.readyState === 1) {
+          binanceWS.send(JSON.stringify({ method: 'SUBSCRIBE', params: [sym.toLowerCase() + 'usdt@ticker'], id: Date.now() }));
+        }
+      } catch(e) {}
+      saveCustomAssets();
+      rebuildTVSymbolSelect();
+      try { renderAssets(); } catch(e) {}
+      try { renderSetups(); } catch(e) {}
+      switchTVChart(sym);
+      input.value = '';
+      try { showToast(`✓ ${sym} tracking started · auto-analyzing 1m/5m/15m/1h/4h/24h…`, 'ok'); } catch(e) {}
+      // Fire MTF analysis right away so TF readiness ladder + alerts are live ASAP
+      if (typeof autoAnalyzeAsset === 'function') {
+        autoAnalyzeAsset(newAsset).then(() => {
+          try { updateTVAnalysis(sym); } catch(e) {}
+          try { renderSetups(); } catch(e) {}
+          try { renderAnalysis(); } catch(e) {}
+        }).catch(()=>{});
+      }
+    } catch(e) {
+      try { showToast(`✗ ${sym}USDT not found on Binance. Use ＋ Add Asset for non-Binance pairs.`, 'err'); } catch(_) {}
+    }
+  }
+
   function getBestAsset() {
     // Find highest signal asset to default the chart to
     const order = ['a-plus', 'a', 'b', 'c'];
@@ -5172,15 +5249,35 @@
     const sigColor = sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
     const sigBg = sig === 'armed' ? 'rgba(92,184,138,0.1)' : sig === 'watch' ? 'rgba(242,179,61,0.1)' : sig === 'skip' ? 'rgba(224,93,93,0.1)' : 'transparent';
 
+    // Active auto-alert callout for this symbol (if any)
+    const activeAlert = (typeof _entryAlertQueue !== 'undefined') ? _entryAlertQueue.find(x => x.symbol === symbol && !x.confirmed) : null;
+    let alertCallout = '';
+    if (activeAlert) {
+      const aDir = activeAlert.dir === 'bull' ? '🟢 LONG' : '🔴 SHORT';
+      const aType = activeAlert.tradeType === 'scalp' ? '🔥 SCALP' : '🎯 SWING';
+      const aQ = activeAlert.qualityScore ?? 0;
+      const s = activeAlert.suggested;
+      const levelsTxt = s ? `Entry $${s.entry} · SL $${s.sl} · TP $${s.tp} · 1:${s.rr} R:R` : 'levels unavailable — check modal';
+      alertCallout = `<div style="background:rgba(201,169,97,0.10);border:1px solid var(--gold);border-radius:10px;padding:12px 14px;margin-bottom:14px;">
+        <div style="font-size:12px;font-weight:700;color:var(--gold);font-family:'JetBrains Mono',monospace;margin-bottom:4px;">🔔 ${aType} · ${aDir} · ENTRY READY · Q${aQ}/4</div>
+        <div style="font-size:11px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;margin-bottom:8px;">${levelsTxt}</div>
+        ${s ? `<button onclick="applyEntryAlertLevels('${symbol}')" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:5px 10px;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer;margin-right:6px;">⇣ Apply</button>` : ''}
+        <button onclick="confirmEntryAlert('${symbol}')" style="background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:5px 10px;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer;margin-right:6px;">✓ Confirm</button>
+        <button onclick="skipEntryAlert('${symbol}')" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:5px 10px;border-radius:5px;font-size:11px;cursor:pointer;">Skip</button>
+      </div>`;
+    }
+    const tfReadiness = (typeof _renderTfReadinessHTML === 'function') ? _renderTfReadinessHTML(asset) : '';
     analysisPanel.innerHTML = `
+      ${alertCallout}
       <div style="background:${sigBg};border:1px solid ${sigColor};border-radius:10px;padding:18px;margin-bottom:16px;">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-          <div style="font-size:20px;color:var(--gold);">${symbol}</div>
+          <div style="font-size:20px;color:var(--gold);">${symbol}${asset.custom?' ⭐':''}</div>
           <div style="flex:1;"></div>
           <span style="background:${sigColor};color:${sig === 'armed' ? '#000' : '#fff'};padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;">
             ${sig.toUpperCase()}
           </span>
         </div>
+        ${tfReadiness}
         <div style="white-space:pre-wrap;font-size:13px;color:var(--text-dim);line-height:1.8;">
           ${analysis}
         </div>
@@ -5447,6 +5544,7 @@
       }
     };
     _try('loadCustomAssets', loadCustomAssets);
+    _try('rebuildTVSymbolSelect', rebuildTVSymbolSelect);
     _try('loadLevels', loadLevels);
     _try('loadTradeModes', loadTradeModes);
     _try('loadJournal', loadJournal);
