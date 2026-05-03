@@ -7408,6 +7408,28 @@
     return `${m.symbol} on ${dexName} has ${changeWord} ${change>0?'+':''}${change.toFixed(1)}% over the last 24h on ${_formatUsd(m.vol24h)} of volume, with ${m.buys24h.toLocaleString()} buys vs ${m.sells24h.toLocaleString()} sells indicating ${pressure}. The pool is ${ageDesc} and holds ${_formatUsd(m.reserveUsd)} in reserves — ${liqWord}. Market cap sits at ${_formatUsd(m.mc || m.fdv)}, ${m.change1h>0?'with':'against'} a ${m.change1h>0?'+':''}${m.change1h.toFixed(1)}% 1h move.`;
   }
 
+  // Copy contract address to clipboard with a confirmation toast
+  function copyMemeContract(contract, symbol) {
+    if (!contract) return;
+    const finish = (ok) => {
+      try {
+        if (ok) showToast(`✓ ${symbol} contract copied · ${contract.slice(0,8)}…${contract.slice(-6)}`, 'ok');
+        else showToast('Copy failed — long-press the address to select it', 'warn');
+      } catch(e) {}
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(contract).then(() => finish(true)).catch(() => finish(false));
+    } else {
+      // Fallback for older browsers / non-secure contexts
+      const ta = document.createElement('textarea');
+      ta.value = contract;
+      ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); finish(true); } catch(e) { finish(false); }
+      ta.remove();
+    }
+  }
+
   function _renderMemeInsight(m) {
     const sent = _computeSentiment(m);
     const hype = _computeHype(m);
@@ -7419,7 +7441,8 @@
     const headline = `${m.symbol} ${change>10?'Explodes':change>0?'Climbs':change<-10?'Slides':'Holds'} ${change>0?'+':''}${change.toFixed(1)}% on ${_formatUsd(m.vol24h)} of 24h volume`;
     const narrative = _generateMemeNarrative(m);
     const dsUrl = `https://dexscreener.com/bsc/${m.pairAddr}`;
-    const psUrl = m.contract ? `https://pancakeswap.finance/swap?outputCurrency=${m.contract}` : '#';
+    // 🟡 Binance Web3 wallet swap deep-link (pre-fills the BSC token to buy)
+    const buyUrl = m.contract ? `https://www.binance.com/en/web3-wallet/swap?chainId=56&toToken=${m.contract}` : '#';
     const bsUrl = m.contract ? `https://bscscan.com/token/${m.contract}` : '#';
     const avatarLetter = (m.symbol || '?').slice(0,2).toUpperCase();
     const avatar = m.imageUrl
@@ -7435,7 +7458,11 @@
             <span style="font-size:15px;font-weight:700;color:var(--gold);">${m.symbol}</span>
             ${isFresh ? '<span style="font-size:9px;color:#f7931a;background:rgba(247,147,26,0.15);padding:1px 5px;border-radius:3px;font-family:\'JetBrains Mono\',monospace;font-weight:700;">NEW</span>' : ''}
           </div>
-          ${contractShort ? `<a href="${bsUrl}" target="_blank" rel="noopener" style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;text-decoration:none;">${contractShort} ↗</a>` : ''}
+          ${contractShort ? `<div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+            <span style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">${contractShort}</span>
+            <button onclick="copyMemeContract('${m.contract}','${m.symbol||'token'}')" title="Copy full contract address" style="background:rgba(201,169,97,0.10);border:1px solid rgba(201,169,97,0.25);color:var(--gold);cursor:pointer;font-size:10px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;line-height:1.2;">📋 copy</button>
+            <a href="${bsUrl}" target="_blank" rel="noopener" title="View on BscScan" style="color:var(--text-mute);font-size:11px;text-decoration:none;line-height:1.2;">↗</a>
+          </div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
           <div style="display:flex;align-items:center;gap:4px;font-family:'JetBrains Mono',monospace;font-size:11px;">
@@ -7506,7 +7533,7 @@
       <!-- Action buttons -->
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <a href="${dsUrl}" target="_blank" rel="noopener" style="flex:1;min-width:80px;text-align:center;padding:7px;background:rgba(201,169,97,0.15);color:var(--gold);text-decoration:none;font-size:11px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-weight:700;">📈 Chart</a>
-        <a href="${psUrl}" target="_blank" rel="noopener" style="flex:1;min-width:80px;text-align:center;padding:7px;background:rgba(247,147,26,0.15);color:#f7931a;text-decoration:none;font-size:11px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-weight:700;">🥞 Buy</a>
+        <a href="${buyUrl}" target="_blank" rel="noopener" style="flex:1;min-width:80px;text-align:center;padding:7px;background:rgba(247,147,26,0.18);color:#f0b90b;text-decoration:none;font-size:11px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-weight:700;border:1px solid rgba(240,185,11,0.35);">🟡 Binance Web3</a>
         <button onclick="checkMemeSafety('${m.contract}','${m.symbol}')" style="flex:1;min-width:80px;background:rgba(92,184,138,0.15);border:none;color:var(--bull);font-size:11px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-weight:700;cursor:pointer;padding:7px;">🛡 Scan</button>
       </div>
     </div>`;
