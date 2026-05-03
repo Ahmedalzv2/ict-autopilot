@@ -2305,11 +2305,17 @@
   // ═══════════════════════════════════════
   // SIGNAL BOARD
   // ═══════════════════════════════════════
+  // Crypto trades 24/7 — dead zones don't apply.
+  // Only US100/GOLD/SILVER respect dead zones (market-hours assets).
+  function respectsDeadZone(asset) {
+    return NON_BINANCE_ASSETS.includes(asset.symbol);
+  }
+
   function getSignal(asset, gst) {
     const pct = Math.abs((asset.price - asset.entry) / asset.entry);
     const score = asset.checks.reduce((a,b)=>a+b,0);
     const session = getCurrentSession(gst);
-    const inKZ = session && session.type !== 'dead';
+    const inKZ = session && (session.type === 'active' || session.type === 'macro');
 
     // MTF Alignment Check — require 2/3 aligned for armed
     const mtf = getMTFAligned(asset);
@@ -2326,7 +2332,9 @@
     // ALMOST ENTRY: approaching entry zone
     if (pct <= 0.005 && score >= 7) return 'watch';
 
-    if (score < 4 || (session && session.type === 'dead')) return 'skip';
+    // Dead zone only skips market-hours assets (US100/GOLD/SILVER)
+    const isDeadForThis = respectsDeadZone(asset) && session && session.type === 'dead';
+    if (score < 4 || isDeadForThis) return 'skip';
     return 'wait';
   }
 
@@ -3722,12 +3730,14 @@
   // ═══════════════════════════════════════════════════════
   // 😨 FEAR & GREED INDEX (alternative.me — free, no auth)
   // ═══════════════════════════════════════════════════════
+  let lastFearGreed = null; // { value: 0-100, classification: 'Extreme Fear' | ... }
   async function fetchFearGreed() {
     try {
       const r = await fetch('https://api.alternative.me/fng/?limit=1', {signal: AbortSignal.timeout(8000)});
       const d = await r.json();
       const val = parseInt(d.data[0].value);
       const cls = d.data[0].value_classification;
+      lastFearGreed = { value: val, classification: cls };
       const el = document.getElementById('fgValue');
       const lbl = document.getElementById('fgLabel');
       const ptr = document.getElementById('fgPointer');
@@ -3738,6 +3748,7 @@
       lbl.textContent = cls;
       lbl.style.color = color;
       if (ptr) ptr.style.left = `${val}%`;
+      try { renderConfluence && renderConfluence(); } catch(e) {}
     } catch(e) { const el = document.getElementById('fgLabel'); if (el) el.textContent = 'Unavailable'; }
   }
 
@@ -3746,6 +3757,7 @@
   // ═══════════════════════════════════════════════════════
   const FUTURES_SYMBOLS = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','SUIUSDT'];
 
+  let fundingByAsset = {}; // { BTC: 0.012, ETH: -0.005, ... } as percentages
   async function fetchFundingRates() {
     const content = document.getElementById('fundingContent');
     if (!content) return;
@@ -3758,6 +3770,7 @@
         const d = r.value;
         const sym = FUTURES_SYMBOLS[i].replace('USDT','');
         const rate = parseFloat(d.lastFundingRate) * 100;
+        if (isFinite(rate)) fundingByAsset[sym] = rate;
         const rateColor = rate > 0.05 ? 'var(--bear)' : rate < -0.05 ? 'var(--bull)' : 'var(--text-dim)';
         const rateLabel = rate > 0.05 ? '⚠ Longs paying — overheated' : rate < -0.05 ? '✓ Shorts paying — potential bounce' : 'Neutral';
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
