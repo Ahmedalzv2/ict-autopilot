@@ -2,8 +2,47 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Ahmad · ICT AutoPilot v21</title>
+
+  <!-- PWA: iOS Add-to-Home-Screen + Android Chrome install -->
+  <meta name="theme-color" content="#08080a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AutoPilot">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='36' fill='%2308080a'/%3E%3Ctext x='90' y='126' font-family='Georgia,serif' font-size='130' font-weight='600' fill='%23c9a961' text-anchor='middle' font-style='italic'%3EA%3C/text%3E%3Ccircle cx='138' cy='52' r='9' fill='%23c9a961'/%3E%3C/svg%3E">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' fill='%2308080a'/%3E%3Ctext x='90' y='126' font-family='Georgia,serif' font-size='130' font-weight='600' fill='%23c9a961' text-anchor='middle' font-style='italic'%3EA%3C/text%3E%3Ccircle cx='138' cy='52' r='9' fill='%23c9a961'/%3E%3C/svg%3E">
+  <script>
+    // Inject a Blob-based web app manifest for Android Chrome (and any
+    // browser that respects manifests). iOS Safari uses the apple-* meta
+    // tags above, not the manifest, but providing it doesn't hurt.
+    (function () {
+      try {
+        const iconSvg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='36' fill='%2308080a'/%3E%3Ctext x='90' y='126' font-family='Georgia,serif' font-size='130' font-weight='600' fill='%23c9a961' text-anchor='middle' font-style='italic'%3EA%3C/text%3E%3Ccircle cx='138' cy='52' r='9' fill='%23c9a961'/%3E%3C/svg%3E";
+        const manifest = {
+          name: "ICT AutoPilot",
+          short_name: "AutoPilot",
+          start_url: ".",
+          scope: ".",
+          display: "standalone",
+          orientation: "any",
+          background_color: "#08080a",
+          theme_color: "#08080a",
+          icons: [
+            { src: iconSvg, sizes: "any", type: "image/svg+xml", purpose: "any" },
+            { src: iconSvg, sizes: "any", type: "image/svg+xml", purpose: "maskable" }
+          ]
+        };
+        const blob = new Blob([JSON.stringify(manifest)], { type: "application/manifest+json" });
+        const link = document.createElement("link");
+        link.rel = "manifest";
+        link.href = URL.createObjectURL(blob);
+        document.head.appendChild(link);
+      } catch (e) {}
+    })();
+  </script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500;600&family=Geist:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -50,6 +89,9 @@
       gap: 0;
       z-index: 100;
       backdrop-filter: blur(12px);
+      /* iOS notch: extend bar up under status bar */
+      padding-top: env(safe-area-inset-top, 0);
+      height: calc(52px + env(safe-area-inset-top, 0px));
     }
 
     .ap-segment {
@@ -111,10 +153,13 @@
     /* ═══════════════════════════════════
        LAYOUT
     ═══════════════════════════════════ */
-    .shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; padding-top: 52px; }
+    .shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; padding-top: calc(52px + env(safe-area-inset-top, 0px)); }
 
     nav.side {
-      position: sticky; top: 52px; height: calc(100vh - 52px); overflow-y: auto;
+      position: sticky;
+      top: calc(52px + env(safe-area-inset-top, 0px));
+      height: calc(100vh - 52px - env(safe-area-inset-top, 0px));
+      overflow-y: auto;
       background: var(--bg-surface);
       border-right: 1px solid var(--border);
       padding: 20px 0;
@@ -889,6 +934,9 @@
     z-index: 200;
     -webkit-backdrop-filter: blur(16px);
     backdrop-filter: blur(16px);
+    /* iOS home indicator: extend nav down under it */
+    padding-bottom: env(safe-area-inset-bottom, 0);
+    height: calc(64px + env(safe-area-inset-bottom, 0px));
   }
   .mob-nav-items {
     display: flex;
@@ -943,15 +991,15 @@
     .mobile-bottom-nav { display: block; }
     nav.side { display: none !important; }
 
-    /* Shell: full width + room for bottom nav */
+    /* Shell: full width + room for bottom nav (incl. iOS home indicator) */
     .shell {
       grid-template-columns: 1fr;
-      padding-top: 44px;
-      padding-bottom: 64px;
+      padding-top: calc(44px + env(safe-area-inset-top, 0px));
+      padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
     }
 
     /* Compact top bar */
-    .autopilot-bar { height: 44px; }
+    .autopilot-bar { height: calc(44px + env(safe-area-inset-top, 0px)); }
     .ap-brand { padding: 0 14px; }
     .ap-brand .logo { font-size: 15px; }
     .ap-brand .v { display: none; }
@@ -1061,7 +1109,7 @@
   @media (max-width: 900px) and (min-width: 641px) {
     .mobile-bottom-nav { display: block; }
     nav.side { display: none !important; }
-    .shell { grid-template-columns: 1fr; padding-bottom: 64px; }
+    .shell { grid-template-columns: 1fr; padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
     main { padding: 24px 20px; }
     .assets-grid { grid-template-columns: repeat(3, 1fr); }
     .signals-grid { grid-template-columns: repeat(3, 1fr); }
@@ -1097,9 +1145,9 @@
   body[data-density="compact"] { font-size: 13px; line-height: 1.5; }
 
   /* Top bar slimmer */
-  body[data-density="compact"] .autopilot-bar { height: 44px; }
-  body[data-density="compact"] .shell { padding-top: 44px; }
-  body[data-density="compact"] nav.side { top: 44px; height: calc(100vh - 44px); padding: 12px 0; }
+  body[data-density="compact"] .autopilot-bar { height: calc(44px + env(safe-area-inset-top, 0px)); }
+  body[data-density="compact"] .shell { padding-top: calc(44px + env(safe-area-inset-top, 0px)); }
+  body[data-density="compact"] nav.side { top: calc(44px + env(safe-area-inset-top, 0px)); height: calc(100vh - 44px - env(safe-area-inset-top, 0px)); padding: 12px 0; }
   body[data-density="compact"] .ap-segment { padding: 0 14px; font-size: 11px; }
   body[data-density="compact"] .ap-brand .logo { font-size: 16px; }
 
