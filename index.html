@@ -1111,6 +1111,7 @@
         <button class="nav-btn" onclick="switchTab('live-chart')">📈 Live Chart</button>
         <button class="nav-btn" onclick="switchTab('journal')">📰 News</button>
         <button class="nav-btn" onclick="switchTab('calendar')">📅 Calendar</button>
+        <button class="nav-btn" onclick="switchTab('web3')">🐋 Web3</button>
         <button class="nav-btn" onclick="switchTab('ict-methods')">📊 ICT Methods</button>
         <button class="nav-btn" onclick="switchTab('rules')">📋 Rules</button>
       </div>
@@ -1521,6 +1522,59 @@
 
         <!-- Grouped event list -->
         <div id="calendarFeedHost"></div>
+      </div>
+
+      <!-- ═══ WEB3 TAB ═══ -->
+      <div id="web3" class="tab-content">
+        <div class="page-header">
+          <h1>🐋 Web3 · Wallet · Whale Watchlist · DeFi</h1>
+          <p>Connect MetaMask to see your balances next to your tracked assets. Watch whale wallets for large moves. View DeFi TVL trends.</p>
+        </div>
+
+        <!-- ═══ My Wallet ═══ -->
+        <div class="ap-card full" style="margin-bottom:14px;border-color:rgba(247,147,26,0.25);">
+          <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>👛 My Wallet · MetaMask</span>
+            <button id="mmConnectBtn" onclick="connectMetaMask()" style="background:rgba(247,147,26,0.15);border:1px solid rgba(247,147,26,0.4);border-radius:6px;padding:5px 12px;color:#f7931a;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">Connect</button>
+          </div>
+          <div id="mmStatus" style="font-size:12px;color:var(--text-mute);padding:8px 0;">Click Connect to link your MetaMask wallet. View-only — no transactions ever sent from here.</div>
+          <div id="mmBalances"></div>
+        </div>
+
+        <!-- ═══ Whale Watchlist ═══ -->
+        <div class="ap-card full" style="margin-bottom:14px;border-color:rgba(92,184,138,0.25);">
+          <div class="ap-card-title">🐋 Whale Watchlist · Track Any Address for Large Moves</div>
+          <div style="font-size:11px;color:var(--text-mute);margin-bottom:10px;line-height:1.6;">Paste an ETH or BSC address. Polls Etherscan/BscScan every 2 min for new transactions. Movements over $50k are highlighted and trigger an in-app alert.</div>
+          <div style="display:grid;grid-template-columns:1fr 100px 100px auto;gap:8px;align-items:end;margin-bottom:14px;">
+            <div>
+              <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Address (0x…)</div>
+              <input type="text" id="whaleAddrInput" placeholder="0x..." style="width:100%;box-sizing:border-box;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none;">
+            </div>
+            <div>
+              <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Label</div>
+              <input type="text" id="whaleLabelInput" placeholder="e.g. Cobie" style="width:100%;box-sizing:border-box;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none;">
+            </div>
+            <div>
+              <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Chain</div>
+              <select id="whaleChainSelect" style="width:100%;box-sizing:border-box;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;">
+                <option value="eth">Ethereum</option>
+                <option value="bsc">BSC</option>
+              </select>
+            </div>
+            <button onclick="addWhaleWatch()" style="background:rgba(92,184,138,0.15);border:1px solid rgba(92,184,138,0.4);border-radius:6px;padding:7px 14px;color:var(--bull);font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">＋ Add</button>
+          </div>
+          <div id="whaleListHost"></div>
+        </div>
+
+        <!-- ═══ DeFi Context (DefiLlama) ═══ -->
+        <div class="ap-card full" style="margin-bottom:14px;border-color:rgba(29,155,240,0.25);">
+          <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>📊 DeFi Context · Total Value Locked & Stablecoin Supply</span>
+            <button onclick="fetchDefiOverview(true)" id="defiRefreshBtn" style="background:transparent;border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--text-mute);font-size:11px;cursor:pointer;font-family:'JetBrains Mono',monospace;">↻ Refresh</button>
+          </div>
+          <div style="font-size:11px;color:var(--text-mute);margin-bottom:10px;line-height:1.6;">Real-time DeFi macro: total value locked across all chains, stablecoin supply, top protocols. Stablecoin supply growth = capital entering the ecosystem.</div>
+          <div id="defiOverviewHost" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-mute);">⟳ loading…</div>
+        </div>
       </div>
 
       <div id="ict-methods" class="tab-content">
@@ -2952,6 +3006,9 @@
       if (typeof fetchForexFactoryCalendar === 'function') {
         fetchForexFactoryCalendar(false).then(() => { try { renderCalendarPage(); } catch(e) {} }).catch(()=>{});
       }
+    }
+    if (tab==='web3') {
+      try { _renderWeb3Page(); } catch(e) {}
     }
   }
 
@@ -6362,6 +6419,321 @@
     `;
   }
 
+  // ═══════════════════════════════════════════════════════
+  // 🐋 WEB3 — MetaMask + Whale Watchlist + DeFi context
+  // ═══════════════════════════════════════════════════════
+  let _mmAddress = null;
+  let _mmChainId = null;
+
+  function _shortAddr(a) { return a ? a.slice(0,6) + '…' + a.slice(-4) : ''; }
+
+  const _mmChainNames = { '0x1':'Ethereum', '0x38':'BSC', '0x89':'Polygon', '0xa4b1':'Arbitrum', '0xa':'Optimism', '0x2105':'Base' };
+  const _mmNativeSymbols = { '0x1':'ETH','0x38':'BNB','0x89':'MATIC','0xa4b1':'ETH','0xa':'ETH','0x2105':'ETH' };
+
+  async function connectMetaMask() {
+    if (typeof window.ethereum === 'undefined') {
+      try { showToast('MetaMask not detected. Install it from metamask.io and refresh.', 'warn'); } catch(e) {}
+      return;
+    }
+    try {
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      _mmAddress = accounts[0] || null;
+      _mmChainId = await window.ethereum.request({ method: 'eth_chainId' });
+      try { showToast(`✓ Connected ${_shortAddr(_mmAddress)} on ${_mmChainNames[_mmChainId] || _mmChainId}`, 'ok'); } catch(e) {}
+      window.ethereum.on?.('accountsChanged', a => { _mmAddress = a[0] || null; _renderMyWallet(); });
+      window.ethereum.on?.('chainChanged', c => { _mmChainId = c; _renderMyWallet(); });
+      _renderMyWallet();
+    } catch(e) {
+      try { showToast('MetaMask connect cancelled or failed', 'warn'); } catch(_) {}
+    }
+  }
+
+  async function _fetchNativeBalance(addr, chainId) {
+    if (!window.ethereum) return null;
+    try {
+      const balHex = await window.ethereum.request({ method: 'eth_getBalance', params: [addr, 'latest'] });
+      const wei = BigInt(balHex);
+      // Convert to ether-style (1e18 wei)
+      const eth = Number(wei) / 1e18;
+      return eth;
+    } catch(e) { return null; }
+  }
+
+  async function _renderMyWallet() {
+    const statusEl = document.getElementById('mmStatus');
+    const balEl = document.getElementById('mmBalances');
+    const btn = document.getElementById('mmConnectBtn');
+    if (!statusEl || !balEl) return;
+    if (!_mmAddress) {
+      statusEl.innerHTML = `<span style="color:var(--text-mute);">Click Connect to link your MetaMask wallet. View-only — no transactions ever sent from here.</span>`;
+      balEl.innerHTML = '';
+      if (btn) { btn.textContent = 'Connect'; btn.style.color = '#f7931a'; }
+      return;
+    }
+    const chainName = _mmChainNames[_mmChainId] || `Chain ${_mmChainId}`;
+    const nativeSym = _mmNativeSymbols[_mmChainId] || 'ETH';
+    const explorer = _mmChainId === '0x38' ? 'https://bscscan.com/address/' : 'https://etherscan.io/address/';
+    statusEl.innerHTML = `<span style="color:var(--bull);font-family:'JetBrains Mono',monospace;font-weight:700;">✓ Connected</span> · <a href="${explorer}${_mmAddress}" target="_blank" rel="noopener" style="color:var(--gold);text-decoration:none;font-family:'JetBrains Mono',monospace;">${_shortAddr(_mmAddress)} ↗</a> · <span style="color:var(--text-mute);">${chainName}</span> · <button onclick="disconnectMetaMask()" style="background:none;border:none;color:var(--text-mute);font-size:10px;text-decoration:underline;cursor:pointer;">disconnect</button>`;
+    if (btn) { btn.textContent = '✓ ' + _shortAddr(_mmAddress); btn.style.color = 'var(--bull)'; }
+    balEl.innerHTML = `<div style="color:var(--text-mute);font-size:11px;">⟳ fetching balance…</div>`;
+    const eth = await _fetchNativeBalance(_mmAddress, _mmChainId);
+    if (eth == null) { balEl.innerHTML = `<div style="color:var(--bear);font-size:11px;">balance fetch failed</div>`; return; }
+    // USD value via tracked-asset price if we have it
+    const trackedNative = ASSETS.find(a => a.symbol === nativeSym);
+    const usdValue = (trackedNative?.price && eth) ? eth * trackedNative.price : null;
+    balEl.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+      <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:12px;">
+        <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">${nativeSym} (native)</div>
+        <div style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--gold);">${eth.toLocaleString(undefined,{maximumFractionDigits:6})}</div>
+        ${usdValue ? `<div style="font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">≈ $${usdValue.toLocaleString(undefined,{maximumFractionDigits:2})}</div>` : ''}
+      </div>
+    </div>
+    <div style="font-size:10px;color:var(--text-mute);margin-top:10px;">Token balances (USDT/USDC/WBTC etc.) require contract reads — not shown here. Use the explorer link above for full token list.</div>`;
+  }
+
+  function disconnectMetaMask() {
+    _mmAddress = null;
+    _mmChainId = null;
+    _renderMyWallet();
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 🐋 WHALE WATCHLIST — Etherscan/BscScan polling for large moves
+  // ═══════════════════════════════════════════════════════
+  let _whaleList = []; // [{addr, label, chain, lastSeenTxHash}]
+  const _whaleTxCache = {}; // {key: [tx,...]}
+  const WHALE_LARGE_MOVE_USD = 50000;
+
+  function _loadWhaleList() {
+    try { _whaleList = JSON.parse(localStorage.getItem('ict_whale_list') || '[]'); } catch(e) { _whaleList = []; }
+  }
+  function _saveWhaleList() {
+    try { localStorage.setItem('ict_whale_list', JSON.stringify(_whaleList)); } catch(e) {}
+  }
+
+  function addWhaleWatch() {
+    const addr = (document.getElementById('whaleAddrInput')?.value || '').trim();
+    const label = (document.getElementById('whaleLabelInput')?.value || '').trim() || _shortAddr(addr);
+    const chain = document.getElementById('whaleChainSelect')?.value || 'eth';
+    if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) { try { showToast('Invalid address format', 'warn'); } catch(e) {} return; }
+    if (_whaleList.find(w => w.addr.toLowerCase() === addr.toLowerCase() && w.chain === chain)) {
+      try { showToast(`${addr.slice(0,8)}… already watched`, 'warn'); } catch(e) {} return;
+    }
+    _whaleList.push({ addr, label, chain, lastSeenTxHash: null, addedTs: Date.now() });
+    _saveWhaleList();
+    document.getElementById('whaleAddrInput').value = '';
+    document.getElementById('whaleLabelInput').value = '';
+    try { showToast(`✓ Now watching ${label} on ${chain.toUpperCase()}`, 'ok'); } catch(e) {}
+    _renderWhaleList();
+    _refreshWhaleTxs(addr, chain);
+  }
+
+  function removeWhaleWatch(addr, chain) {
+    _whaleList = _whaleList.filter(w => !(w.addr.toLowerCase() === addr.toLowerCase() && w.chain === chain));
+    _saveWhaleList();
+    _renderWhaleList();
+  }
+
+  async function _fetchWhaleTxs(addr, chain) {
+    const host = chain === 'bsc' ? 'api.bscscan.com' : 'api.etherscan.io';
+    try {
+      const tokenUrl = `https://${host}/api?module=account&action=tokentx&address=${addr}&sort=desc&page=1&offset=15`;
+      const opts = {};
+      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(10000);
+      const r = await fetch(tokenUrl, opts);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      if (j.status !== '1' || !Array.isArray(j.result)) return [];
+      return j.result.slice(0, 10).map(tx => {
+        const decimals = parseInt(tx.tokenDecimal || '18', 10);
+        const amount = Number(BigInt(tx.value)) / Math.pow(10, decimals);
+        const isOut = tx.from.toLowerCase() === addr.toLowerCase();
+        return {
+          hash: tx.hash,
+          ts: parseInt(tx.timeStamp, 10),
+          symbol: tx.tokenSymbol || '?',
+          amount,
+          dir: isOut ? 'out' : 'in',
+          from: tx.from,
+          to: tx.to,
+          chain
+        };
+      });
+    } catch(e) { console.warn('[whale] fetch failed', addr, e.message); return null; }
+  }
+
+  function _estimateUsdValue(tx) {
+    // Use tracked-asset prices for known stablecoins / tokens
+    const sym = (tx.symbol || '').toUpperCase();
+    const stables = ['USDT','USDC','BUSD','DAI','TUSD','FDUSD'];
+    if (stables.includes(sym)) return tx.amount;
+    const tracked = ASSETS.find(a => a.symbol === sym || a.symbol === sym.replace(/^W/, ''));
+    if (tracked?.price) return tx.amount * tracked.price;
+    // Common wrapped tokens
+    if (sym === 'WBTC' || sym === 'BTCB') {
+      const btc = ASSETS.find(a => a.symbol === 'BTC');
+      if (btc?.price) return tx.amount * btc.price;
+    }
+    if (sym === 'WETH') {
+      const eth = ASSETS.find(a => a.symbol === 'ETH');
+      if (eth?.price) return tx.amount * eth.price;
+    }
+    return null;
+  }
+
+  async function _refreshWhaleTxs(addr, chain) {
+    const txs = await _fetchWhaleTxs(addr, chain);
+    if (txs == null) return;
+    const key = `${chain}:${addr.toLowerCase()}`;
+    const prevHashes = new Set((_whaleTxCache[key] || []).map(t => t.hash));
+    _whaleTxCache[key] = txs;
+    // Detect new large moves on entries we've seen at least once
+    const watcher = _whaleList.find(w => w.addr.toLowerCase() === addr.toLowerCase() && w.chain === chain);
+    if (watcher && watcher.lastSeenTxHash !== null) {
+      for (const tx of txs) {
+        if (prevHashes.has(tx.hash)) break;
+        const usd = _estimateUsdValue(tx);
+        if (usd && usd >= WHALE_LARGE_MOVE_USD) {
+          const dirArrow = tx.dir === 'out' ? '⬇ OUT' : '⬆ IN';
+          const msg = `🐋 ${watcher.label}: ${dirArrow} ${tx.amount.toLocaleString(undefined,{maximumFractionDigits:4})} ${tx.symbol} ($${usd.toLocaleString(undefined,{maximumFractionDigits:0})})`;
+          try { showToast(msg, 'ok'); } catch(e) {}
+          try { playAlertSound('entry'); } catch(e) {}
+          if ('Notification' in window && Notification.permission === 'granted') {
+            try { new Notification(`🐋 ${watcher.label}`, { body: `${dirArrow} ${tx.amount.toLocaleString(undefined,{maximumFractionDigits:4})} ${tx.symbol} ≈ $${usd.toLocaleString(undefined,{maximumFractionDigits:0})}`, tag: `whale-${watcher.addr}-${tx.hash}` }); } catch(e) {}
+          }
+        }
+      }
+    }
+    if (watcher) { watcher.lastSeenTxHash = txs[0]?.hash || null; _saveWhaleList(); }
+    _renderWhaleList();
+  }
+
+  async function _refreshAllWhales() {
+    for (const w of _whaleList) {
+      await _refreshWhaleTxs(w.addr, w.chain);
+      await new Promise(r => setTimeout(r, 1500)); // gentle: 1.5s between calls (Etherscan no-key limit)
+    }
+  }
+
+  function _renderWhaleList() {
+    const host = document.getElementById('whaleListHost');
+    if (!host) return;
+    if (!_whaleList.length) { host.innerHTML = '<div style="color:var(--text-mute);font-size:11px;padding:8px 0;">No watched wallets yet. Add one above.</div>'; return; }
+    host.innerHTML = _whaleList.map(w => {
+      const key = `${w.chain}:${w.addr.toLowerCase()}`;
+      const txs = _whaleTxCache[key] || [];
+      const explorer = w.chain === 'bsc' ? 'https://bscscan.com/address/' : 'https://etherscan.io/address/';
+      const txHost = w.chain === 'bsc' ? 'https://bscscan.com/tx/' : 'https://etherscan.io/tx/';
+      const chainBadge = w.chain === 'bsc'
+        ? `<span style="background:rgba(247,147,26,0.15);color:#f7931a;font-size:9px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;">BSC</span>`
+        : `<span style="background:rgba(98,126,234,0.15);color:#627eea;font-size:9px;padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;">ETH</span>`;
+      const txRows = txs.length ? txs.slice(0, 5).map(tx => {
+        const ago = Math.max(0, Math.round(Date.now()/1000 - tx.ts));
+        const agoStr = ago < 60 ? `${ago}s` : ago < 3600 ? `${Math.round(ago/60)}m` : ago < 86400 ? `${Math.round(ago/3600)}h` : `${Math.round(ago/86400)}d`;
+        const usd = _estimateUsdValue(tx);
+        const isLarge = usd && usd >= WHALE_LARGE_MOVE_USD;
+        const dirCol = tx.dir === 'out' ? 'var(--bear)' : 'var(--bull)';
+        const dirIcon = tx.dir === 'out' ? '⬇' : '⬆';
+        return `<a href="${txHost}${tx.hash}" target="_blank" rel="noopener" style="display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;align-items:center;padding:6px 10px;background:${isLarge?'rgba(224,93,93,0.06)':'var(--bg-elevated)'};border:1px solid ${isLarge?'rgba(224,93,93,0.3)':'var(--border)'};border-radius:6px;margin-bottom:4px;text-decoration:none;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;">
+          <span style="color:${dirCol};font-weight:700;">${dirIcon} ${tx.dir.toUpperCase()}</span>
+          <span style="color:var(--text);">${tx.amount.toLocaleString(undefined,{maximumFractionDigits:4})} <span style="color:var(--gold);">${tx.symbol}</span></span>
+          <span style="color:${isLarge?'var(--bear)':'var(--text-mute)'};font-weight:${isLarge?700:500};">${usd ? '$' + usd.toLocaleString(undefined,{maximumFractionDigits:0}) : '—'}</span>
+          <span style="color:var(--text-mute);">${agoStr} ago</span>
+        </a>`;
+      }).join('') : '<div style="font-size:10px;color:var(--text-mute);padding:6px 0;">⟳ loading transactions…</div>';
+      return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            ${chainBadge}
+            <span style="font-weight:700;color:var(--gold);">${w.label}</span>
+            <a href="${explorer}${w.addr}" target="_blank" rel="noopener" style="color:var(--text-mute);font-size:10px;font-family:'JetBrains Mono',monospace;text-decoration:none;">${_shortAddr(w.addr)} ↗</a>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button onclick="_refreshWhaleTxs('${w.addr}','${w.chain}')" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">↻</button>
+            <button onclick="removeWhaleWatch('${w.addr}','${w.chain}')" style="background:transparent;border:1px solid var(--border);color:var(--bear);padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">✕</button>
+          </div>
+        </div>
+        ${txRows}
+      </div>`;
+    }).join('');
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 📊 DEFI CONTEXT — DefiLlama (free, no key)
+  // ═══════════════════════════════════════════════════════
+  let _defiOverviewCache = null;
+  let _defiOverviewTs = 0;
+
+  async function fetchDefiOverview(force) {
+    const host = document.getElementById('defiOverviewHost');
+    if (!host) return;
+    if (!force && _defiOverviewCache && Date.now() - _defiOverviewTs < 10*60*1000) {
+      _renderDefiOverview();
+      return;
+    }
+    host.innerHTML = '⟳ loading…';
+    try {
+      const opts = {};
+      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(10000);
+      const [protoRes, stableRes, chainRes] = await Promise.all([
+        fetch('https://api.llama.fi/protocols', opts),
+        fetch('https://stablecoins.llama.fi/stablecoins?includePrices=true', opts),
+        fetch('https://api.llama.fi/v2/chains', opts)
+      ]);
+      const protocols = await protoRes.json();
+      const stables = await stableRes.json();
+      const chains = await chainRes.json();
+      _defiOverviewCache = { protocols, stables, chains };
+      _defiOverviewTs = Date.now();
+      _renderDefiOverview();
+    } catch(e) {
+      host.innerHTML = `<span style="color:var(--text-mute);">DefiLlama fetch failed: ${e.message}. Try again.</span>`;
+    }
+  }
+
+  function _renderDefiOverview() {
+    const host = document.getElementById('defiOverviewHost');
+    if (!host || !_defiOverviewCache) return;
+    const { protocols, stables, chains } = _defiOverviewCache;
+    const totalTvl = (chains || []).reduce((s, c) => s + (c.tvl || 0), 0);
+    const ethTvl = chains.find(c => c.name === 'Ethereum')?.tvl || 0;
+    const bscTvl = chains.find(c => c.name === 'BSC')?.tvl || 0;
+    const totalStables = (stables?.peggedAssets || []).reduce((s, a) => s + (a.circulating?.peggedUSD || 0), 0);
+    const top5Protos = (protocols || []).filter(p => p.tvl > 0).sort((a,b) => b.tvl - a.tvl).slice(0, 5);
+    const fmt = v => v >= 1e9 ? `$${(v/1e9).toFixed(2)}B` : v >= 1e6 ? `$${(v/1e6).toFixed(1)}M` : `$${v.toLocaleString(undefined,{maximumFractionDigits:0})}`;
+    host.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:10px;">
+        <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;margin-bottom:3px;">Total DeFi TVL</div>
+        <div style="font-size:18px;font-weight:700;color:var(--gold);">${fmt(totalTvl)}</div>
+      </div>
+      <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:10px;">
+        <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;margin-bottom:3px;">Ethereum TVL</div>
+        <div style="font-size:18px;font-weight:700;color:#627eea;">${fmt(ethTvl)}</div>
+      </div>
+      <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:10px;">
+        <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;margin-bottom:3px;">BSC TVL</div>
+        <div style="font-size:18px;font-weight:700;color:#f7931a;">${fmt(bscTvl)}</div>
+      </div>
+      <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:10px;">
+        <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;margin-bottom:3px;">Stablecoin Supply</div>
+        <div style="font-size:18px;font-weight:700;color:var(--bull);">${fmt(totalStables)}</div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Top 5 protocols by TVL</div>
+    ${top5Protos.map((p,i) => `<div style="display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;padding:6px 10px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;font-size:11px;">
+      <span style="color:var(--text-mute);">#${i+1}</span>
+      <span style="color:var(--text);font-weight:600;">${p.name}</span>
+      <span style="color:var(--gold);font-family:'JetBrains Mono',monospace;font-weight:700;">${fmt(p.tvl)}</span>
+      <span style="color:${p.change_1d>0?'var(--bull)':p.change_1d<0?'var(--bear)':'var(--text-mute)'};font-family:'JetBrains Mono',monospace;font-size:10px;">${p.change_1d != null ? (p.change_1d>0?'+':'') + p.change_1d.toFixed(2) + '%' : '—'}</span>
+    </div>`).join('')}`;
+  }
+
+  function _renderWeb3Page() {
+    _renderMyWallet();
+    _renderWhaleList();
+    fetchDefiOverview(false);
+  }
+
   async function pollTVAlerts() {
     try {
       const sheetId = SHARED_SHEET_ID;
@@ -6629,6 +7001,12 @@
       fetchForexFactoryCalendar(true).catch(()=>{});
       setInterval(() => fetchForexFactoryCalendar(true).catch(()=>{}), 30*60*1000);
     }
+    // 🐋 Web3: load saved watchlist, poll every 2 min for new whale moves
+    _try('loadWhaleList', _loadWhaleList);
+    if (_whaleList && _whaleList.length) {
+      _refreshAllWhales().catch(()=>{});
+    }
+    setInterval(() => { if (_whaleList && _whaleList.length) _refreshAllWhales().catch(()=>{}); }, 2*60*1000);
     setInterval(fetchFearGreed, 300000);
     setInterval(fetchFundingRates, 120000);
     setInterval(fetchNews, 300000);
@@ -6673,6 +7051,10 @@
     <button class="mob-nav-btn" id="mobBtn-calendar" onclick="switchTab('calendar',this)">
       <span class="mob-icon">📅</span>
       <span class="mob-label">Calendar</span>
+    </button>
+    <button class="mob-nav-btn" id="mobBtn-web3" onclick="switchTab('web3',this)">
+      <span class="mob-icon">🐋</span>
+      <span class="mob-label">Web3</span>
     </button>
     <button class="mob-nav-btn" id="mobBtn-ict-methods" onclick="switchTab('ict-methods',this)">
       <span class="mob-icon">📊</span>
