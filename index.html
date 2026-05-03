@@ -1566,6 +1566,31 @@
           <div id="whaleListHost"></div>
         </div>
 
+        <!-- ═══ BSC Meme Hunter · Insights ═══ -->
+        <div class="ap-card full" style="margin-bottom:14px;border-color:rgba(247,147,26,0.25);">
+          <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+            <span>🚀 BSC Meme Hunter · Insights</span>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <span style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.05em;">Min liquidity</span>
+              <select id="memeMinLiq" onchange="_renderBscMemes()" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:5px;padding:3px 8px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:10px;">
+                <option value="0">$0</option>
+                <option value="5000" selected>$5K</option>
+                <option value="25000">$25K</option>
+                <option value="100000">$100K</option>
+              </select>
+              <button onclick="fetchBscMemes(true)" id="memeRefreshBtn" style="background:transparent;border:1px solid var(--border);border-radius:5px;padding:3px 10px;color:var(--text-mute);font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">↻ Refresh</button>
+            </div>
+          </div>
+          <div style="font-size:11px;color:var(--text-mute);margin-bottom:14px;line-height:1.6;">Trending and freshly-launched BSC tokens via GeckoTerminal. Hype score blends 24h volume × momentum × age. Sentiment derived from buy/sell pressure + price action. Click 🛡 Scan to run a GoPlus security check before buying.</div>
+
+          <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+            <button class="meme-tab-btn active" id="memeTabTrending" onclick="_switchMemeTab('trending')" style="background:rgba(247,147,26,0.15);border:1px solid #f7931a;color:#f7931a;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔥 Trending</button>
+            <button class="meme-tab-btn" id="memeTabNew" onclick="_switchMemeTab('new')" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🆕 New Launches</button>
+          </div>
+
+          <div id="bscMemeHost"><div style="color:var(--text-mute);font-size:11px;padding:8px 0;">⟳ loading meme insights…</div></div>
+        </div>
+
         <!-- ═══ DeFi Context (DefiLlama) ═══ -->
         <div class="ap-card full" style="margin-bottom:14px;border-color:rgba(29,155,240,0.25);">
           <div class="ap-card-title" style="display:flex;justify-content:space-between;align-items:center;">
@@ -6731,7 +6756,326 @@
   function _renderWeb3Page() {
     _renderMyWallet();
     _renderWhaleList();
+    fetchBscMemes(false);
     fetchDefiOverview(false);
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 🚀 BSC MEME HUNTER — GeckoTerminal trending/new + GoPlus security
+  // Inspired by Binance "Insights" panel: token header + hype/sentiment +
+  // auto-generated narrative + expandable social posts.
+  // ═══════════════════════════════════════════════════════
+  let _bscTrendingCache = [];
+  let _bscNewCache = [];
+  let _bscMemeTs = 0;
+  let _activeMemeTab = 'trending';
+
+  function _parseGTPools(j) {
+    const tokenMap = {};
+    (j.included || []).forEach(inc => { if (inc.type === 'token') tokenMap[inc.id] = inc.attributes; });
+    return (j.data || []).map(pool => {
+      const baseId = pool.relationships?.base_token?.data?.id;
+      const t = tokenMap[baseId] || {};
+      const a = pool.attributes || {};
+      const tx24 = a.transactions?.h24 || {};
+      return {
+        pairAddr: a.address,
+        name: t.name || a.pool_name || '',
+        symbol: t.symbol || (a.pool_name||'').split('/')[0] || '?',
+        contract: t.address || '',
+        imageUrl: t.image_url || null,
+        price: parseFloat(a.base_token_price_usd) || 0,
+        fdv: parseFloat(a.fdv_usd) || 0,
+        mc: parseFloat(a.market_cap_usd) || parseFloat(a.fdv_usd) || 0,
+        vol24h: parseFloat(a.volume_usd?.h24) || 0,
+        vol1h: parseFloat(a.volume_usd?.h1) || 0,
+        vol5m: parseFloat(a.volume_usd?.m5) || 0,
+        change24h: parseFloat(a.price_change_percentage?.h24) || 0,
+        change1h: parseFloat(a.price_change_percentage?.h1) || 0,
+        change5m: parseFloat(a.price_change_percentage?.m5) || 0,
+        buys24h: parseInt(tx24.buys || 0, 10),
+        sells24h: parseInt(tx24.sells || 0, 10),
+        buyers24h: parseInt(tx24.buyers || 0, 10),
+        sellers24h: parseInt(tx24.sellers || 0, 10),
+        reserveUsd: parseFloat(a.reserve_in_usd) || 0,
+        poolAge: a.pool_created_at,
+        dex: pool.relationships?.dex?.data?.id || 'pancakeswap'
+      };
+    });
+  }
+
+  async function fetchBscMemes(force) {
+    if (!force && _bscTrendingCache.length && Date.now() - _bscMemeTs < 5*60*1000) return;
+    const host = document.getElementById('bscMemeHost');
+    if (host && !_bscTrendingCache.length) host.innerHTML = '<div style="color:var(--text-mute);font-size:11px;padding:8px 0;">⟳ loading meme insights from GeckoTerminal…</div>';
+    try {
+      const opts = {};
+      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(15000);
+      const [trendingRes, newRes] = await Promise.all([
+        fetch('https://api.geckoterminal.com/api/v2/networks/bsc/trending_pools?include=base_token,dex&page=1', opts),
+        fetch('https://api.geckoterminal.com/api/v2/networks/bsc/new_pools?include=base_token,dex&page=1', opts)
+      ]);
+      if (trendingRes.ok) _bscTrendingCache = _parseGTPools(await trendingRes.json());
+      if (newRes.ok)      _bscNewCache      = _parseGTPools(await newRes.json());
+      _bscMemeTs = Date.now();
+      _renderBscMemes();
+    } catch(e) {
+      if (host) host.innerHTML = `<div style="color:var(--bear);font-size:11px;">GeckoTerminal fetch failed: ${e.message}</div>`;
+    }
+  }
+
+  function _switchMemeTab(tab) {
+    _activeMemeTab = tab;
+    const t = document.getElementById('memeTabTrending');
+    const n = document.getElementById('memeTabNew');
+    if (t && n) {
+      const styleActive = b => { b.style.background = 'rgba(247,147,26,0.15)'; b.style.borderColor = '#f7931a'; b.style.color = '#f7931a'; };
+      const styleInactive = b => { b.style.background = 'transparent'; b.style.borderColor = 'var(--border)'; b.style.color = 'var(--text-mute)'; };
+      if (tab === 'trending') { styleActive(t); styleInactive(n); } else { styleInactive(t); styleActive(n); }
+    }
+    _renderBscMemes();
+  }
+
+  // Compute hype score: blend 24h volume × momentum (1h/24h ratio) × age boost
+  function _computeHype(m) {
+    const vol = m.vol24h || 1;
+    const ageMs = m.poolAge ? Date.now() - new Date(m.poolAge).getTime() : 86400000;
+    const ageH = Math.max(1, ageMs / 3600000);
+    const momentum = m.vol24h > 0 ? Math.min(2, (m.vol1h * 24) / m.vol24h) : 1; // >1 = recent surge
+    const youngBoost = ageH < 48 ? 1.5 : ageH < 168 ? 1.2 : 1.0;
+    return vol * momentum * youngBoost / 1000; // displayed as K/M
+  }
+
+  function _formatHype(h) {
+    if (h >= 1000) return (h/1000).toFixed(2) + 'M';
+    if (h >= 1) return h.toFixed(2) + 'K';
+    return h.toFixed(2);
+  }
+
+  // Sentiment classification from buy/sell + price action
+  function _computeSentiment(m) {
+    const total = m.buys24h + m.sells24h;
+    const buyRatio = total > 0 ? m.buys24h / total : 0.5;
+    const change = m.change24h || 0;
+    if (buyRatio > 0.6 && change > 5) return { label: 'Very Bullish', color: 'var(--bull)', bg: 'rgba(92,184,138,0.15)' };
+    if (buyRatio > 0.55 || change > 0)  return { label: 'Positive', color: 'var(--bull)', bg: 'rgba(92,184,138,0.12)' };
+    if (buyRatio < 0.4 && change < -5)  return { label: 'Very Bearish', color: 'var(--bear)', bg: 'rgba(224,93,93,0.15)' };
+    if (buyRatio < 0.45 || change < 0)  return { label: 'Negative', color: 'var(--bear)', bg: 'rgba(224,93,93,0.12)' };
+    return { label: 'Neutral', color: 'var(--text-mute)', bg: 'rgba(101,101,109,0.15)' };
+  }
+
+  function _formatUsd(v) {
+    if (v >= 1e9) return `$${(v/1e9).toFixed(2)}B`;
+    if (v >= 1e6) return `$${(v/1e6).toFixed(2)}M`;
+    if (v >= 1e3) return `$${(v/1e3).toFixed(1)}K`;
+    return `$${v.toLocaleString(undefined,{maximumFractionDigits:2})}`;
+  }
+  function _formatPrice(v) {
+    if (!v) return '—';
+    if (v < 0.0001) return '$' + v.toExponential(2);
+    return '$' + v.toLocaleString(undefined,{maximumFractionDigits:8});
+  }
+
+  // Auto-generated narrative — templated from the data, no LLM needed
+  function _generateMemeNarrative(m) {
+    const change = m.change24h;
+    const changeWord = change > 50 ? 'exploded' : change > 20 ? 'surged' : change > 5 ? 'rallied' : change > 0 ? 'edged up' : change > -5 ? 'drifted' : change > -20 ? 'pulled back' : 'cratered';
+    const total = m.buys24h + m.sells24h;
+    const buyDom = total ? m.buys24h / total : 0.5;
+    const pressure = buyDom > 0.6 ? 'strong buy pressure' : buyDom > 0.55 ? 'mild buy bias' : buyDom > 0.45 ? 'balanced flow' : buyDom > 0.4 ? 'mild sell bias' : 'heavy sell pressure';
+    const ageMs = m.poolAge ? Date.now() - new Date(m.poolAge).getTime() : 0;
+    const ageH = ageMs / 3600000;
+    const ageDesc = ageH < 24 ? `launched ${Math.round(ageH)}h ago` : ageH < 168 ? `${Math.round(ageH/24)} days old` : ageH < 720 ? `${Math.round(ageH/168)} weeks old` : `${Math.round(ageH/720)} months old`;
+    const liqWord = m.reserveUsd > 1e6 ? 'deep liquidity' : m.reserveUsd > 1e5 ? 'solid liquidity' : m.reserveUsd > 1e4 ? 'thin liquidity' : 'minimal liquidity';
+    const dexName = (m.dex || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    return `${m.symbol} on ${dexName} has ${changeWord} ${change>0?'+':''}${change.toFixed(1)}% over the last 24h on ${_formatUsd(m.vol24h)} of volume, with ${m.buys24h.toLocaleString()} buys vs ${m.sells24h.toLocaleString()} sells indicating ${pressure}. The pool is ${ageDesc} and holds ${_formatUsd(m.reserveUsd)} in reserves — ${liqWord}. Market cap sits at ${_formatUsd(m.mc || m.fdv)}, ${m.change1h>0?'with':'against'} a ${m.change1h>0?'+':''}${m.change1h.toFixed(1)}% 1h move.`;
+  }
+
+  function _renderMemeInsight(m) {
+    const sent = _computeSentiment(m);
+    const hype = _computeHype(m);
+    const change = m.change24h || 0;
+    const changeColor = change > 0 ? 'var(--bull)' : change < 0 ? 'var(--bear)' : 'var(--text-mute)';
+    const ageMs = m.poolAge ? Date.now() - new Date(m.poolAge).getTime() : 0;
+    const ageStr = ageMs < 3600000 ? `${Math.round(ageMs/60000)}m` : ageMs < 86400000 ? `${Math.round(ageMs/3600000)}h` : `${Math.round(ageMs/86400000)}d`;
+    const isFresh = ageMs < 7*86400000;
+    const headline = `${m.symbol} ${change>10?'Explodes':change>0?'Climbs':change<-10?'Slides':'Holds'} ${change>0?'+':''}${change.toFixed(1)}% on ${_formatUsd(m.vol24h)} of 24h volume`;
+    const narrative = _generateMemeNarrative(m);
+    const dsUrl = `https://dexscreener.com/bsc/${m.pairAddr}`;
+    const psUrl = m.contract ? `https://pancakeswap.finance/swap?outputCurrency=${m.contract}` : '#';
+    const bsUrl = m.contract ? `https://bscscan.com/token/${m.contract}` : '#';
+    const avatarLetter = (m.symbol || '?').slice(0,2).toUpperCase();
+    const avatar = m.imageUrl
+      ? `<img src="${m.imageUrl}" alt="${m.symbol}" style="width:36px;height:36px;border-radius:50%;border:1px solid var(--border);object-fit:cover;">`
+      : `<div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#f7931a,#c9a961);display:flex;align-items:center;justify-content:center;font-weight:700;color:#000;font-family:'JetBrains Mono',monospace;font-size:11px;">${avatarLetter}</div>`;
+    const contractShort = m.contract ? `${m.contract.slice(0,6)}…${m.contract.slice(-4)}` : '';
+    return `<div style="background:var(--bg-elevated);border:1px solid ${isFresh?'rgba(247,147,26,0.3)':'var(--border)'};border-radius:12px;padding:16px;margin-bottom:12px;">
+      <!-- Token header row -->
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
+        ${avatar}
+        <div style="flex:1;min-width:140px;">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <span style="font-size:15px;font-weight:700;color:var(--gold);">${m.symbol}</span>
+            ${isFresh ? '<span style="font-size:9px;color:#f7931a;background:rgba(247,147,26,0.15);padding:1px 5px;border-radius:3px;font-family:\'JetBrains Mono\',monospace;font-weight:700;">NEW</span>' : ''}
+          </div>
+          ${contractShort ? `<a href="${bsUrl}" target="_blank" rel="noopener" style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;text-decoration:none;">${contractShort} ↗</a>` : ''}
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+          <div style="display:flex;align-items:center;gap:4px;font-family:'JetBrains Mono',monospace;font-size:11px;">
+            <span style="color:var(--text-mute);">Hype</span>
+            <span style="color:#f7931a;font-weight:700;">${_formatHype(hype)}</span>
+          </div>
+          <span style="background:${sent.bg};color:${sent.color};font-size:10px;padding:2px 8px;border-radius:10px;font-weight:700;font-family:'JetBrains Mono',monospace;">${sent.label}</span>
+        </div>
+      </div>
+
+      <!-- Headline -->
+      <div style="font-size:14px;font-weight:600;color:var(--text);line-height:1.4;margin-bottom:10px;">${headline}</div>
+
+      <!-- Analysis box -->
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;">
+        <div style="font-size:12px;color:var(--text-dim);line-height:1.7;">${narrative}</div>
+        <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px;font-size:9px;color:var(--text-mute);line-height:1.5;">Disclaimer: Auto-generated from on-chain data via GeckoTerminal. Hype + sentiment heuristics — not financial advice. Do your own research before buying. Always run the security scan first.</div>
+      </div>
+
+      <!-- Stats grid -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:6px;font-family:'JetBrains Mono',monospace;font-size:10px;margin-bottom:10px;">
+        <div style="background:var(--bg);border-radius:6px;padding:6px 8px;">
+          <div style="color:var(--text-mute);font-size:9px;">PRICE</div>
+          <div style="color:var(--text);">${_formatPrice(m.price)}</div>
+        </div>
+        <div style="background:var(--bg);border-radius:6px;padding:6px 8px;">
+          <div style="color:var(--text-mute);font-size:9px;">24H</div>
+          <div style="color:${changeColor};font-weight:700;">${change>0?'+':''}${change.toFixed(1)}%</div>
+        </div>
+        <div style="background:var(--bg);border-radius:6px;padding:6px 8px;">
+          <div style="color:var(--text-mute);font-size:9px;">MC</div>
+          <div style="color:var(--gold);">${_formatUsd(m.mc || m.fdv)}</div>
+        </div>
+        <div style="background:var(--bg);border-radius:6px;padding:6px 8px;">
+          <div style="color:var(--text-mute);font-size:9px;">VOL 24H</div>
+          <div style="color:var(--text);">${_formatUsd(m.vol24h)}</div>
+        </div>
+        <div style="background:var(--bg);border-radius:6px;padding:6px 8px;">
+          <div style="color:var(--text-mute);font-size:9px;">LIQ</div>
+          <div style="color:var(--text);">${_formatUsd(m.reserveUsd)}</div>
+        </div>
+        <div style="background:var(--bg);border-radius:6px;padding:6px 8px;">
+          <div style="color:var(--text-mute);font-size:9px;">AGE</div>
+          <div style="color:var(--text);">${ageStr}</div>
+        </div>
+      </div>
+
+      <!-- Buy/sell ratio bar -->
+      <div style="margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin-bottom:3px;">
+          <span style="color:var(--bull);">${m.buys24h.toLocaleString()} buys</span>
+          <span style="color:var(--bear);">${m.sells24h.toLocaleString()} sells</span>
+        </div>
+        <div style="background:var(--bg);border-radius:3px;height:5px;overflow:hidden;display:flex;">
+          <div style="flex:${m.buys24h};background:var(--bull);"></div>
+          <div style="flex:${m.sells24h};background:var(--bear);"></div>
+        </div>
+      </div>
+
+      <!-- Action buttons -->
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <a href="${dsUrl}" target="_blank" rel="noopener" style="flex:1;min-width:80px;text-align:center;padding:7px;background:rgba(201,169,97,0.15);color:var(--gold);text-decoration:none;font-size:11px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-weight:700;">📈 Chart</a>
+        <a href="${psUrl}" target="_blank" rel="noopener" style="flex:1;min-width:80px;text-align:center;padding:7px;background:rgba(247,147,26,0.15);color:#f7931a;text-decoration:none;font-size:11px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-weight:700;">🥞 Buy</a>
+        <button onclick="checkMemeSafety('${m.contract}','${m.symbol}')" style="flex:1;min-width:80px;background:rgba(92,184,138,0.15);border:none;color:var(--bull);font-size:11px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-weight:700;cursor:pointer;padding:7px;">🛡 Scan</button>
+      </div>
+    </div>`;
+  }
+
+  function _renderBscMemes() {
+    const host = document.getElementById('bscMemeHost');
+    if (!host) return;
+    const minLiq = parseInt(document.getElementById('memeMinLiq')?.value || '5000', 10);
+    const cache = _activeMemeTab === 'new' ? _bscNewCache : _bscTrendingCache;
+    if (!cache.length) {
+      host.innerHTML = '<div style="color:var(--text-mute);font-size:11px;padding:8px 0;">⟳ loading…</div>';
+      return;
+    }
+    const filtered = cache.filter(m => m.reserveUsd >= minLiq);
+    if (!filtered.length) {
+      host.innerHTML = `<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:24px;text-align:center;color:var(--text-mute);font-size:11px;">No pools match the liquidity filter (≥ ${_formatUsd(minLiq)}). Try lowering it.</div>`;
+      return;
+    }
+    host.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:12px;">${filtered.map(_renderMemeInsight).join('')}</div>`;
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 🛡 GoPlus security scan modal — honeypot + tax + owner risks
+  // ═══════════════════════════════════════════════════════
+  async function checkMemeSafety(contract, symbol) {
+    if (!contract) { try { showToast('No contract address available', 'warn'); } catch(e) {} return; }
+    document.getElementById('memeSafetyModal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'memeSafetyModal';
+    modal.style = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:800;display:flex;align-items:center;justify-content:center;padding:20px;';
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    modal.innerHTML = `<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:14px;width:100%;max-width:520px;max-height:85vh;overflow-y:auto;padding:22px;" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <div>
+          <div style="font-size:16px;font-weight:700;color:var(--gold);">🛡 Security Scan · ${symbol}</div>
+          <div style="font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin-top:2px;">${contract.slice(0,10)}…${contract.slice(-8)}</div>
+        </div>
+        <button onclick="document.getElementById('memeSafetyModal').remove()" style="background:none;border:none;color:var(--text-mute);font-size:22px;cursor:pointer;line-height:1;">×</button>
+      </div>
+      <div id="memeSafetyBody" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-mute);">⟳ scanning via GoPlus Security…</div>
+    </div>`;
+    document.body.appendChild(modal);
+    try {
+      const r = await fetch(`https://api.gopluslabs.io/api/v1/token_security/56?contract_addresses=${contract.toLowerCase()}`);
+      const j = await r.json();
+      const sec = j.result?.[contract.toLowerCase()] || {};
+      const body = document.getElementById('memeSafetyBody');
+      if (!body) return;
+      if (!sec || !Object.keys(sec).length) { body.innerHTML = '<span style="color:var(--bear);">No security data found for this contract.</span>'; return; }
+      const isHoneypot = sec.is_honeypot === '1';
+      const isOpenSource = sec.is_open_source === '1';
+      const canTakeBack = sec.can_take_back_ownership === '1';
+      const ownerBalance = sec.owner_change_balance === '1';
+      const hiddenOwner = sec.hidden_owner === '1';
+      const selfDestruct = sec.selfdestruct === '1';
+      const transferPausable = sec.transfer_pausable === '1';
+      const externalCall = sec.external_call === '1';
+      const buyTax = parseFloat(sec.buy_tax || '0') * 100;
+      const sellTax = parseFloat(sec.sell_tax || '0') * 100;
+      const top10HoldersRate = parseFloat(sec.holder_count ? (sec.lp_holder_count > 0 ? '0' : (sec.holders ? '0' : '0')) : '0');
+      const holderCount = parseInt(sec.holder_count || '0', 10);
+      const lpHolderCount = parseInt(sec.lp_holder_count || '0', 10);
+      const lpLocked = parseFloat(sec.lp_total_supply || '0') > 0 && (sec.lp_holders || []).some(h => h.is_locked === 1);
+      // Verdict
+      const redFlags = [isHoneypot, canTakeBack, ownerBalance, hiddenOwner, selfDestruct, !isOpenSource, buyTax > 15, sellTax > 15].filter(Boolean).length;
+      const verdict = isHoneypot ? { label:'🛑 HONEYPOT — DO NOT BUY', color:'var(--bear)', bg:'rgba(224,93,93,0.15)' }
+                    : redFlags >= 3 ? { label:'⚠ HIGH RISK', color:'var(--bear)', bg:'rgba(224,93,93,0.10)' }
+                    : redFlags >= 1 ? { label:'⚠ CAUTION', color:'var(--liq)', bg:'rgba(242,179,61,0.10)' }
+                    : { label:'✓ NO MAJOR RED FLAGS', color:'var(--bull)', bg:'rgba(92,184,138,0.10)' };
+      const row = (label, ok, msg) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(101,101,109,0.18);">
+        <span style="color:var(--text-mute);">${label}</span>
+        <span style="color:${ok?'var(--bull)':'var(--bear)'};font-weight:700;">${msg}</span>
+      </div>`;
+      body.innerHTML = `
+        <div style="background:${verdict.bg};border:1px solid ${verdict.color};border-radius:8px;padding:10px 12px;margin-bottom:14px;text-align:center;font-weight:700;color:${verdict.color};font-size:13px;">${verdict.label}</div>
+        ${row('Honeypot?',           !isHoneypot,        isHoneypot ? '🛑 YES' : '✓ No')}
+        ${row('Open source?',         isOpenSource,      isOpenSource ? '✓ Yes' : '⚠ No')}
+        ${row('Owner can take back?', !canTakeBack,      canTakeBack ? '⚠ Yes' : '✓ No')}
+        ${row('Owner can change balances?', !ownerBalance, ownerBalance ? '⚠ Yes' : '✓ No')}
+        ${row('Hidden owner?',        !hiddenOwner,      hiddenOwner ? '⚠ Yes' : '✓ No')}
+        ${row('Self-destruct possible?', !selfDestruct,  selfDestruct ? '⚠ Yes' : '✓ No')}
+        ${row('Transfers pausable?',  !transferPausable, transferPausable ? '⚠ Yes' : '✓ No')}
+        ${row('External calls?',      !externalCall,     externalCall ? '⚠ Yes' : '✓ No')}
+        ${row('Buy tax',              buyTax<10,         buyTax.toFixed(1) + '%')}
+        ${row('Sell tax',             sellTax<10,        sellTax.toFixed(1) + '%')}
+        ${row('Holder count',         holderCount>100,   holderCount.toLocaleString())}
+        ${row('LP holders',           lpHolderCount>10,  lpHolderCount.toLocaleString())}
+        <div style="margin-top:14px;font-size:9px;color:var(--text-mute);line-height:1.5;">Powered by GoPlus Security · BSC chainId 56. This is a heuristic — even ✓ tokens can rug. Position size for total loss.</div>
+      `;
+    } catch(e) {
+      const body = document.getElementById('memeSafetyBody');
+      if (body) body.innerHTML = `<span style="color:var(--bear);">Scan failed: ${e.message}</span>`;
+    }
   }
 
   async function pollTVAlerts() {
@@ -7007,6 +7351,11 @@
       _refreshAllWhales().catch(()=>{});
     }
     setInterval(() => { if (_whaleList && _whaleList.length) _refreshAllWhales().catch(()=>{}); }, 2*60*1000);
+    // 🚀 BSC Meme Hunter: load on startup + refresh every 5 min in background
+    if (typeof fetchBscMemes === 'function') {
+      fetchBscMemes(true).catch(()=>{});
+      setInterval(() => fetchBscMemes(true).catch(()=>{}), 5*60*1000);
+    }
     setInterval(fetchFearGreed, 300000);
     setInterval(fetchFundingRates, 120000);
     setInterval(fetchNews, 300000);
