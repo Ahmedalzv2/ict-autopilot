@@ -6415,6 +6415,60 @@
     initTVChart(tvCurrentSymbol, tf);
   }
 
+  // Per-TF entry/SL/TP rows for the Live Chart analysis panel
+  function _renderLiveChartTFLevels(asset) {
+    if (!asset.tfEntries) return '<div style="margin-top:14px;font-size:11px;color:var(--text-mute);font-family:\'JetBrains Mono\',monospace;padding:10px;">⟳ analyzing per-TF levels…</div>';
+    if (asset.tfEntries.closed) return `<div style="margin-top:14px;font-size:11px;color:var(--liq);font-family:'JetBrains Mono',monospace;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;">🔒 Market closed for the weekend · reopens ${asset.tfEntries.reopens||'Sunday 22:00 GST'}</div>`;
+    const rows = TF_LIST.map(tf => {
+      const e = asset.tfEntries[tf];
+      const tfLabel = TF_LABELS[tf];
+      if (!e || e.error) {
+        return `<div style="display:grid;grid-template-columns:50px 78px 1fr 1fr 1fr 80px;gap:10px;padding:8px 12px;border-top:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:11px;align-items:center;opacity:0.55;">
+          <span style="color:var(--gold);font-weight:700;">${tfLabel}</span>
+          <span style="color:var(--text-mute);">no data</span>
+          <span></span><span></span><span></span><span></span>
+        </div>`;
+      }
+      const sug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(e, tf) : null;
+      const dirColor = e.dir === 'bull' ? 'var(--bull)' : e.dir === 'bear' ? 'var(--bear)' : 'var(--text-mute)';
+      const dirLabel = e.dir === 'bull' ? '🟢 LONG' : e.dir === 'bear' ? '🔴 SHORT' : '—';
+      const ready = e.entryReady ? '✓ READY' : `${e.score||0}/4`;
+      const readyColor = e.entryReady ? 'var(--bull)' : 'var(--text-mute)';
+      const rowBg = e.entryReady ? 'background:rgba(92,184,138,0.06);' : '';
+      if (!sug) {
+        return `<div style="display:grid;grid-template-columns:50px 78px 1fr 1fr 1fr 80px;gap:10px;padding:8px 12px;border-top:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:11px;align-items:center;${rowBg}">
+          <span style="color:var(--gold);font-weight:700;">${tfLabel}</span>
+          <span style="color:${dirColor};">${dirLabel}</span>
+          <span style="color:var(--text-mute);font-size:10px;" colspan="3">no clean FVG yet</span>
+          <span></span><span></span>
+          <span style="color:${readyColor};font-weight:${e.entryReady?700:500};">${ready}</span>
+        </div>`;
+      }
+      // Distance from current live price to this TF's entry
+      const distPct = (asset.price && sug.entry) ? Math.abs((asset.price - sug.entry) / asset.price) * 100 : 0;
+      const distColor = distPct < 0.2 ? 'var(--bull)' : distPct < 1 ? 'var(--liq)' : 'var(--text-mute)';
+      return `<div style="display:grid;grid-template-columns:50px 78px 1fr 1fr 1fr 80px;gap:10px;padding:8px 12px;border-top:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:11px;align-items:center;${rowBg}">
+        <span style="color:var(--gold);font-weight:700;">${tfLabel}</span>
+        <span style="color:${dirColor};">${dirLabel}</span>
+        <span><span style="color:var(--bull);font-weight:600;">$${sug.entry}</span> <span style="color:${distColor};font-size:9px;">(${distPct.toFixed(2)}%)</span></span>
+        <span style="color:var(--bear);">$${sug.sl}</span>
+        <span style="color:var(--gold);">$${sug.tp}</span>
+        <span style="color:${readyColor};font-weight:${e.entryReady?700:500};">${ready}<span style="color:var(--text-mute);font-size:9px;"> · 1:${sug.rr}</span></span>
+      </div>`;
+    }).join('');
+    return `<div style="margin-top:14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;overflow:hidden;">
+      <div style="background:var(--bg-elevated);padding:10px 12px;font-size:10px;color:var(--gold);font-weight:600;text-transform:uppercase;letter-spacing:.1em;display:flex;justify-content:space-between;align-items:center;">
+        <span>📐 Per-TF Entry · SL · TP · auto-derived from FVG / OB / Sweep</span>
+        <span style="color:var(--text-mute);font-size:9px;">${asset.tfEntriesUpdated ? Math.round((Date.now()-asset.tfEntriesUpdated)/1000)+'s ago' : 'pending…'}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:50px 78px 1fr 1fr 1fr 80px;gap:10px;padding:7px 12px;font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.05em;background:var(--bg);">
+        <span>TF</span><span>Dir</span><span>Entry (dist)</span><span>SL</span><span>TP</span><span>Status</span>
+      </div>
+      ${rows}
+      <div style="padding:8px 12px;font-size:9px;color:var(--text-mute);background:var(--bg-elevated);border-top:1px solid var(--border);line-height:1.5;">Distance % shows how close live price is to that TF's entry. Lower TFs (1m/5m/15m) = scalp R:R 1:1.5 · higher TFs (1h/4h/24h) = swing R:R 1:2.0.</div>
+    </div>`;
+  }
+
   function updateTVAnalysis(symbol) {
     const a = ASSETS.find(x => x.symbol === symbol);
     // Update live price badge in chart header
@@ -6494,6 +6548,7 @@
           <div style="font-size:14px;font-weight:600;color:${(asset.bias||'').toUpperCase().includes('BULL')?'var(--bull)':'var(--bear)'};font-family:'JetBrains Mono',monospace;">${(asset.bias||'').substring(0,4)}</div>
         </div>
       </div>
+      ${_renderLiveChartTFLevels(asset)}
     `;
   }
 
