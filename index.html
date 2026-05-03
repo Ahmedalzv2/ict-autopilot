@@ -1583,9 +1583,46 @@
           </div>
           <div style="font-size:11px;color:var(--text-mute);margin-bottom:14px;line-height:1.6;">Trending and freshly-launched BSC tokens via GeckoTerminal. Hype score blends 24h volume × momentum × age. Sentiment derived from buy/sell pressure + price action. Click 🛡 Scan to run a GoPlus security check before buying.</div>
 
-          <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-            <button class="meme-tab-btn active" id="memeTabTrending" onclick="_switchMemeTab('trending')" style="background:rgba(247,147,26,0.15);border:1px solid #f7931a;color:#f7931a;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔥 Trending</button>
-            <button class="meme-tab-btn" id="memeTabNew" onclick="_switchMemeTab('new')" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🆕 New Launches</button>
+          <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+            <button class="meme-tab-btn" id="memeTabTrending" onclick="_switchMemeTab('trending')" style="background:rgba(247,147,26,0.15);border:1px solid #f7931a;color:#f7931a;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔥 Trending</button>
+            <button class="meme-tab-btn" id="memeTabSnipe" onclick="_switchMemeTab('snipe')" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🎯 Snipe</button>
+            <button class="meme-tab-btn" id="memeTabLong" onclick="_switchMemeTab('long')" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">💎 Long-term</button>
+          </div>
+
+          <!-- Advanced filter row -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px;margin-bottom:14px;font-size:10px;font-family:'JetBrains Mono',monospace;">
+            <select id="memeMaxAge" onchange="_renderBscMemes()" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:5px;padding:5px 8px;color:var(--text);font-size:10px;font-family:inherit;">
+              <option value="0" selected>Any age</option>
+              <option value="1">&lt; 1h</option>
+              <option value="6">&lt; 6h</option>
+              <option value="24">&lt; 24h</option>
+              <option value="168">&lt; 7d</option>
+              <option value="720">&lt; 30d</option>
+            </select>
+            <select id="memeMinAge" onchange="_renderBscMemes()" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:5px;padding:5px 8px;color:var(--text);font-size:10px;font-family:inherit;">
+              <option value="0" selected>No min age</option>
+              <option value="1">&gt; 1h</option>
+              <option value="24">&gt; 1d</option>
+              <option value="168">&gt; 7d</option>
+              <option value="720">&gt; 30d</option>
+            </select>
+            <select id="memeMinVol" onchange="_renderBscMemes()" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:5px;padding:5px 8px;color:var(--text);font-size:10px;font-family:inherit;">
+              <option value="0" selected>Any volume</option>
+              <option value="10000">&gt; $10K</option>
+              <option value="50000">&gt; $50K</option>
+              <option value="250000">&gt; $250K</option>
+              <option value="1000000">&gt; $1M</option>
+            </select>
+            <label style="display:flex;align-items:center;gap:5px;color:var(--text-dim);background:var(--bg-elevated);border:1px solid var(--border);border-radius:5px;padding:4px 8px;cursor:pointer;">
+              <input type="checkbox" id="memeHideRisky" checked onchange="_renderBscMemes()" style="cursor:pointer;"> hide risky
+            </label>
+            <select id="memeSort" onchange="_renderBscMemes()" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:5px;padding:5px 8px;color:var(--text);font-size:10px;font-family:inherit;">
+              <option value="auto" selected>Auto sort</option>
+              <option value="vol">By volume</option>
+              <option value="change">By 24h %</option>
+              <option value="age-new">Newest first</option>
+              <option value="age-old">Oldest first</option>
+            </select>
           </div>
 
           <div id="bscMemeHost"><div style="color:var(--text-mute);font-size:11px;padding:8px 0;">⟳ loading meme insights…</div></div>
@@ -6816,6 +6853,165 @@
   let _bscMemeTs = 0;
   let _activeMemeTab = 'trending';
 
+  // GoPlus bulk security cache (per contract, 1h TTL — security data is stable)
+  const _goplusCache = {};
+  const GOPLUS_TTL = 60 * 60 * 1000;
+
+  async function _bulkFetchGoplus(contracts) {
+    const now = Date.now();
+    const fresh = contracts.filter(c => c && (!_goplusCache[c.toLowerCase()] || now - _goplusCache[c.toLowerCase()].ts > GOPLUS_TTL));
+    if (!fresh.length) return;
+    // GoPlus accepts up to 100 comma-separated contracts per call
+    const batches = [];
+    for (let i = 0; i < fresh.length; i += 50) batches.push(fresh.slice(i, i + 50));
+    for (const batch of batches) {
+      try {
+        const url = `https://api.gopluslabs.io/api/v1/token_security/56?contract_addresses=${batch.map(c => c.toLowerCase()).join(',')}`;
+        const opts = {};
+        if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(15000);
+        const r = await fetch(url, opts);
+        if (!r.ok) continue;
+        const j = await r.json();
+        const result = j.result || {};
+        for (const [addr, data] of Object.entries(result)) _goplusCache[addr.toLowerCase()] = { data, ts: now };
+      } catch(e) { console.warn('[GoPlus bulk]', e.message); }
+    }
+  }
+
+  function _getSecurityFlags(contract) {
+    if (!contract) return null;
+    const cached = _goplusCache[contract.toLowerCase()];
+    if (!cached) return null;
+    const s = cached.data || {};
+    const owner = (s.owner_address || '').toLowerCase();
+    const isOwnerRenounced = !owner || owner === '0x0000000000000000000000000000000000000000' || owner === '0x000000000000000000000000000000000000dead';
+    const lpLocked = parseFloat(s.lp_total_supply || '0') > 0 && (s.lp_holders || []).some(h => h.is_locked === 1 || /lock|burn|dead/i.test(h.tag||''));
+    return {
+      isHoneypot: s.is_honeypot === '1',
+      isOpenSource: s.is_open_source === '1',
+      canTakeBack: s.can_take_back_ownership === '1',
+      ownerCanChangeBalance: s.owner_change_balance === '1',
+      hiddenOwner: s.hidden_owner === '1',
+      selfDestruct: s.selfdestruct === '1',
+      transferPausable: s.transfer_pausable === '1',
+      buyTax: parseFloat(s.buy_tax || '0') * 100,
+      sellTax: parseFloat(s.sell_tax || '0') * 100,
+      holderCount: parseInt(s.holder_count || '0', 10),
+      lpHolderCount: parseInt(s.lp_holder_count || '0', 10),
+      lpLocked, isOwnerRenounced
+    };
+  }
+
+  // Snipe score 0-100 — favors fresh pools, momentum, security cleared
+  function _computeSnipeScore(m) {
+    let score = 0;
+    if (m.vol24h > 0) {
+      const velocity = (m.vol1h * 24) / m.vol24h;
+      score += Math.min(25, Math.max(0, velocity * 12));
+    }
+    const total = m.buys24h + m.sells24h;
+    if (total > 0) {
+      const buyDom = m.buys24h / total;
+      score += Math.max(0, Math.min(20, (buyDom - 0.5) * 100));
+    }
+    if (m.reserveUsd > 5000) score += 10;
+    if (m.reserveUsd > 25000) score += 5;
+    if (m.vol24h > 50000) score += 8;
+    if (m.vol24h > 250000) score += 7;
+    const ageMs = m.poolAge ? Date.now() - new Date(m.poolAge).getTime() : 86400000;
+    const ageH = ageMs / 3600000;
+    if (ageH < 1) score += 15;
+    else if (ageH < 6) score += 10;
+    else if (ageH < 24) score += 5;
+    else if (ageH > 72) score -= 10;
+    const sec = _getSecurityFlags(m.contract);
+    if (sec) {
+      if (sec.isHoneypot) return 0;
+      if (sec.holderCount > 50) score += 3;
+      if (sec.holderCount > 200) score += 4;
+      if (sec.lpLocked) score += 8;
+      if (sec.isOwnerRenounced) score += 8;
+      if (sec.canTakeBack) score -= 30;
+      if (sec.ownerCanChangeBalance) score -= 25;
+      if (sec.hiddenOwner) score -= 20;
+      if (sec.transferPausable) score -= 15;
+      if (sec.buyTax > 10) score -= 10;
+      if (sec.sellTax > 10) score -= 10;
+      if (sec.buyTax > 25 || sec.sellTax > 25) score -= 25;
+      if (!sec.isOpenSource) score -= 10;
+    }
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }
+
+  // Long-term score 0-100 — favors maturity, sustained metrics, low risk
+  function _computeLongTermScore(m) {
+    let score = 0;
+    const ageMs = m.poolAge ? Date.now() - new Date(m.poolAge).getTime() : 0;
+    const ageDays = ageMs / 86400000;
+    if (ageDays > 7) score += 8;
+    if (ageDays > 30) score += 8;
+    if (ageDays > 90) score += 9;
+    if (m.vol24h > 100000) score += 8;
+    if (m.vol24h > 1000000) score += 7;
+    if (m.reserveUsd > 100000) score += 12;
+    if (m.reserveUsd > 1000000) score += 8;
+    const change = Math.abs(m.change24h || 0);
+    if (change < 30) score += 5;
+    const total = m.buys24h + m.sells24h;
+    if (total > 0 && m.buys24h / total > 0.55) score += 5;
+    const sec = _getSecurityFlags(m.contract);
+    if (sec) {
+      if (sec.isHoneypot) return 0;
+      if (sec.holderCount > 1000) score += 5;
+      if (sec.holderCount > 5000) score += 5;
+      if (sec.lpHolderCount > 50) score += 3;
+      if (sec.isOwnerRenounced) score += 10;
+      if (sec.lpLocked) score += 7;
+      if (sec.canTakeBack) score -= 50;
+      if (sec.buyTax > 5 || sec.sellTax > 5) score -= 12;
+      if (sec.transferPausable) score -= 10;
+    }
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }
+
+  function _getRiskBadge(m) {
+    const sec = _getSecurityFlags(m.contract);
+    if (!sec) return { label:'… SCANNING', color:'var(--text-mute)', bg:'rgba(101,101,109,0.15)' };
+    if (sec.isHoneypot) return { label:'🚫 HONEYPOT', color:'#fff', bg:'rgba(224,93,93,0.5)' };
+    if (sec.canTakeBack || sec.ownerCanChangeBalance || sec.hiddenOwner) return { label:'⚠ OWNER RISK', color:'var(--bear)', bg:'rgba(224,93,93,0.18)' };
+    if (sec.buyTax > 20 || sec.sellTax > 20) return { label:'⚠ HIGH TAX', color:'var(--bear)', bg:'rgba(224,93,93,0.15)' };
+    if (sec.transferPausable || sec.selfDestruct) return { label:'⚠ RISK', color:'var(--liq)', bg:'rgba(242,179,61,0.15)' };
+    if (sec.buyTax > 5 || sec.sellTax > 5) return { label:`⚠ TAX ${Math.max(sec.buyTax, sec.sellTax).toFixed(0)}%`, color:'var(--liq)', bg:'rgba(242,179,61,0.15)' };
+    if (!sec.isOpenSource) return { label:'⚠ NOT VERIFIED', color:'var(--liq)', bg:'rgba(242,179,61,0.15)' };
+    if (sec.isOwnerRenounced && sec.lpLocked) return { label:'✓ CLEAN', color:'var(--bull)', bg:'rgba(92,184,138,0.20)' };
+    if (sec.isOwnerRenounced || sec.lpLocked) return { label:'✓ OK', color:'var(--bull)', bg:'rgba(92,184,138,0.15)' };
+    return { label:'⚠ LP UNLOCKED', color:'var(--liq)', bg:'rgba(242,179,61,0.15)' };
+  }
+
+  // Auto-alert for fresh new pools that score 75+ (security must already be scanned)
+  const _snipeAlertSent = new Set();
+  function _checkSnipeAlerts() {
+    for (const m of _bscNewCache) {
+      if (!m.contract || _snipeAlertSent.has(m.pairAddr)) continue;
+      const sec = _getSecurityFlags(m.contract);
+      if (!sec) continue;
+      if (sec.isHoneypot) { _snipeAlertSent.add(m.pairAddr); continue; }
+      const ageMs = m.poolAge ? Date.now() - new Date(m.poolAge).getTime() : 0;
+      if (ageMs > 24 * 3600000) continue;
+      const score = _computeSnipeScore(m);
+      if (score >= 75) {
+        _snipeAlertSent.add(m.pairAddr);
+        const ageH = (ageMs / 3600000).toFixed(1);
+        const msg = `🎯 SNIPE: ${m.symbol} · ${score}/100 · ${_formatUsd(m.vol24h)} 24h · ${ageH}h old`;
+        try { showToast(msg, 'ok'); } catch(e) {}
+        try { playAlertSound('entry'); } catch(e) {}
+        if ('Notification' in window && Notification.permission === 'granted') {
+          try { new Notification(`🎯 BSC Snipe: ${m.symbol}`, { body: `Score ${score}/100 · ${_formatUsd(m.vol24h)} vol · ${ageH}h old · MC ${_formatUsd(m.mc||m.fdv)}`, tag: `snipe-${m.pairAddr}` }); } catch(e) {}
+        }
+      }
+    }
+  }
+
   function _parseGTPools(j) {
     const tokenMap = {};
     (j.included || []).forEach(inc => { if (inc.type === 'token') tokenMap[inc.id] = inc.attributes; });
@@ -6865,6 +7061,15 @@
       if (newRes.ok)      _bscNewCache      = _parseGTPools(await newRes.json());
       _bscMemeTs = Date.now();
       _renderBscMemes();
+      // Bulk-scan all contracts via GoPlus in background, then re-render with
+      // risk badges + snipe scores and check for hot-snipe alerts
+      const allContracts = Array.from(new Set([..._bscTrendingCache, ..._bscNewCache].map(p => p.contract).filter(Boolean)));
+      if (allContracts.length) {
+        _bulkFetchGoplus(allContracts).then(() => {
+          try { _renderBscMemes(); } catch(e) {}
+          try { _checkSnipeAlerts(); } catch(e) {}
+        }).catch(()=>{});
+      }
     } catch(e) {
       if (host) host.innerHTML = `<div style="color:var(--bear);font-size:11px;">GeckoTerminal fetch failed: ${e.message}</div>`;
     }
@@ -6872,13 +7077,25 @@
 
   function _switchMemeTab(tab) {
     _activeMemeTab = tab;
-    const t = document.getElementById('memeTabTrending');
-    const n = document.getElementById('memeTabNew');
-    if (t && n) {
-      const styleActive = b => { b.style.background = 'rgba(247,147,26,0.15)'; b.style.borderColor = '#f7931a'; b.style.color = '#f7931a'; };
-      const styleInactive = b => { b.style.background = 'transparent'; b.style.borderColor = 'var(--border)'; b.style.color = 'var(--text-mute)'; };
-      if (tab === 'trending') { styleActive(t); styleInactive(n); } else { styleInactive(t); styleActive(n); }
+    // Set sensible default filters per mode
+    const setVal = (id, val) => { const el = document.getElementById(id); if (el && el.tagName === 'SELECT') el.value = val; };
+    const setChk = (id, val) => { const el = document.getElementById(id); if (el && el.type === 'checkbox') el.checked = val; };
+    if (tab === 'snipe') {
+      setVal('memeMaxAge', '24'); setVal('memeMinAge', '0'); setVal('memeMinVol', '10000'); setChk('memeHideRisky', true); setVal('memeSort', 'auto');
+    } else if (tab === 'long') {
+      setVal('memeMaxAge', '0'); setVal('memeMinAge', '168'); setVal('memeMinVol', '50000'); setChk('memeHideRisky', true); setVal('memeSort', 'auto');
+    } else {
+      setVal('memeMaxAge', '0'); setVal('memeMinAge', '0'); setVal('memeMinVol', '0'); setChk('memeHideRisky', false); setVal('memeSort', 'auto');
     }
+    // Style tab buttons
+    [['Trending','trending'],['Snipe','snipe'],['Long','long']].forEach(([id, t]) => {
+      const btn = document.getElementById(`memeTab${id}`);
+      if (!btn) return;
+      const isActive = t === tab;
+      btn.style.background  = isActive ? 'rgba(247,147,26,0.15)' : 'transparent';
+      btn.style.borderColor = isActive ? '#f7931a' : 'var(--border)';
+      btn.style.color       = isActive ? '#f7931a' : 'var(--text-mute)';
+    });
     _renderBscMemes();
   }
 
@@ -6971,7 +7188,15 @@
             <span style="color:var(--text-mute);">Hype</span>
             <span style="color:#f7931a;font-weight:700;">${_formatHype(hype)}</span>
           </div>
-          <span style="background:${sent.bg};color:${sent.color};font-size:10px;padding:2px 8px;border-radius:10px;font-weight:700;font-family:'JetBrains Mono',monospace;">${sent.label}</span>
+          <div style="display:flex;align-items:center;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+            ${_activeMemeTab==='long'
+              ? `<span style="color:var(--text-mute);">Long</span><span style="color:${(m._longScore||0)>=60?'var(--bull)':(m._longScore||0)>=30?'var(--liq)':'var(--bear)'};font-weight:700;">${m._longScore||0}/100</span>`
+              : `<span style="color:var(--text-mute);">Snipe</span><span style="color:${(m._snipeScore||0)>=70?'var(--bull)':(m._snipeScore||0)>=40?'var(--liq)':'var(--bear)'};font-weight:700;">${m._snipeScore||0}/100</span>`}
+          </div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">
+            <span style="background:${sent.bg};color:${sent.color};font-size:10px;padding:2px 7px;border-radius:10px;font-weight:700;font-family:'JetBrains Mono',monospace;">${sent.label}</span>
+            ${(() => { const r = _getRiskBadge(m); return `<span style="background:${r.bg};color:${r.color};font-size:9px;padding:2px 7px;border-radius:10px;font-weight:700;font-family:'JetBrains Mono',monospace;">${r.label}</span>`; })()}
+          </div>
         </div>
       </div>
 
@@ -7037,17 +7262,58 @@
     const host = document.getElementById('bscMemeHost');
     if (!host) return;
     const minLiq = parseInt(document.getElementById('memeMinLiq')?.value || '5000', 10);
-    const cache = _activeMemeTab === 'new' ? _bscNewCache : _bscTrendingCache;
-    if (!cache.length) {
-      host.innerHTML = '<div style="color:var(--text-mute);font-size:11px;padding:8px 0;">⟳ loading…</div>';
+    const maxAgeH = parseInt(document.getElementById('memeMaxAge')?.value || '0', 10);
+    const minAgeH = parseInt(document.getElementById('memeMinAge')?.value || '0', 10);
+    const minVol = parseInt(document.getElementById('memeMinVol')?.value || '0', 10);
+    const hideRisky = document.getElementById('memeHideRisky')?.checked;
+    const sortMode = document.getElementById('memeSort')?.value || 'auto';
+
+    // Pool source per mode
+    let pool;
+    if (_activeMemeTab === 'long') pool = [..._bscTrendingCache, ..._bscNewCache];
+    else if (_activeMemeTab === 'snipe') pool = [..._bscNewCache, ..._bscTrendingCache];
+    else pool = _bscTrendingCache;
+    // Dedupe by pairAddr
+    const seen = new Set();
+    pool = pool.filter(m => { if (!m || seen.has(m.pairAddr)) return false; seen.add(m.pairAddr); return true; });
+
+    if (!pool.length) { host.innerHTML = '<div style="color:var(--text-mute);font-size:11px;padding:8px 0;">⟳ loading…</div>'; return; }
+
+    pool = pool.filter(m => {
+      if (m.reserveUsd < minLiq) return false;
+      if (minVol > 0 && m.vol24h < minVol) return false;
+      const ageMs = m.poolAge ? Date.now() - new Date(m.poolAge).getTime() : 0;
+      const ageH = ageMs / 3600000;
+      if (maxAgeH > 0 && ageH > maxAgeH) return false;
+      if (minAgeH > 0 && ageH < minAgeH) return false;
+      if (hideRisky) {
+        const sec = _getSecurityFlags(m.contract);
+        if (sec) {
+          if (sec.isHoneypot) return false;
+          if (sec.canTakeBack || sec.ownerCanChangeBalance || sec.hiddenOwner) return false;
+          if (sec.buyTax > 15 || sec.sellTax > 15) return false;
+          if (sec.transferPausable || sec.selfDestruct) return false;
+        }
+      }
+      return true;
+    });
+
+    // Compute scores once for sorting + render
+    pool.forEach(m => { m._snipeScore = _computeSnipeScore(m); m._longScore = _computeLongTermScore(m); });
+    if (sortMode === 'auto') {
+      if (_activeMemeTab === 'snipe')      pool.sort((a,b) => b._snipeScore - a._snipeScore);
+      else if (_activeMemeTab === 'long')  pool.sort((a,b) => b._longScore - a._longScore);
+      // trending stays in API order
+    } else if (sortMode === 'vol')      pool.sort((a,b) => (b.vol24h||0) - (a.vol24h||0));
+    else if (sortMode === 'change')     pool.sort((a,b) => (b.change24h||0) - (a.change24h||0));
+    else if (sortMode === 'age-new')    pool.sort((a,b) => new Date(b.poolAge||0) - new Date(a.poolAge||0));
+    else if (sortMode === 'age-old')    pool.sort((a,b) => new Date(a.poolAge||0) - new Date(b.poolAge||0));
+
+    if (!pool.length) {
+      host.innerHTML = `<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:24px;text-align:center;color:var(--text-mute);font-size:11px;">No pools match the current filters. Try widening criteria above.</div>`;
       return;
     }
-    const filtered = cache.filter(m => m.reserveUsd >= minLiq);
-    if (!filtered.length) {
-      host.innerHTML = `<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:24px;text-align:center;color:var(--text-mute);font-size:11px;">No pools match the liquidity filter (≥ ${_formatUsd(minLiq)}). Try lowering it.</div>`;
-      return;
-    }
-    host.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:12px;">${filtered.map(_renderMemeInsight).join('')}</div>`;
+    host.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:12px;">${pool.slice(0, 30).map(_renderMemeInsight).join('')}</div>`;
   }
 
   // ═══════════════════════════════════════════════════════
