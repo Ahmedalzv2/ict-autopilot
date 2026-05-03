@@ -4139,15 +4139,10 @@
   }
 
   async function _fetchCoinGeckoGlobal() {
-    try {
-      const opts = {};
-      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(10000);
-      const r = await fetch('https://api.coingecko.com/api/v3/news?per_page=30', opts);
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const j = await r.json();
-      const list = j.data || j;
-      return (Array.isArray(list) ? list : []).map(n => _normalizeNewsItem(n, 'coingecko')).filter(Boolean);
-    } catch(e) { console.warn('CoinGecko news fetch failed:', e.message); return []; }
+    // CoinGecko's public /api/v3/news endpoint was deprecated and returns 404.
+    // We keep the source toggle in the UI for backwards-compat with saved
+    // localStorage filters but skip the fetch.
+    return [];
   }
 
   async function fetchAllNewsAggregate(force) {
@@ -4166,6 +4161,7 @@
       ...rssTasks
     ]);
     const allRss = rssResults.flat();
+    console.log('[news] sources:', { cryptocompare: cc.length, coingecko: cg.length, lunarcrush: social.length, rssTotal: allRss.length, rssBySource: RSS_FEEDS.reduce((o, f, i) => { o[f.key] = (rssResults[i]||[]).length; return o; }, {}) });
     // Dedupe by URL (preserve any already-loaded X-live items in the cache)
     const byUrl = new Map();
     const existingXlive = _newsAggregateItems.filter(i => i._sourceKey === 'xlive');
@@ -4363,7 +4359,11 @@
       ${topTags ? `<span>·</span><span>Top mentions: ${topTags}</span>` : ''}
       <span style="margin-left:auto;color:var(--text-mute);font-size:10px;">cached ${Math.round((Date.now()-_newsAggregateTs)/1000)}s ago</span>`;
     if (!filtered.length) {
-      host.innerHTML = '<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:48px 24px;text-align:center;color:var(--text-mute);">No headlines match the current filters. Try widening recency or unchecking categories.</div>';
+      const totalRaw = _newsAggregateItems.length;
+      const reason = totalRaw === 0
+        ? 'No sources returned any items. Open DevTools → Console to see [news] diagnostic. Most likely: rss2json proxy quota exceeded (10K/day shared) or CryptoCompare temporarily unreachable.'
+        : `${totalRaw} articles in cache but none match the current filters. Try widening recency, unchecking categories, or clearing the search box.`;
+      host.innerHTML = `<div style="background:var(--bg-elevated);border:1px dashed var(--border);border-radius:10px;padding:36px 24px;text-align:center;color:var(--text-mute);font-size:12px;line-height:1.6;">${reason}</div>`;
       return;
     }
     host.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px;">${filtered.map(_renderNewsCard).join('')}</div>`;
@@ -6413,6 +6413,81 @@
     document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
     document.querySelector(`.tf-btn[data-tf="${tf}"]`)?.classList.add('active');
     initTVChart(tvCurrentSymbol, tf);
+    // Re-render analysis panel so the focused-TF card flips to this TF
+    if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol) {
+      try { updateTVAnalysis(tvCurrentSymbol); } catch(e) {}
+    }
+  }
+
+  // Map the chart TF button values to our internal TF_LIST keys
+  const TV_TF_TO_INTERNAL = { '1':'1m', '5':'5m', '15':'15m', '60':'1h', '240':'4h', 'D':'1d', 'W':'1d' };
+
+  // Focused single-TF card — shows analysis for whatever timeframe the user
+  // has selected on the chart (driven by tvCurrentTimeframe). When they click
+  // 1m / 5m / 15m / 1H / 4H / Daily, this card flips to that TF's data.
+  function _renderSelectedTFCard(asset, currentTimeframe) {
+    if (!asset.tfEntries) return '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;font-size:11px;color:var(--text-mute);font-family:\'JetBrains Mono\',monospace;">⟳ analyzing this timeframe…</div>';
+    if (asset.tfEntries.closed) return '';
+    const tf = TV_TF_TO_INTERNAL[currentTimeframe] || '5m';
+    const tfLabel = TF_LABELS[tf] || tf;
+    const e = asset.tfEntries[tf];
+    if (!e || e.error) {
+      return `<div style="background:var(--bg-elevated);border:1px solid var(--gold);border-radius:12px;padding:14px;margin-bottom:14px;font-family:'JetBrains Mono',monospace;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <span style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;">Selected timeframe</span>
+          <span style="background:var(--gold);color:#000;padding:3px 10px;border-radius:5px;font-size:11px;font-weight:700;">${tfLabel}</span>
+        </div>
+        <div style="font-size:12px;color:var(--text-mute);">No data for this TF yet — auto-analysis runs every 60s.</div>
+      </div>`;
+    }
+    const sug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(e, tf) : null;
+    const dirColor = e.dir === 'bull' ? 'var(--bull)' : e.dir === 'bear' ? 'var(--bear)' : 'var(--text-mute)';
+    const dirLabel = e.dir === 'bull' ? '🟢 LONG' : e.dir === 'bear' ? '🔴 SHORT' : '— NEUTRAL';
+    const readyBadge = e.entryReady
+      ? `<span style="background:rgba(92,184,138,0.18);color:var(--bull);padding:3px 10px;border-radius:6px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;">✓ ENTRY READY</span>`
+      : `<span style="background:rgba(101,101,109,0.15);color:var(--text-mute);padding:3px 10px;border-radius:6px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace;">${e.score||0}/4 building</span>`;
+    const tickPill = (v, label) => `<span style="background:${v?'rgba(92,184,138,0.15)':'rgba(101,101,109,0.10)'};color:${v?'var(--bull)':'var(--text-mute)'};padding:3px 9px;border-radius:5px;font-size:10px;font-weight:600;font-family:'JetBrains Mono',monospace;">${v?'✓':'·'} ${label}</span>`;
+    const distPct = (asset.price && sug?.entry) ? Math.abs((asset.price - sug.entry) / asset.price) * 100 : null;
+    const distColor = distPct === null ? 'var(--text-mute)' : distPct < 0.2 ? 'var(--bull)' : distPct < 1 ? 'var(--liq)' : 'var(--text-mute)';
+    const headerLine = sug
+      ? `<div style="font-size:14px;font-weight:700;color:${dirColor};font-family:'JetBrains Mono',monospace;margin:8px 0 4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          ${dirLabel} <span style="color:var(--bull);">@ $${sug.entry}</span>${distPct!==null?` <span style="color:${distColor};font-size:11px;font-weight:500;">· ${distPct.toFixed(2)}% away</span>`:''} <span style="color:var(--text-mute);font-size:11px;font-weight:500;">· 1:${sug.rr} R:R</span>
+        </div>`
+      : `<div style="font-size:13px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;margin:8px 0;">No clean FVG aligned with direction yet — keep watching.</div>`;
+    const levelsRow = sug ? `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0;">
+      <div style="background:rgba(92,184,138,0.08);border:1px solid rgba(92,184,138,0.3);border-radius:8px;padding:10px;text-align:center;">
+        <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;">📍 Entry</div>
+        <div style="font-size:16px;font-weight:700;color:var(--bull);font-family:'JetBrains Mono',monospace;">$${sug.entry}</div>
+      </div>
+      <div style="background:rgba(224,93,93,0.08);border:1px solid rgba(224,93,93,0.3);border-radius:8px;padding:10px;text-align:center;">
+        <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;">🛑 Stop Loss</div>
+        <div style="font-size:16px;font-weight:700;color:var(--bear);font-family:'JetBrains Mono',monospace;">$${sug.sl}</div>
+      </div>
+      <div style="background:rgba(201,169,97,0.08);border:1px solid rgba(201,169,97,0.3);border-radius:8px;padding:10px;text-align:center;">
+        <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;">🎯 Take Profit</div>
+        <div style="font-size:16px;font-weight:700;color:var(--gold);font-family:'JetBrains Mono',monospace;">$${sug.tp}</div>
+      </div>
+    </div>` : '';
+    const applyBtn = (sug && asset && asset.symbol) ? `<button onclick="(function(){ const a=ASSETS.find(x=>x.symbol==='${asset.symbol}'); if(!a) return; a.entry=${sug.entry}; a.sl=${sug.sl}; a.tp=${sug.tp}; a.tp1=${sug.tp}; try{saveLevels();}catch(e){} try{showToast('✓ ${asset.symbol} levels applied from ${tfLabel}','ok');}catch(e){} try{updateTVAnalysis('${asset.symbol}');}catch(e){} try{renderSetups();renderAssets();}catch(e){} })()" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;margin-top:6px;">⇣ Apply ${tfLabel} levels to ${asset.symbol}</button>` : '';
+    return `<div style="background:linear-gradient(180deg, rgba(201,169,97,0.06), transparent);border:1.5px solid var(--gold);border-radius:12px;padding:16px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;font-family:'JetBrains Mono',monospace;">Selected timeframe</span>
+          <span style="background:var(--gold);color:#000;padding:3px 10px;border-radius:5px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;">${tfLabel}</span>
+        </div>
+        ${readyBadge}
+      </div>
+      ${headerLine}
+      ${levelsRow}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        ${tickPill(e.fvg, 'FVG')}
+        ${tickPill(e.sweep, 'Sweep')}
+        ${tickPill(e.displacement, 'Displacement')}
+        ${tickPill(e.choch, 'CHoCH')}
+        ${e.rejection ? '<span style="background:rgba(92,184,138,0.18);color:var(--bull);padding:3px 9px;border-radius:5px;font-size:10px;font-weight:700;font-family:\'JetBrains Mono\',monospace;">✓ Wick Rejected</span>' : ''}
+      </div>
+      ${applyBtn}
+    </div>`;
   }
 
   // Per-TF entry/SL/TP rows for the Live Chart analysis panel
@@ -6507,8 +6582,10 @@
       </div>`;
     }
     const tfReadiness = (typeof _renderTfReadinessHTML === 'function') ? _renderTfReadinessHTML(asset) : '';
+    const focusedTFCard = _renderSelectedTFCard(asset, typeof tvCurrentTimeframe !== 'undefined' ? tvCurrentTimeframe : 'W');
     analysisPanel.innerHTML = `
       ${alertCallout}
+      ${focusedTFCard}
       <div style="background:${sigBg};border:1px solid ${sigColor};border-radius:10px;padding:18px;margin-bottom:16px;">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
           <div style="font-size:20px;color:var(--gold);">${symbol}${asset.custom?' ⭐':''}</div>
@@ -7204,32 +7281,51 @@
     });
   }
 
+  async function _gtFetchWithRetry(url, opts, attempts) {
+    attempts = attempts || 2;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const r = await fetch(url, opts);
+        if (r.ok) return await r.json();
+        if (r.status === 429 || r.status >= 500) { await new Promise(rs => setTimeout(rs, 1500)); continue; }
+        throw new Error('HTTP ' + r.status);
+      } catch(e) {
+        if (i === attempts - 1) throw e;
+        await new Promise(rs => setTimeout(rs, 1500));
+      }
+    }
+  }
+
   async function fetchBscMemes(force) {
     if (!force && _bscTrendingCache.length && Date.now() - _bscMemeTs < 5*60*1000) return;
     const host = document.getElementById('bscMemeHost');
     if (host && !_bscTrendingCache.length) host.innerHTML = '<div style="color:var(--text-mute);font-size:11px;padding:8px 0;">⟳ loading meme insights from GeckoTerminal…</div>';
-    try {
-      const opts = {};
-      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(15000);
-      const [trendingRes, newRes] = await Promise.all([
-        fetch('https://api.geckoterminal.com/api/v2/networks/bsc/trending_pools?include=base_token,dex&page=1', opts),
-        fetch('https://api.geckoterminal.com/api/v2/networks/bsc/new_pools?include=base_token,dex&page=1', opts)
-      ]);
-      if (trendingRes.ok) _bscTrendingCache = _parseGTPools(await trendingRes.json());
-      if (newRes.ok)      _bscNewCache      = _parseGTPools(await newRes.json());
-      _bscMemeTs = Date.now();
-      _renderBscMemes();
-      // Bulk-scan all contracts via GoPlus in background, then re-render with
-      // risk badges + snipe scores and check for hot-snipe alerts
-      const allContracts = Array.from(new Set([..._bscTrendingCache, ..._bscNewCache].map(p => p.contract).filter(Boolean)));
-      if (allContracts.length) {
-        _bulkFetchGoplus(allContracts).then(() => {
-          try { _renderBscMemes(); } catch(e) {}
-          try { _checkSnipeAlerts(); } catch(e) {}
-        }).catch(()=>{});
+    const opts = {};
+    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(15000);
+    let trendingErr = null, newErr = null;
+    const [trendingResult, newResult] = await Promise.allSettled([
+      _gtFetchWithRetry('https://api.geckoterminal.com/api/v2/networks/bsc/trending_pools?include=base_token,dex&page=1', opts, 2),
+      _gtFetchWithRetry('https://api.geckoterminal.com/api/v2/networks/bsc/new_pools?include=base_token,dex&page=1', opts, 2)
+    ]);
+    if (trendingResult.status === 'fulfilled') _bscTrendingCache = _parseGTPools(trendingResult.value);
+    else trendingErr = trendingResult.reason?.message || 'unknown';
+    if (newResult.status === 'fulfilled') _bscNewCache = _parseGTPools(newResult.value);
+    else newErr = newResult.reason?.message || 'unknown';
+    _bscMemeTs = Date.now();
+    if (trendingErr && newErr) {
+      console.warn('[GeckoTerminal] both endpoints failed:', { trendingErr, newErr });
+      if (host && !_bscTrendingCache.length && !_bscNewCache.length) {
+        host.innerHTML = `<div style="background:rgba(224,93,93,0.08);border:1px solid var(--bear);border-radius:10px;padding:14px;font-size:11px;color:var(--bear);line-height:1.6;">⚠ GeckoTerminal fetch failed (${trendingErr} / ${newErr}).<br>Possible causes: rate limit (try ↻ Refresh in 30s), CORS in this browser, or temporary outage. The Token Lookup field still works for specific contracts.</div>`;
       }
-    } catch(e) {
-      if (host) host.innerHTML = `<div style="color:var(--bear);font-size:11px;">GeckoTerminal fetch failed: ${e.message}</div>`;
+      return;
+    }
+    _renderBscMemes();
+    const allContracts = Array.from(new Set([..._bscTrendingCache, ..._bscNewCache].map(p => p.contract).filter(Boolean)));
+    if (allContracts.length) {
+      _bulkFetchGoplus(allContracts).then(() => {
+        try { _renderBscMemes(); } catch(e) {}
+        try { _checkSnipeAlerts(); } catch(e) {}
+      }).catch(()=>{});
     }
   }
 
