@@ -1482,6 +1482,79 @@
     .cf-rank-strip { grid-template-columns: repeat(3, 1fr); }
   }
 
+  /* ═══════════════════════════════════
+     TRADE ACTIONS (Open on MEXC / Mark as Taken)
+  ═══════════════════════════════════ */
+  .trade-actions {
+    margin-top: 18px;
+    padding: 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .trade-actions-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--gold);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    margin-bottom: 10px;
+    font-weight: 600;
+  }
+  .trade-actions-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .trade-act-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 14px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: 'Geist', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .trade-act-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: var(--gold);
+  }
+  .trade-act-btn .ta-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-left: 4px;
+  }
+  .trade-act-mexc { border-color: rgba(201,169,97,0.4); color: var(--gold); }
+  .trade-act-mexc:hover:not(:disabled) { background: rgba(201,169,97,0.08); }
+  .trade-act-taken { border-color: rgba(92,184,138,0.35); color: var(--bull); }
+  .trade-act-taken:hover:not(:disabled) { background: rgba(92,184,138,0.06); }
+  .trade-actions-hint {
+    margin-top: 9px;
+    font-size: 10px;
+    color: var(--text-mute);
+    line-height: 1.5;
+  }
+
+  body[data-density="compact"] .trade-actions { padding: 10px; margin-top: 12px; }
+  body[data-density="compact"] .trade-act-btn { padding: 9px 11px; font-size: 12px; }
+  body[data-density="compact"] .trade-actions-hint { font-size: 9px; }
+
+  @media (max-width: 640px) {
+    .trade-actions-row { grid-template-columns: 1fr; gap: 8px; }
+    .trade-act-btn { padding: 14px; }
+  }
+
   </style>
 </head>
 <body>
@@ -3378,8 +3451,11 @@
         </div>
       </div>
 
+      <!-- Trade actions: deep-link + log live -->
+      ${tradeActionsHTML(asset.symbol)}
+
       <!-- Editable remarks -->
-      <div style="margin-bottom:8px;">
+      <div style="margin-bottom:8px;margin-top:16px;">
         <div style="color:var(--gold);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;">📝 Your Remarks</div>
         <textarea id="remarkInput_${asset.symbol}"
           placeholder="Add your own notes — structure observations, confluences, what you're watching…"
@@ -4736,6 +4812,107 @@
   }
 
   // ═══════════════════════════════════════════════════════
+  // TRADE ACTIONS — deep-link to MEXC + log live trade
+  // No keys, no auto-execution. Click → opens MEXC trading
+  // page in new tab; Mark as Taken → journal entry whose
+  // outcome auto-tracks via existing scheduleOutcomeChecks.
+  // ═══════════════════════════════════════════════════════
+  const MEXC_FUTURES_URL_MAP = {
+    'BTC':'BTC_USDT', 'ETH':'ETH_USDT', 'SOL':'SOL_USDT', 'BNB':'BNB_USDT',
+    'XRP':'XRP_USDT', 'SUI':'SUI_USDT', 'ASTER':'ASTER_USDT', 'ASTR':'ASTER_USDT',
+    'GOLD':'XAUT_USDT', 'SILVER':'XAG_USDT'
+    // US100 is not listed on MEXC — button disables for it
+  };
+
+  function openOnMEXC(symbol) {
+    const pair = MEXC_FUTURES_URL_MAP[symbol];
+    if (!pair) {
+      showToast(symbol + ' is not on MEXC futures', 'warn');
+      return;
+    }
+    window.open('https://www.mexc.com/futures/' + pair, '_blank', 'noopener');
+  }
+
+  function markTradeTaken(symbol) {
+    const asset = ASSETS.find(a => a.symbol === symbol);
+    if (!asset) { showToast('Asset not found', 'err'); return; }
+
+    const filledStr = prompt('Filled entry price for ' + symbol + '?\n\nLeave blank to use planned entry $' + asset.entry, asset.entry);
+    if (filledStr === null) return; // cancelled
+    const filled = parseFloat(filledStr) || asset.entry;
+    if (!isFinite(filled) || filled <= 0) { showToast('Invalid entry price', 'err'); return; }
+
+    const sizeStr = prompt('Position size (USD notional)?', '10');
+    if (sizeStr === null) return;
+    const size = parseFloat(sizeStr);
+
+    const gst = getGST();
+    let analysisStr = '';
+    try { analysisStr = analyzeAsset(asset, gst); } catch(e) {}
+
+    const entry = {
+      id: Date.now(),
+      time: fmtTime(gst) + ' GST',
+      date: gst.toLocaleDateString('en-GB'),
+      timestamp: Date.now(),
+      symbol: asset.symbol,
+      signal: 'taken-live',
+      live: true,
+      sizeUsd: isFinite(size) ? size : null,
+      priceAtCall: asset.price,
+      filledEntry: filled,
+      entry: asset.entry,
+      sl: asset.sl,
+      tp: asset.tp || asset.tp1 || 0,
+      grade: asset.grade,
+      bias: asset.bias,
+      score: asset.checks.reduce((a,b) => a + b, 0),
+      session: (getCurrentSession(gst) && getCurrentSession(gst).name) || 'Off Session',
+      analysis: analysisStr,
+      outcome: null,
+      outcomeChecks: {}
+    };
+    journal.unshift(entry);
+    saveJournal();
+    try { renderJournal(); } catch(e) {}
+    try { scheduleOutcomeChecks(entry); } catch(e) {}
+
+    const sizeNote = isFinite(size) ? ' · $' + size + ' size' : '';
+    if (NON_BINANCE_ASSETS.includes(symbol)) {
+      showToast('✓ ' + symbol + ' logged as live (manual outcome — non-Binance)' + sizeNote, 'ok');
+    } else {
+      showToast('✓ ' + symbol + ' logged · outcome will auto-track at 30m/1h/4h/8h' + sizeNote, 'ok');
+    }
+  }
+
+  // Returns HTML for the "Open on MEXC" + "Mark as Taken" button row.
+  // Used by Live Chart analysis panel and asset detail modal.
+  function tradeActionsHTML(symbol) {
+    const asset = ASSETS.find(a => a.symbol === symbol);
+    const bias = asset && (asset.bias || '').toUpperCase().includes('BULL') ? 'LONG' : 'SHORT';
+    const onMexc = !!MEXC_FUTURES_URL_MAP[symbol];
+    const mexcPair = MEXC_FUTURES_URL_MAP[symbol] || '';
+    const mexcBtn = onMexc
+      ? '<button onclick="openOnMEXC(\'' + symbol + '\')" class="trade-act-btn trade-act-mexc">' +
+        '<span style="font-size:13px;">▶</span><span>Open on MEXC</span>' +
+        '<span class="ta-meta">' + mexcPair + '</span></button>'
+      : '<button class="trade-act-btn" disabled style="opacity:0.4;cursor:not-allowed;">' +
+        '<span style="font-size:13px;">—</span><span>Not on MEXC</span>' +
+        '<span class="ta-meta">' + symbol + '</span></button>';
+    const takenBtn = '<button onclick="markTradeTaken(\'' + symbol + '\')" class="trade-act-btn trade-act-taken">' +
+                     '<span style="font-size:13px;">✓</span><span>Mark as Taken</span>' +
+                     '<span class="ta-meta">' + bias + '</span></button>';
+    return '<div class="trade-actions">' +
+           '<div class="trade-actions-title">Trade Actions</div>' +
+           '<div class="trade-actions-row">' + mexcBtn + takenBtn + '</div>' +
+           '<div class="trade-actions-hint">' +
+             'Open on MEXC opens the futures pair in a new tab — you confirm the order yourself. ' +
+             'Mark as Taken logs the trade to the journal so the outcome auto-tracks.' +
+           '</div>' +
+           '</div>';
+  }
+
+  // ═══════════════════════════════════════════════════════
   // ＋ ADD ASSET GATEWAY
   // ═══════════════════════════════════════════════════════
   const TRIGGER_NAMES = [
@@ -5328,6 +5505,7 @@
           <div style="font-size:14px;font-weight:600;color:${(asset.bias||'').toUpperCase().includes('BULL')?'var(--bull)':'var(--bear)'};font-family:'JetBrains Mono',monospace;">${(asset.bias||'').substring(0,4)}</div>
         </div>
       </div>
+      ${tradeActionsHTML(symbol)}
     `;
   }
 
