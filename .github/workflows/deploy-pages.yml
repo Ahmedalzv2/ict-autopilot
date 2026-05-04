@@ -1,0 +1,51 @@
+name: Deploy dashboard to GitHub Pages
+
+# Auto-deploys index.html (and the rest of the repo) to GitHub Pages on
+# every push to main. The user just bookmarks
+# https://Ahmedalzv2.github.io/ict-autopilot/ — it always shows the latest
+# code without manual downloads.
+#
+# Only main is wired up here because the github-pages environment has
+# branch-protection rules that only allow the default branch to deploy.
+# Pushes from feature branches were being rejected with
+# "Branch '<feature>' is not allowed to deploy to github-pages
+#  due to environment protection rules."
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # The whole repo so Pages can serve any future asset alongside
+          # index.html. Hosted as a static site — no build step.
+          path: '.'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
