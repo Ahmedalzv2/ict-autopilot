@@ -1843,11 +1843,11 @@
     },
     {
       symbol: 'SILVER', platform: 'MEXC FUTURES', type: 'FUTURES',
-      entry: 31.20, sl: 30.40, tp1: 33.00, tp2: 34.20,
-      grade: 'b', armed: false, price: 32.00, change24h: 0,
-      bias: 'BEARISH', dol: '$28–29', invalidation: 'Monthly close > $36',
-      remarks: 'Awaiting live price sync from MEXC SILVER_USDT perp.',
-      watch: 'Sweep of 30.40 SSL + CHoCH → long. Or break 30.40 = continuation short.',
+      entry: 75.65, sl: 75.50, tp1: 75.90, tp2: 76.20,
+      grade: 'b', armed: false, price: 75.655, change24h: 0,
+      bias: 'BEARISH', dol: '$68–70', invalidation: 'Monthly close > $90',
+      remarks: 'Retracing after strong move. Fib 0.5–0.618 zone.',
+      watch: '$0.618 Fib ($74.69) SSL sweep + CHoCH → long. Or continuation short.',
       levels: null, checks: [1,1,0,1,1,1,0,1,1,1], reason: 'B — backup liquidity, tier B only'
     }
   ];
@@ -6343,29 +6343,20 @@
       } else console.warn('GOLD: all sources failed or bad value:', price);
     }
 
-    // ── SILVER: MEXC perp SILVER_USDT → TV OANDA:XAGUSD ──
-    // SILVER_USDT is MEXC's real silver perp (~$30/oz). Both XAG_USDT and the
-    // MEXC spot XAGUSDT are wrapped-silver tokens that drift off-peg (~$75) —
-    // never fall back to them for live price; jump straight to TV scanner.
+    // ── SILVER: MEXC perp SILVER_USDT (single source — matches the chart) ──
+    // The dashboard tracks MEXC:SILVERUSDT.P (the perp shown on the Live Chart
+    // tab), so this is the ONE source of truth. Do not fall back to spot XAG
+    // or OANDA:XAGUSD — those quote real silver per oz (~$32) and would
+    // override the perp price the user actually trades against.
     const silverAsset = ASSETS.find(a => a.symbol === 'SILVER');
     if (silverAsset) {
-      const inRange = p => isFinite(p) && p > 10 && p < 60;
-      let price = await mexcContractPrice('SILVER_USDT');
-      if (!inRange(price)) try {
-        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['OANDA:XAGUSD','TVC:SILVER','FX:XAGUSD']},columns:['close']}), cache:'no-store', signal:sig()});
-        if (r.ok) {
-          const j = await r.json();
-          for (const row of (j?.data || [])) {
-            const p = row?.d?.[0];
-            if (inRange(p)) { price = p; break; }
-          }
-        }
-      } catch(e) {}
+      const inRange = p => isFinite(p) && p > 0 && p < 1000;
+      const price = await mexcContractPrice('SILVER_USDT');
       if (inRange(price)) {
         silverAsset.price = price; updated = true;
         console.log('%c📡 SILVER: $' + price.toFixed(2), 'color:#c0c0c0;font-family:monospace');
         if (typeof autoUpdateChecks === 'function') autoUpdateChecks(silverAsset);
-      } else console.warn('SILVER: all sources failed or bad value:', price);
+      } else console.warn('SILVER: MEXC SILVER_USDT perp fetch failed:', price);
     }
 
     // ── US100 via TradingView Scanner → Yahoo ──
