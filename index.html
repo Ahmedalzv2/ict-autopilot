@@ -3457,22 +3457,35 @@
   }
 
   function acknowledgeAlert(symbol) {
+    console.log('[acknowledgeAlert] clicked for', symbol);
     dismissAlert();
     const asset = ASSETS.find(a => a.symbol === symbol);
-    if (!asset) return;
-    // Jump to live chart and load the alerted asset
-    try { switchTab('live-chart'); } catch(e) {}
+    if (!asset) { console.warn('[acknowledgeAlert] asset not found:', symbol); return; }
+
+    // Switch to live-chart tab directly (don't rely on global `event`)
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    const liveChartEl = document.getElementById('live-chart');
+    if (liveChartEl) liveChartEl.classList.add('active');
+    document.querySelectorAll('.nav-btn').forEach(b => {
+      b.classList.remove('active');
+      const oc = b.getAttribute('onclick') || '';
+      if (oc.includes("'live-chart'")) b.classList.add('active');
+    });
+    document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.remove('active'));
+    const mobBtn = document.getElementById('mobBtn-live-chart');
+    if (mobBtn) mobBtn.classList.add('active');
+    window.scrollTo({top: 0, behavior: 'smooth'});
+
+    // Load the alerted asset on the chart + analysis panel
     try {
-      if (typeof switchTVChart === 'function') {
-        switchTVChart(symbol);
-      } else if (typeof tvCurrentSymbol !== 'undefined') {
-        tvCurrentSymbol = symbol;
-        const sel = document.getElementById('tvSymbolSelect');
-        if (sel) sel.value = symbol;
-        if (typeof initTVChart === 'function') initTVChart(symbol, tvCurrentTimeframe);
-        if (typeof updateTVAnalysis === 'function') updateTVAnalysis(symbol);
-      }
-    } catch(e) { console.warn('acknowledgeAlert chart switch failed:', e); }
+      if (typeof tvCurrentSymbol !== 'undefined') tvCurrentSymbol = symbol;
+      const sel = document.getElementById('tvSymbolSelect');
+      if (sel) sel.value = symbol;
+      if (typeof initTVChart === 'function') initTVChart(symbol, (typeof tvCurrentTimeframe !== 'undefined' ? tvCurrentTimeframe : '60'));
+      if (typeof updateTVAnalysis === 'function') updateTVAnalysis(symbol);
+    } catch(e) { console.warn('[acknowledgeAlert] chart load failed:', e); }
+
+    try { showToast(`📈 ${symbol} loaded on Live Chart`, 'ok'); } catch(e) {}
   }
 
   function checkArmedAlerts(gst) {
