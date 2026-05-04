@@ -3620,7 +3620,13 @@
 
     // Main analysis paragraph (ICT language — confirmation not prediction)
     let para = '';
-    if (sig === 'armed') {
+    if (sig === 'enter') {
+      const choch = getCHoCHStatus ? getCHoCHStatus(asset) : {detected: false};
+      const chochMsg = choch.detected ? ' ✓ 1m CHoCH confirmed.' : '';
+      const mtf = getMTFAligned(asset);
+      const mtfMsg = mtf.aligned ? ' ✓ All TF aligned.' : (mtf.score >= 2 ? ' ✓ MTF aligned (2/3).' : ' ⚠ MTF misaligned.');
+      para = `🔴 ENTER NOW — EXECUTE TRADE. Price ${priceStr} is AT your ${dir} entry zone (${pctStr}% from ${entryStr}). ${score}/${maxScore} ICT triggers confirmed.${chochMsg}${mtfMsg} LIMIT ${dir} at ${entryStr}. Stop Loss at ${slStr}. TP1 at ${tpStr} (${rr}:1 R:R). This is your signal — execute now, do not chase higher/lower. Confirmation, not prediction.`;
+    } else if (sig === 'armed') {
       const choch = getCHoCHStatus ? getCHoCHStatus(asset) : {detected: false};
       const chochMsg = choch.detected ? ' ✓ 1m CHoCH confirmed.' : '';
       const mtf = getMTFAligned(asset);
@@ -5592,6 +5598,7 @@
   const TF_LIST   = ['1m','5m','15m','1h','4h','1d'];
   const TF_LABELS = { '1m':'1m','5m':'5m','15m':'15m','1h':'1h','4h':'4h','1d':'24h' };
   const TF_MEXC   = { '1m':'Min1','5m':'Min5','15m':'Min15','1h':'Min60','4h':'Hour4','1d':'Day1' };
+  const TF_MEXC_SPOT = { '1m':'1m','5m':'5m','15m':'15m','1h':'60m','4h':'4h','1d':'1d' };
   const TF_MS     = { '1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000 };
 
   let _autoAnalysisRunning = false;
@@ -5620,6 +5627,16 @@
       const d = j?.data;
       if (!d?.time?.length) return null;
       return d.time.map((t,i) => ({ t:t*1000, o:+d.open[i], h:+d.high[i], l:+d.low[i], c:+d.close[i], v:+(d.vol?.[i]||0) }));
+    } catch(e) { return null; }
+  }
+
+  async function fetchMexcSpotKlines(spotSym, interval, limit=50) {
+    try {
+      const r = await fetch(`https://api.mexc.com/api/v3/klines?symbol=${spotSym}&interval=${TF_MEXC_SPOT[interval]||'1m'}&limit=${limit}`, {cache:'no-store'});
+      if (!r.ok) return null;
+      const j = await r.json();
+      if (!Array.isArray(j) || j.length === 0) return null;
+      return j.map(k => ({ t:+k[0], o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5] }));
     } catch(e) { return null; }
   }
 
@@ -5831,11 +5848,12 @@
   }
 
   function _resolveSymbols(asset) {
-    // Returns { binance, mexc } pair-symbol candidates per asset
-    if (asset.symbol === 'GOLD')   return { binance:'XAUTUSDT', mexc:'XAUT_USDT' };
-    if (asset.symbol === 'SILVER') return { binance:null,        mexc:'XAG_USDT'  };
-    if (asset.symbol === 'US100')  return { binance:null,        mexc:null        }; // CFD-only, skip MTF
-    return { binance: asset.symbol + 'USDT', mexc: (MEXC_PERP_MAP[asset.symbol+'USDT'] || asset.symbol + '_USDT') };
+    // Returns { binance, mexc, mexcSpot } pair-symbol candidates per asset
+    if (asset.symbol === 'GOLD')   return { binance:'XAUTUSDT', mexc:'XAUT_USDT', mexcSpot:'XAUTUSDT' };
+    if (asset.symbol === 'SILVER') return { binance:null,        mexc:'XAG_USDT',  mexcSpot:'XAGUSDT'  };
+    if (asset.symbol === 'US100')  return { binance:null,        mexc:null,        mexcSpot:null      }; // CFD-only, skip MTF
+    const base = asset.symbol + 'USDT';
+    return { binance: base, mexc: (MEXC_PERP_MAP[base] || asset.symbol + '_USDT'), mexcSpot: base };
   }
 
   async function autoAnalyzeAsset(asset) {
@@ -5847,14 +5865,18 @@
       return;
     }
     const syms = _resolveSymbols(asset);
-    if (!syms.binance && !syms.mexc) { asset.tfEntries = null; return; }
+    if (!syms.binance && !syms.mexc && !syms.mexcSpot) { asset.tfEntries = null; return; }
     const tfEntries = {};
+    let totalFails = 0;
     for (const tf of TF_LIST) {
       let kl = null;
       if (syms.binance) kl = await fetchBinanceKlines(syms.binance, tf, 50);
       if ((!kl || kl.length < 22) && syms.mexc) kl = await fetchMexcKlines(syms.mexc, tf, 50);
+      if ((!kl || kl.length < 22) && syms.mexcSpot) kl = await fetchMexcSpotKlines(syms.mexcSpot, tf, 50);
+      if (!kl || kl.length < 22) totalFails++;
       tfEntries[tf] = _analyzeKlines(kl);
     }
+    if (totalFails === TF_LIST.length) console.warn(`[autoAnalyze] ${asset.symbol}: all kline sources failed (binance=${syms.binance} mexc=${syms.mexc} mexcSpot=${syms.mexcSpot})`);
     asset.tfEntries = tfEntries;
     asset.tfEntriesUpdated = Date.now();
 
