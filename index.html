@@ -3408,13 +3408,6 @@
 
         <div class="alert-analysis">${analysis}</div>
 
-        ${(() => {
-          const ex = _getExchangeForAsset(asset);
-          return `<button class="alert-trade-btn" style="margin-bottom:8px;width:100%;padding:14px;border-radius:10px;background:${ex.bg};border:1px solid ${ex.border};color:${ex.fg};font-weight:700;font-size:14px;cursor:pointer;letter-spacing:.02em;" onclick="openExchangeForAsset('${asset.symbol}')">
-            ${ex.icon} Trade ${asset.symbol} on ${ex.name} · ${ex.modeLabel}
-          </button>`;
-        })()}
-
         <button class="alert-dismiss-btn" style="background:${color}" onclick="acknowledgeAlert('${asset.symbol}')">
           ✓ Acknowledge · Open Live Chart
         </button>
@@ -3440,53 +3433,6 @@
   function dismissAlert() {
     const overlay = document.getElementById('armedOverlay');
     if (overlay) { overlay.style.opacity = '0'; overlay.style.transition = 'opacity .2s'; setTimeout(() => overlay.remove(), 200); }
-  }
-
-  // Exchange routing for the alert overlay's Trade button.
-  // Futures (or assets on MEXC FUTURES) → MEXC perp page.
-  // Spot crypto (Binance SPOT) → Binance spot trade page.
-  // US100 has no retail-friendly direct page, so we open MEXC's index.
-  function _getExchangeForAsset(asset) {
-    const isSpot = asset.tradeMode === 'spot';
-    const platform = (asset.platform || '').toUpperCase();
-
-    // SPOT mode → always Binance spot
-    if (isSpot) {
-      const pair = asset.symbol + '_USDT';
-      return {
-        name: 'Binance', icon: '🟡', modeLabel: 'SPOT',
-        url: `https://www.binance.com/en/trade/${pair}?type=spot`,
-        bg: 'rgba(240,185,11,0.12)', border: 'rgba(240,185,11,0.45)', fg: '#f0b90b'
-      };
-    }
-
-    // FUTURES mode
-    let mexcPair;
-    if (asset.symbol === 'GOLD') mexcPair = 'XAUT_USDT';
-    else if (asset.symbol === 'SILVER') mexcPair = 'XAG_USDT';
-    else if (asset.symbol === 'US100') {
-      return {
-        name: 'TradingView', icon: '📈', modeLabel: 'CFD',
-        url: 'https://www.tradingview.com/symbols/FPMARKETS-US100/',
-        bg: 'rgba(41,98,255,0.12)', border: 'rgba(41,98,255,0.45)', fg: '#5b8def'
-      };
-    }
-    else mexcPair = (typeof MEXC_PERP_MAP === 'object' && MEXC_PERP_MAP[asset.symbol+'USDT'])
-      ? MEXC_PERP_MAP[asset.symbol+'USDT']
-      : asset.symbol + '_USDT';
-
-    return {
-      name: 'MEXC', icon: '🔵', modeLabel: 'FUTURES',
-      url: `https://futures.mexc.com/exchange/${mexcPair}`,
-      bg: 'rgba(30,150,255,0.12)', border: 'rgba(30,150,255,0.45)', fg: '#1e96ff'
-    };
-  }
-
-  function openExchangeForAsset(symbol) {
-    const asset = ASSETS.find(a => a.symbol === symbol);
-    if (!asset) return;
-    const ex = _getExchangeForAsset(asset);
-    try { window.open(ex.url, '_blank', 'noopener'); } catch(e) { window.location.href = ex.url; }
   }
 
   function acknowledgeAlert(symbol) {
