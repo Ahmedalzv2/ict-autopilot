@@ -2524,169 +2524,6 @@
   }
 
   // ═══════════════════════════════════════
-  // ICT SETUP DIAGRAM (Canvas)
-  // ═══════════════════════════════════════
-  function drawSetupDiagram(canvasId, asset, isBull) {
-    const canvas = document.getElementById(canvasId);
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const W = canvas.offsetWidth || 400;
-    canvas.width = W; canvas.height = 220;
-    const H = 220;
-
-    const entry = asset.entry, sl = asset.sl;
-    const tp = asset.tp || asset.tp1 || 0;
-    if (!entry || !sl) {
-      ctx.fillStyle = '#0d0d12'; ctx.fillRect(0,0,W,H);
-      ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('Set Entry & SL to see diagram', W/2, H/2); return;
-    }
-    const slDist = Math.abs(entry - sl);
-    const tpPrice = tp || (isBull ? entry + slDist*2 : entry - slDist*2);
-    const bufPct = 0.35;
-    const priceMin = isBull ? sl - slDist*bufPct : tpPrice - slDist*bufPct;
-    const priceMax = isBull ? tpPrice + slDist*bufPct : sl + slDist*bufPct;
-    const pRange = priceMax - priceMin || 1;
-    const chartW = W - 72;
-    const py = (p) => H*0.96 - ((p - priceMin) / pRange) * H*0.88;
-
-    // Background
-    ctx.fillStyle = '#0d0d12'; ctx.fillRect(0,0,W,H);
-    // Subtle grid
-    ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.lineWidth = 1; ctx.setLineDash([]);
-    for (let i=0;i<=4;i++) { const y=H*0.05+(H*0.88/4)*i; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
-
-    // Candle drawing helper
-    function drawCandle(x, o, h, l, c, bull) {
-      const col = bull ? '#5cb88a' : '#e05d5d';
-      const bTop = py(Math.max(o,c)), bBot = py(Math.min(o,c)), bH = Math.max(2, bBot-bTop);
-      ctx.strokeStyle = col; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(x+5, py(h)); ctx.lineTo(x+5, py(l)); ctx.stroke();
-      ctx.fillStyle = bull ? col : col;
-      ctx.globalAlpha = 0.9; ctx.fillRect(x, bTop, 10, bH); ctx.globalAlpha = 1;
-    }
-
-    // Horizontal level line + right-side label
-    function drawHLine(price, color, label, dashed, lw) {
-      const y = py(price);
-      if (y < 0 || y > H) return;
-      ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = lw||1;
-      ctx.setLineDash(dashed ? [4,4] : []);
-      ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(chartW,y); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = color; ctx.font = '600 9px "JetBrains Mono",monospace'; ctx.textAlign='left';
-      ctx.fillText(label, chartW+4, y+3); ctx.restore();
-    }
-
-    const cu = 16; // candle unit width (10px candle + 6px gap)
-    let candles = [];
-    let fvgTop, fvgBot;
-
-    if (isBull) {
-      const above = entry + slDist*0.75;
-      const sweep = sl - slDist*0.05;
-      const dispTop = entry + slDist*1.7;
-      fvgTop = entry + slDist*0.28; fvgBot = entry - slDist*0.08;
-      candles = [
-        {o:above+slDist*.2,  h:above+slDist*.3,  l:above-slDist*.05, c:above,             bull:false},
-        {o:above,            h:above+slDist*.05,  l:above-slDist*.2,  c:above-slDist*.15,  bull:false},
-        {o:above-slDist*.15, h:above-slDist*.05,  l:above-slDist*.35, c:above-slDist*.25,  bull:false},
-        {o:above-slDist*.25, h:above-slDist*.15,  l:sweep,            c:entry-slDist*.28,  bull:false, isSweep:true},
-        {o:entry-slDist*.28, h:dispTop,            l:entry-slDist*.4,  c:entry+slDist*1.55, bull:true,  isDisp:true},
-        {o:entry+slDist*1.55,h:entry+slDist*1.75,  l:entry+slDist*1.45,c:entry+slDist*1.62,bull:true},
-        {o:entry+slDist*1.62,h:entry+slDist*1.65,  l:fvgTop+slDist*.2, c:fvgTop+slDist*.25,bull:false},
-        {o:fvgTop+slDist*.25,h:fvgTop+slDist*.3,   l:fvgBot,           c:entry+slDist*.02, bull:false},
-        {o:entry+slDist*.02, h:entry+slDist*.25,   l:entry-slDist*.04, c:entry+slDist*.18, bull:true,  isEntry:true},
-      ];
-    } else {
-      const below = entry - slDist*0.75;
-      const sweep = sl + slDist*0.05;
-      const dispBot = entry - slDist*1.7;
-      fvgBot = entry - slDist*0.28; fvgTop = entry + slDist*0.08;
-      candles = [
-        {o:below-slDist*.2,  h:below+slDist*.05,  l:below-slDist*.3,  c:below,             bull:true},
-        {o:below,            h:below+slDist*.2,   l:below-slDist*.05, c:below+slDist*.15,  bull:true},
-        {o:below+slDist*.15, h:below+slDist*.35,  l:below+slDist*.05, c:below+slDist*.25,  bull:true},
-        {o:below+slDist*.25, h:sweep,             l:below+slDist*.15, c:entry+slDist*.28,  bull:true,  isSweep:true},
-        {o:entry+slDist*.28, h:entry+slDist*.4,   l:dispBot,          c:entry-slDist*1.55, bull:false, isDisp:true},
-        {o:entry-slDist*1.55,h:entry-slDist*1.45, l:entry-slDist*1.75,c:entry-slDist*1.62, bull:false},
-        {o:entry-slDist*1.62,h:fvgBot-slDist*.2,  l:entry-slDist*1.65,c:fvgBot-slDist*.25, bull:true},
-        {o:fvgBot-slDist*.25,h:fvgTop,            l:fvgBot-slDist*.3, c:entry-slDist*.02,  bull:true},
-        {o:entry-slDist*.02, h:entry+slDist*.04,  l:entry-slDist*.25, c:entry-slDist*.18,  bull:false, isEntry:true},
-      ];
-    }
-
-    // FVG zone (draw before candles so candles overlap it)
-    const fvgStartX = cu*4 + 2;
-    ctx.fillStyle = 'rgba(201,169,97,0.1)';
-    ctx.fillRect(fvgStartX, py(fvgTop), chartW - fvgStartX, py(fvgBot)-py(fvgTop));
-    ctx.strokeStyle = 'rgba(201,169,97,0.35)'; ctx.lineWidth = 1; ctx.setLineDash([3,3]);
-    ctx.beginPath(); ctx.moveTo(fvgStartX, py(fvgTop)); ctx.lineTo(chartW, py(fvgTop)); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(fvgStartX, py(fvgBot)); ctx.lineTo(chartW, py(fvgBot)); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(201,169,97,0.55)'; ctx.font = '8px "JetBrains Mono",monospace'; ctx.textAlign='left';
-    ctx.fillText('FVG / OB', fvgStartX+3, isBull ? py(fvgTop)-3 : py(fvgTop)+10);
-
-    // Horizontal levels
-    if (tp) drawHLine(tpPrice, '#c9a961', 'TP1');
-    drawHLine(entry, '#5cb88a', 'ENTRY', false, 1.5);
-    drawHLine(sl, '#e05d5d', 'SL');
-    if (asset.price && asset.price !== entry) drawHLine(asset.price, 'rgba(255,255,255,0.3)', 'NOW', true);
-
-    // Candles
-    let entryX = 0, entryY = 0;
-    candles.forEach((c,i) => {
-      const x = i * cu;
-      drawCandle(x, c.o, c.h, c.l, c.c, c.bull);
-      if (c.isSweep) {
-        const ly = isBull ? py(c.l)+10 : py(c.h)-4;
-        ctx.fillStyle='rgba(224,93,93,0.75)'; ctx.font='7px "JetBrains Mono",monospace'; ctx.textAlign='center';
-        ctx.fillText(isBull?'SSL swept':'BSL swept', x+5, ly);
-      }
-      if (c.isDisp) {
-        const ly = isBull ? py(c.h)-4 : py(c.l)+10;
-        ctx.fillStyle = isBull?'#5cb88a':'#e05d5d'; ctx.font='600 8px "JetBrains Mono",monospace'; ctx.textAlign='center';
-        ctx.fillText('DISP', x+5, ly);
-      }
-      if (c.isEntry) { entryX = x+5; entryY = py(entry); }
-    });
-
-    // Entry circle with glow
-    if (entryX) {
-      const r = 19;
-      ctx.save();
-      ctx.shadowColor = '#5cb88a'; ctx.shadowBlur = 14;
-      ctx.strokeStyle = '#5cb88a'; ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.arc(entryX, entryY, r, 0, Math.PI*2); ctx.stroke();
-      ctx.restore();
-      ctx.fillStyle = 'rgba(92,184,138,0.12)';
-      ctx.beginPath(); ctx.arc(entryX, entryY, r, 0, Math.PI*2); ctx.fill();
-      ctx.fillStyle = '#5cb88a'; ctx.font = '700 8px "JetBrains Mono",monospace'; ctx.textAlign='center';
-      ctx.fillText('ENTER', entryX, entryY+3);
-    }
-
-    // Arrow showing expected move after entry
-    if (entryX) {
-      const arrStartY = entryY;
-      const arrEndY = py(tpPrice);
-      const arrowX = entryX + 24;
-      const arrowColor = isBull ? '#5cb88a' : '#e05d5d';
-      ctx.save(); ctx.strokeStyle = arrowColor; ctx.lineWidth = 2;
-      ctx.globalAlpha = 0.45; ctx.setLineDash([3,4]);
-      ctx.beginPath(); ctx.moveTo(arrowX, arrStartY); ctx.lineTo(arrowX, arrEndY+6); ctx.stroke();
-      ctx.setLineDash([]); ctx.globalAlpha = 0.7;
-      ctx.beginPath();
-      ctx.moveTo(arrowX-5, arrEndY+8); ctx.lineTo(arrowX, arrEndY-2); ctx.lineTo(arrowX+5, arrEndY+8);
-      ctx.fill(); ctx.restore();
-    }
-
-    // "Confirmation, not prediction" watermark
-    ctx.save(); ctx.globalAlpha = 0.12; ctx.fillStyle = '#c9a961';
-    ctx.font = '9px "JetBrains Mono",monospace'; ctx.textAlign='right';
-    ctx.fillText('Confirmation, not prediction', chartW-2, H-4); ctx.restore();
-  }
-
-  // ═══════════════════════════════════════
   // MODALS
   // ═══════════════════════════════════════
   // Track which asset modal is currently open so we can re-render it on price refresh
@@ -2794,15 +2631,6 @@
         </div>
       </div>
 
-      <!-- ICT Setup Diagram -->
-      <div style="margin-bottom:16px;border-radius:10px;overflow:hidden;border:1px solid var(--border);">
-        <div style="background:var(--bg-elevated);padding:8px 12px;display:flex;align-items:center;justify-content:space-between;">
-          <span style="font-size:10px;color:var(--gold);font-weight:600;text-transform:uppercase;letter-spacing:.1em;">📐 ICT Setup Schematic</span>
-          <span style="font-size:9px;color:var(--text-mute);">${isBull?'BULLISH · LONG':'BEARISH · SHORT'} · Entry circled</span>
-        </div>
-        <canvas id="setupDiagramCanvas" style="width:100%;display:block;background:#0d0d12;"></canvas>
-      </div>
-
       <!-- Entry pinpoint -->
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px;">
         <div style="background:rgba(92,184,138,0.08);border:1px solid rgba(92,184,138,0.25);border-radius:8px;padding:10px;text-align:center;">
@@ -2903,8 +2731,6 @@
       </div>
     `;
     document.getElementById('setupModal').classList.add('active');
-    // Draw the ICT schematic after modal is in DOM
-    requestAnimationFrame(() => drawSetupDiagram('setupDiagramCanvas', asset, isBull));
   }
 
   function saveAssetRemark(symbol, text) {
@@ -7931,7 +7757,7 @@
               if (typeof updateTVAnalysis === 'function') updateTVAnalysis(symbol);
             }
 
-            // Refresh open modal schematic + analysis on live price tick (throttled 2.5s)
+            // Refresh open modal analysis on live price tick (throttled 2.5s)
             if (_openModalSymbol === symbol) {
               const _now = Date.now();
               if (!window._wsModalRefreshTs || _now - window._wsModalRefreshTs > 2500) {
