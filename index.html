@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="app-version" content="2026.05.04.001" />
   <title>Ahmad · ICT AutoPilot v21</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2865,11 +2866,16 @@
 
         <div class="alert-analysis">${analysis}</div>
 
-        <button class="alert-dismiss-btn" style="background:${color}" onclick="dismissAndOpenChart('${asset.symbol}')">
-          ✓ Acknowledge · Open Live Chart
-        </button>
+        <div style="display:flex;gap:10px;flex-direction:column;">
+          <button class="alert-dismiss-btn" style="background:${color}" onclick="dismissAndOpenChart('${asset.symbol}')">
+            ✓ Acknowledge · Open Live Chart
+          </button>
+          <button class="alert-dismiss-btn" style="background:#5cb88a;color:#000;" onclick="dismissAndOpenExchange('${asset.symbol}')">
+            📈 Trade on ${getExchangeLabel(asset.symbol)}
+          </button>
+        </div>
         <div style="margin-top:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">
-          Alert logged to history · jumps to ${asset.symbol} chart with entry/SL/TP
+          Alert logged · open chart for entry/SL/TP, or jump to exchange to set up the trade
         </div>
       </div>
     `;
@@ -2899,6 +2905,55 @@
       try { switchTVChart(symbol); } catch(e) {}
     }
   }
+
+  // Exchange / broker URLs for one-tap trade setup
+  const EXCHANGE_MAP = {
+    'BTC':    { label: 'MEXC',       url: 'https://futures.mexc.com/exchange/BTC_USDT' },
+    'ETH':    { label: 'MEXC',       url: 'https://futures.mexc.com/exchange/ETH_USDT' },
+    'SOL':    { label: 'MEXC',       url: 'https://futures.mexc.com/exchange/SOL_USDT' },
+    'BNB':    { label: 'MEXC',       url: 'https://futures.mexc.com/exchange/BNB_USDT' },
+    'XRP':    { label: 'MEXC',       url: 'https://futures.mexc.com/exchange/XRP_USDT' },
+    'SUI':    { label: 'MEXC',       url: 'https://futures.mexc.com/exchange/SUI_USDT' },
+    'ASTER':  { label: 'MEXC',       url: 'https://futures.mexc.com/exchange/ASTER_USDT' },
+    'GOLD':   { label: 'MEXC',       url: 'https://futures.mexc.com/exchange/XAUT_USDT' },
+    'SILVER': { label: 'MEXC',       url: 'https://futures.mexc.com/exchange/XAG_USDT' },
+    'US100':  { label: 'FP Markets', url: 'https://www.fpmarkets.com/au/login/' }
+  };
+  function getExchangeURL(symbol)   { return (EXCHANGE_MAP[symbol] || EXCHANGE_MAP['BTC']).url; }
+  function getExchangeLabel(symbol) { return (EXCHANGE_MAP[symbol] || EXCHANGE_MAP['BTC']).label; }
+  function dismissAndOpenExchange(symbol) {
+    dismissAlert();
+    const url = getExchangeURL(symbol);
+    if (url) window.open(url, '_blank');
+  }
+
+  // Auto-update banner: detects new deploys and prompts a refresh
+  // Fixes iOS PWA stale-cache problem where new features don't appear until manual reinstall
+  (function autoUpdate(){
+    const meta = document.querySelector('meta[name="app-version"]');
+    if (!meta) return;
+    const cur = meta.getAttribute('content');
+    let banner = null;
+    function showBanner(){
+      if (banner) return;
+      banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#c9a961;color:#000;font:600 13px/1.4 Geist,sans-serif;padding:12px 16px;text-align:center;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.4);';
+      banner.innerHTML = '🔄 New version available — tap to refresh';
+      banner.onclick = () => location.reload(true);
+      document.body.appendChild(banner);
+    }
+    async function check(){
+      try {
+        const r = await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' });
+        if (!r.ok) return;
+        const txt = await r.text();
+        const m = txt.match(/<meta name="app-version" content="([^"]+)"/);
+        if (m && m[1] && m[1] !== cur) showBanner();
+      } catch(e) {}
+    }
+    setTimeout(check, 5000);
+    setInterval(check, 60000);
+  })();
 
   function checkArmedAlerts(gst) {
     ASSETS.forEach(asset => {
