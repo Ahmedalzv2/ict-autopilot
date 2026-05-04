@@ -1,0 +1,10 @@
+{
+  "name": "ict-autopilot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "TZ=UTC node --test --test-reporter=spec 'tests/*.test.mjs'",
+    "test:watch": "TZ=UTC node --test --watch 'tests/*.test.mjs'"
+  }
+}

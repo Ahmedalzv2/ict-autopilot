@@ -3411,7 +3411,7 @@
   // ═══════════════════════════════════════════════════════
   // 🧠 ICT AUTO-ANALYSIS ENGINE (Phase 3)
   // ═══════════════════════════════════════════════════════
-  const CHECK_LABELS = ['HTF Bias','Kill Zone','FVG','OB','CHoCH','MSS','Displacement','Liquidity Sweep','PO3','Macro','Premium/Discount'];
+  const CHECK_LABELS = ['HTF Bias','Kill Zone','FVG','OB','CHoCH','MSS','Displacement','Liquidity Sweep','PO3','Macro'];
 
   // Confidence % — shown instead of "ARMED" label
   // CHoCH detection stub — returns {detected: bool, candles: 1m displacement count}
@@ -3471,26 +3471,37 @@
     const pct = Math.abs((asset.price - asset.entry) / asset.entry);
     const session = getCurrentSession(gst);
     const inKZ = session && session.type !== 'dead';
-    
+
     // Score component (0–60), proximity component (0–25), session component (0–15)
     let scoreComp = (score / maxScore) * 60;
-    
-    // Add CHoCH bonus
+
+    // CHoCH bonus
     const choch = getCHoCHStatus ? getCHoCHStatus(asset) : null;
     if (choch && choch.detected) scoreComp += 5;
-    
-    // Add MTF alignment bonus
+
+    // MTF alignment grading. 2/3 is the gate to ARM in getSignal, so it
+    // deserves credit too — previously only 3/3 got the bonus and 2/3 got
+    // nothing despite being good enough to fire alerts.
     const mtf = getMTFAligned(asset);
-    if (mtf.score === 3) scoreComp += 5;
+    if (mtf.score === 3)      scoreComp += 5;
+    else if (mtf.score === 2) scoreComp += 3;
+    else if (mtf.score === 1) scoreComp -= 2;
     else if (mtf.score === 0) scoreComp -= 5;
-    
+
+    // Proximity tiers aligned with getSignal's ladder so confidence tracks
+    // the signal state instead of drifting against it:
+    //   ≤ 0.05% (enter)  → 25  ·  ≤ 0.15% (armed) → 20
+    //   ≤ 0.5%  (watch)  → 12  ·  ≤ 1.0% (radar)  → 5
     let proxComp = 0;
-    if (pct <= 0.001) proxComp = 25;
-    else if (pct <= 0.002) proxComp = 20;
+    if (pct <= 0.0005) proxComp = 25;
+    else if (pct <= 0.0015) proxComp = 20;
     else if (pct <= 0.005) proxComp = 12;
     else if (pct <= 0.01) proxComp = 5;
-    const sessComp = inKZ ? 15 : (session ? 5 : 0);
-    return Math.min(99, Math.round(scoreComp + proxComp + sessComp));
+    // Dead Zone is a no-trade window per ICT rules — it should not contribute
+    // confidence. Off-session also = 0. Only an active KZ grants 15.
+    const sessComp = inKZ ? 15 : 0;
+    // Floor at 0 — negative confidence is meaningless to a trader.
+    return Math.max(0, Math.min(99, Math.round(scoreComp + proxComp + sessComp)));
   }
 
   function analyzeAsset(asset, gst) {
@@ -4870,27 +4881,41 @@
     if (!je || je.outcome) return; // already resolved
     try {
       const sym = symbol + 'USDT';
+      // Scan every 1m candle from entry → targetTs and check candle highs/lows
+      // for TP/SL touches. Catches wicks — close-only inspection silently
+      // missed intra-candle hits and distorted the win rate.
+      const startTs = je.timestamp;
+      const span = Math.max(1, Math.ceil((targetTs - startTs) / 60000));
+      const limit = Math.min(1000, span + 1);
       let data = null;
       for (const host of BINANCE_HOSTS) {
         try {
-          const r = await fetch(`https://${host}/api/v3/klines?symbol=${sym}&interval=1m&startTime=${targetTs}&limit=1`, {signal: AbortSignal.timeout(8000)});
+          const r = await fetch(`https://${host}/api/v3/klines?symbol=${sym}&interval=1m&startTime=${startTs}&endTime=${targetTs}&limit=${limit}`, {signal: AbortSignal.timeout(8000)});
           data = await r.json();
-          if (data && data[0]) break;
+          if (Array.isArray(data) && data.length) break;
         } catch(e) {}
       }
-      if (data && data[0]) {
-        const closePrice = parseFloat(data[0][4]);
-        je.outcomeChecks[String(mins)] = closePrice;
-        // Determine outcome vs TP1/SL
-        const isBull = je.bias === 'bull' || je.bias === 'BULLISH' || je.bias === '🟢 BULLISH';
-        const hitTP = isBull ? closePrice >= je.tp : closePrice <= je.tp;
-        const hitSL = isBull ? closePrice <= je.sl : closePrice >= je.sl;
-        if (hitTP && !je.outcome) je.outcome = 'win';
-        else if (hitSL && !je.outcome) je.outcome = 'loss';
+      if (Array.isArray(data) && data.length) {
+        const isBull = (je.bias || '').toString().toLowerCase().includes('bull');
+        // Walk chronologically — first TP/SL touch wins. If both happen in
+        // the same candle, default to SL (conservative — wick order is
+        // ambiguous so assume the stop hit first).
+        let resolved = null;
+        for (const k of data) {
+          const high = parseFloat(k[2]);
+          const low = parseFloat(k[3]);
+          const hitTP = isBull ? high >= je.tp : low <= je.tp;
+          const hitSL = isBull ? low <= je.sl : high >= je.sl;
+          if (hitTP && hitSL) { resolved = 'loss'; break; }
+          if (hitTP) { resolved = 'win'; break; }
+          if (hitSL) { resolved = 'loss'; break; }
+        }
+        const lastClose = parseFloat(data[data.length - 1][4]);
+        je.outcomeChecks[String(mins)] = lastClose;
+        if (resolved && !je.outcome) je.outcome = resolved;
         else if (mins === 480 && !je.outcome) je.outcome = 'be';
         saveJournal();
         renderJournal();
-        // Close paper trade on outcome
       }
     } catch(e) {}
   }
