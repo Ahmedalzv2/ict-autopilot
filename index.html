@@ -6343,13 +6343,13 @@
       } else console.warn('GOLD: all sources failed or bad value:', price);
     }
 
-    // ── SILVER: MEXC perp SILVER_USDT → TV scanner MEXC:SILVERUSDT.P ──
-    // Both sources resolve to the SAME symbol the Live Chart tab loads, so
-    // the dashboard tile and chart price are guaranteed to match. The TV
-    // scanner fallback exists because MEXC's contract API sometimes blocks
-    // browser CORS — TV proxies through their own infra, which always works.
-    // Do NOT fall back to OANDA:XAGUSD / spot XAG — those quote real silver
-    // per oz (~$32) and would override the perp price you actually trade.
+    // ── SILVER: MEXC perp SILVER_USDT → TV scanner MEXC:SILVERUSDT.P → Binance XAGUSDT ──
+    // Three sources, all of which trade close to the perp the chart loads
+    // (MEXC:SILVERUSDT.P ~$72-76). MEXC contract API often blocks browser
+    // CORS — the TV scanner and Binance fallbacks both proxy/expose data
+    // that browsers can fetch reliably. Do NOT fall back to OANDA:XAGUSD
+    // or spot XAG — those quote real silver per oz (~$32) and would
+    // override the perp price you actually trade.
     const silverAsset = ASSETS.find(a => a.symbol === 'SILVER');
     if (silverAsset) {
       const inRange = p => isFinite(p) && p > 0 && p < 1000;
@@ -6362,11 +6362,17 @@
           if (inRange(p)) price = p;
         }
       } catch(e) {}
+      if (!inRange(price)) for (const host of BINANCE_HOSTS) {
+        try {
+          const r = await fetch(`https://${host}/api/v3/ticker/price?symbol=XAGUSDT`, {cache:'no-store', signal:sig()});
+          if (r.ok) { const p = parseFloat((await r.json())?.price); if (inRange(p)) { price = p; break; } }
+        } catch(e) {}
+      }
       if (inRange(price)) {
         silverAsset.price = price; updated = true;
         console.log('%c📡 SILVER: $' + price.toFixed(2), 'color:#c0c0c0;font-family:monospace');
         if (typeof autoUpdateChecks === 'function') autoUpdateChecks(silverAsset);
-      } else console.warn('SILVER: MEXC SILVER_USDT + TV scanner both failed');
+      } else console.warn('SILVER: MEXC + TV + Binance all failed');
     }
 
     // ── US100 via TradingView Scanner → Yahoo ──
