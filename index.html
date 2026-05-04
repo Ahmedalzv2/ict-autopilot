@@ -2865,11 +2865,11 @@
 
         <div class="alert-analysis">${analysis}</div>
 
-        <button class="alert-dismiss-btn" style="background:${color}" onclick="dismissAlert()">
-          ✓ Acknowledge · Mark as Seen
+        <button class="alert-dismiss-btn" style="background:${color}" onclick="dismissAndOpenChart('${asset.symbol}')">
+          ✓ Acknowledge · Open Live Chart
         </button>
         <div style="margin-top:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">
-          Alert logged to history · monitoring continues
+          Alert logged to history · jumps to ${asset.symbol} chart with entry/SL/TP
         </div>
       </div>
     `;
@@ -2890,6 +2890,14 @@
   function dismissAlert() {
     const overlay = document.getElementById('armedOverlay');
     if (overlay) { overlay.style.opacity = '0'; overlay.style.transition = 'opacity .2s'; setTimeout(() => overlay.remove(), 200); }
+  }
+
+  function dismissAndOpenChart(symbol) {
+    dismissAlert();
+    try { switchTab('live-chart'); } catch(e) {}
+    if (typeof switchTVChart === 'function' && symbol) {
+      try { switchTVChart(symbol); } catch(e) {}
+    }
   }
 
   function checkArmedAlerts(gst) {
