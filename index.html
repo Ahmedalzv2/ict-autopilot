@@ -3268,9 +3268,10 @@
   let alertSoundEnabled = true;
 
   function initNotifications() {
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
+    // Don't auto-prompt for notification permission. Browsers refuse the
+    // request entirely when the page is loaded from file:// (Allow does
+    // nothing) and the popup blocks the UI. If the user wants browser
+    // pushes they can opt in via the bell button in the header.
     try { alertSoundEnabled = JSON.parse(localStorage.getItem('ict_sound_enabled') ?? 'true'); } catch(e) {}
     const btn = document.getElementById('alertSoundBtn');
     if (btn) btn.textContent = alertSoundEnabled ? '🔔' : '🔕';
@@ -6376,8 +6377,8 @@
     'SUI': 'BINANCE:SUIUSDT',
     'ASTR': 'BINANCE:ASTRUSDT',
     'US100': 'FPMARKETS:US100',
-    'GOLD': 'TVC:GOLD',
-    'SILVER': 'TVC:SILVER'
+    'GOLD': 'MEXC:XAUTUSDT.P',
+    'SILVER': 'MEXC:XAGUSDT.P'
   };
 
   let tvChartLoaded = false;
