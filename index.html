@@ -5678,15 +5678,20 @@
   let _lastEntryCount = {};         // {symbol: prevReadyTfCount}
   let _entryAlertQueue = [];        // [{symbol, dir, tfs, ts, confirmed:false}]
 
+  // Per-asset diagnostic log so we can see which kline source served each TF.
+  // Only logged once per asset per analysis run (to avoid console spam).
+  const _klineDiag = {}; // { SYMBOL: { tf: 'binance'|'mexc-perp'|'mexc-spot'|'binance-fallback'|'fail', error: '...' } }
+
   async function fetchBinanceKlines(symbol, interval, limit=50) {
     for (const host of BINANCE_HOSTS) {
       try {
-        const r = await fetch(`https://${host}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, {cache:'no-store'});
+        const ctrl = AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined;
+        const r = await fetch(`https://${host}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, {cache:'no-store', signal: ctrl});
         if (!r.ok) continue;
         const j = await r.json();
         if (!Array.isArray(j) || j.length === 0) continue;
         return j.map(k => ({ t:+k[0], o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5] }));
-      } catch(e) {}
+      } catch(e) { /* try next host */ }
     }
     return null;
   }
@@ -5694,18 +5699,31 @@
   async function fetchMexcKlines(contractSym, interval, limit=50) {
     try {
       const start = Math.floor((Date.now() - limit * (TF_MS[interval]||60000)) / 1000);
-      const r = await fetch(`https://contract.mexc.com/api/v1/contract/kline/${contractSym}?interval=${TF_MEXC[interval]||'Min1'}&start=${start}`, {cache:'no-store'});
+      const ctrl = AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined;
+      const r = await fetch(`https://contract.mexc.com/api/v1/contract/kline/${contractSym}?interval=${TF_MEXC[interval]||'Min1'}&start=${start}`, {cache:'no-store', signal: ctrl});
       if (!r.ok) return null;
       const j = await r.json();
       const d = j?.data;
-      if (!d?.time?.length) return null;
-      return d.time.map((t,i) => ({ t:t*1000, o:+d.open[i], h:+d.high[i], l:+d.low[i], c:+d.close[i], v:+(d.vol?.[i]||0) }));
+      if (!d) return null;
+      // Shape A: parallel arrays { time:[...], open:[...], high:[...], low:[...], close:[...], vol:[...] }
+      if (d.time && Array.isArray(d.time) && d.time.length) {
+        return d.time.map((t,i) => ({ t:t*1000, o:+d.open[i], h:+d.high[i], l:+d.low[i], c:+d.close[i], v:+(d.vol?.[i]||0) }));
+      }
+      // Shape B: array of objects [{ t, o, h, l, c, v }, ...]
+      if (Array.isArray(d) && d.length && typeof d[0] === 'object') {
+        return d.map(k => ({
+          t: +(k.t || k.time || 0) * (String(k.t||k.time).length > 10 ? 1 : 1000),
+          o: +(k.o ?? k.open), h: +(k.h ?? k.high), l: +(k.l ?? k.low), c: +(k.c ?? k.close), v: +(k.v ?? k.vol ?? k.volume ?? 0)
+        }));
+      }
+      return null;
     } catch(e) { return null; }
   }
 
   async function fetchMexcSpotKlines(spotSym, interval, limit=50) {
     try {
-      const r = await fetch(`https://api.mexc.com/api/v3/klines?symbol=${spotSym}&interval=${TF_MEXC_SPOT[interval]||'1m'}&limit=${limit}`, {cache:'no-store'});
+      const ctrl = AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined;
+      const r = await fetch(`https://api.mexc.com/api/v3/klines?symbol=${spotSym}&interval=${TF_MEXC_SPOT[interval]||'1m'}&limit=${limit}`, {cache:'no-store', signal: ctrl});
       if (!r.ok) return null;
       const j = await r.json();
       if (!Array.isArray(j) || j.length === 0) return null;
@@ -5921,12 +5939,15 @@
   }
 
   function _resolveSymbols(asset) {
-    // Returns { binance, mexc, mexcSpot } pair-symbol candidates per asset
-    if (asset.symbol === 'GOLD')   return { binance:'XAUTUSDT', mexc:'XAUT_USDT', mexcSpot:'XAUTUSDT' };
-    if (asset.symbol === 'SILVER') return { binance:null,        mexc:'XAG_USDT',  mexcSpot:'XAGUSDT'  };
-    if (asset.symbol === 'US100')  return { binance:null,        mexc:null,        mexcSpot:null      }; // CFD-only, skip MTF
+    // Returns { binance, mexc, mexcSpot, binanceFallback } pair-symbol candidates per asset.
+    // binanceFallback runs after MEXC fails — used for SILVER/GOLD where Binance lists a
+    // synthetic XAGUSDT/XAUTUSDT that's not great for live price (drifts) but is fine for
+    // candle structure (FVG/OB/sweep detection).
+    if (asset.symbol === 'GOLD')   return { binance:'XAUTUSDT', mexc:'XAUT_USDT', mexcSpot:'XAUTUSDT', binanceFallback:null };
+    if (asset.symbol === 'SILVER') return { binance:null,        mexc:'XAG_USDT',  mexcSpot:'XAGUSDT',  binanceFallback:'XAGUSDT' };
+    if (asset.symbol === 'US100')  return { binance:null,        mexc:null,        mexcSpot:null,       binanceFallback:null }; // CFD-only
     const base = asset.symbol + 'USDT';
-    return { binance: base, mexc: (MEXC_PERP_MAP[base] || asset.symbol + '_USDT'), mexcSpot: base };
+    return { binance: base, mexc: (MEXC_PERP_MAP[base] || asset.symbol + '_USDT'), mexcSpot: base, binanceFallback: null };
   }
 
   async function autoAnalyzeAsset(asset) {
@@ -5938,18 +5959,26 @@
       return;
     }
     const syms = _resolveSymbols(asset);
-    if (!syms.binance && !syms.mexc && !syms.mexcSpot) { asset.tfEntries = null; return; }
+    if (!syms.binance && !syms.mexc && !syms.mexcSpot && !syms.binanceFallback) { asset.tfEntries = null; return; }
     const tfEntries = {};
+    const sourceLog = {}; // {tf: 'binance'|'mexc-perp'|'mexc-spot'|'binance-fallback'|'fail'}
     let totalFails = 0;
     for (const tf of TF_LIST) {
-      let kl = null;
-      if (syms.binance) kl = await fetchBinanceKlines(syms.binance, tf, 50);
-      if ((!kl || kl.length < 22) && syms.mexc) kl = await fetchMexcKlines(syms.mexc, tf, 50);
-      if ((!kl || kl.length < 22) && syms.mexcSpot) kl = await fetchMexcSpotKlines(syms.mexcSpot, tf, 50);
+      let kl = null, src = 'fail';
+      if (syms.binance)         { kl = await fetchBinanceKlines(syms.binance, tf, 50);     if (kl && kl.length >= 22) src = 'binance'; }
+      if ((!kl || kl.length < 22) && syms.mexc)            { const k2 = await fetchMexcKlines(syms.mexc, tf, 50);          if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-perp'; } }
+      if ((!kl || kl.length < 22) && syms.mexcSpot)        { const k2 = await fetchMexcSpotKlines(syms.mexcSpot, tf, 50);  if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-spot'; } }
+      if ((!kl || kl.length < 22) && syms.binanceFallback) { const k2 = await fetchBinanceKlines(syms.binanceFallback, tf, 50); if (k2 && k2.length >= 22) { kl = k2; src = 'binance-fallback'; } }
+      sourceLog[tf] = src;
       if (!kl || kl.length < 22) totalFails++;
       tfEntries[tf] = _analyzeKlines(kl);
     }
-    if (totalFails === TF_LIST.length) console.warn(`[autoAnalyze] ${asset.symbol}: all kline sources failed (binance=${syms.binance} mexc=${syms.mexc} mexcSpot=${syms.mexcSpot})`);
+    _klineDiag[asset.symbol] = sourceLog;
+    if (totalFails === TF_LIST.length) {
+      console.warn(`[autoAnalyze] ${asset.symbol}: ALL kline sources failed`, { tried: syms, perTF: sourceLog });
+    } else if (totalFails > 0) {
+      console.log(`[autoAnalyze] ${asset.symbol}: ${TF_LIST.length - totalFails}/${TF_LIST.length} TFs sourced`, sourceLog);
+    }
     asset.tfEntries = tfEntries;
     asset.tfEntriesUpdated = Date.now();
 
