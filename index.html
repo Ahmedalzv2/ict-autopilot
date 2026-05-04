@@ -6343,20 +6343,30 @@
       } else console.warn('GOLD: all sources failed or bad value:', price);
     }
 
-    // ── SILVER: MEXC perp SILVER_USDT (single source — matches the chart) ──
-    // The dashboard tracks MEXC:SILVERUSDT.P (the perp shown on the Live Chart
-    // tab), so this is the ONE source of truth. Do not fall back to spot XAG
-    // or OANDA:XAGUSD — those quote real silver per oz (~$32) and would
-    // override the perp price the user actually trades against.
+    // ── SILVER: MEXC perp SILVER_USDT → TV scanner MEXC:SILVERUSDT.P ──
+    // Both sources resolve to the SAME symbol the Live Chart tab loads, so
+    // the dashboard tile and chart price are guaranteed to match. The TV
+    // scanner fallback exists because MEXC's contract API sometimes blocks
+    // browser CORS — TV proxies through their own infra, which always works.
+    // Do NOT fall back to OANDA:XAGUSD / spot XAG — those quote real silver
+    // per oz (~$32) and would override the perp price you actually trade.
     const silverAsset = ASSETS.find(a => a.symbol === 'SILVER');
     if (silverAsset) {
       const inRange = p => isFinite(p) && p > 0 && p < 1000;
-      const price = await mexcContractPrice('SILVER_USDT');
+      let price = await mexcContractPrice('SILVER_USDT');
+      if (!inRange(price)) try {
+        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['MEXC:SILVERUSDT.P']},columns:['close']}), cache:'no-store', signal:sig()});
+        if (r.ok) {
+          const j = await r.json();
+          const p = j?.data?.[0]?.d?.[0];
+          if (inRange(p)) price = p;
+        }
+      } catch(e) {}
       if (inRange(price)) {
         silverAsset.price = price; updated = true;
         console.log('%c📡 SILVER: $' + price.toFixed(2), 'color:#c0c0c0;font-family:monospace');
         if (typeof autoUpdateChecks === 'function') autoUpdateChecks(silverAsset);
-      } else console.warn('SILVER: MEXC SILVER_USDT perp fetch failed:', price);
+      } else console.warn('SILVER: MEXC SILVER_USDT + TV scanner both failed');
     }
 
     // ── US100 via TradingView Scanner → Yahoo ──
