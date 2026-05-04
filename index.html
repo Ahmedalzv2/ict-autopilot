@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="app-version" content="2026.05.04.001" />
+  <meta name="app-version" content="2026.05.04.002" />
   <title>Ahmad · ICT AutoPilot v21</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -3039,12 +3039,19 @@
       const cls = e.signal === 'armed' ? 'armed-entry' : 'watch-entry';
       const pct = Math.abs((e.price - e.entry) / e.entry * 100).toFixed(2);
       return `
-        <div class="alert-log-item ${cls}">
+        <div class="alert-log-item ${cls}" style="cursor:pointer;" onclick="openAlertOnChart('${e.symbol}')" title="Open ${e.symbol} on Live Chart">
           <div class="log-sym" style="color:${color}">${icon} ${e.symbol}</div>
-          <div class="log-detail">${e.signal.toUpperCase()} · $${e.price.toLocaleString(undefined,{maximumFractionDigits:4})} · ${pct}% from entry · ${e.grade.toUpperCase()}</div>
+          <div class="log-detail">${e.signal.toUpperCase()} · $${e.price.toLocaleString(undefined,{maximumFractionDigits:4})} · ${pct}% from entry · ${e.grade.toUpperCase()} · <span style="color:var(--gold);">tap → chart</span></div>
           <div class="log-time">${e.time}</div>
         </div>`;
     }).join('');
+  }
+
+  function openAlertOnChart(symbol) {
+    try { switchTab('live-chart'); } catch(e) {}
+    if (typeof switchTVChart === 'function' && symbol) {
+      try { switchTVChart(symbol); } catch(e) {}
+    }
   }
 
   function clearAlertLog() { alertLog = []; renderAlertLog(); }
@@ -4414,7 +4421,13 @@
     const sigColor = sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
     const sigBg = sig === 'armed' ? 'rgba(92,184,138,0.1)' : sig === 'watch' ? 'rgba(242,179,61,0.1)' : sig === 'skip' ? 'rgba(224,93,93,0.1)' : 'transparent';
 
+    const exLabel = (typeof getExchangeLabel === 'function') ? getExchangeLabel(symbol) : 'MEXC';
+    const exURL   = (typeof getExchangeURL   === 'function') ? getExchangeURL(symbol)   : '#';
+
     analysisPanel.innerHTML = `
+      <a href="${exURL}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;gap:10px;background:#5cb88a;color:#000;text-decoration:none;font-weight:700;font-size:14px;padding:14px 18px;border-radius:10px;margin-bottom:16px;font-family:'Geist',sans-serif;">
+        📈 Trade ${symbol} on ${exLabel} →
+      </a>
       <div style="background:${sigBg};border:1px solid ${sigColor};border-radius:10px;padding:18px;margin-bottom:16px;">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
           <div style="font-size:20px;color:var(--gold);">${symbol}</div>
