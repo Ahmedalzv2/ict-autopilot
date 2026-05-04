@@ -3268,26 +3268,47 @@
   let alertSoundEnabled = true;
 
   // ═══════════════════════════════════════
-  // AUTO-UPDATE — poll GitHub for new commits and auto-reload.
-  // Avoids the manual "re-download index.html" loop. Runs only when the
-  // page is hosted (not file://), and only every 2 minutes to stay well
-  // under GitHub's 60/hr unauthenticated rate limit.
+  // AUTO-UPDATE — poll GitHub for new commits and refresh in place.
+  // Works whether the page is hosted (location.reload pulls latest from
+  // server) OR opened locally as a file (we fetch raw index.html from
+  // GitHub and rewrite the document — no manual re-download needed).
+  // Polls every 2 min to stay under GitHub's 60/hr anonymous rate limit.
   // ═══════════════════════════════════════
   const _AUTO_UPDATE_REPO = 'Ahmedalzv2/ict-autopilot';
+  const _AUTO_UPDATE_BRANCH = 'main';
   let _knownSha = null;
   let _updateBannerShown = false;
 
   async function _checkForUpdate() {
-    if (location.protocol === 'file:') return;
     try {
-      const r = await fetch(`https://api.github.com/repos/${_AUTO_UPDATE_REPO}/commits/main`, {cache:'no-store'});
+      const r = await fetch(`https://api.github.com/repos/${_AUTO_UPDATE_REPO}/commits/${_AUTO_UPDATE_BRANCH}`, {cache:'no-store'});
       if (!r.ok) return;
       const j = await r.json();
       const sha = j?.sha;
       if (!sha) return;
       if (_knownSha === null) { _knownSha = sha; return; }
       if (sha !== _knownSha && !_updateBannerShown) _showUpdateBanner(sha);
-    } catch(e) { /* offline / rate-limited / etc — silent */ }
+    } catch(e) { /* offline / rate-limited / cross-origin blocked — silent */ }
+  }
+
+  // Apply the new version. On http(s) just reload; on file:// fetch the
+  // raw HTML from GitHub and replace the live document — preserves the
+  // user's tab and skips any manual re-download.
+  async function _applyUpdate(newSha) {
+    if (location.protocol !== 'file:') { location.reload(); return; }
+    try {
+      const url = `https://raw.githubusercontent.com/${_AUTO_UPDATE_REPO}/${newSha}/index.html`;
+      const r = await fetch(url, {cache:'no-store'});
+      if (!r.ok) throw new Error('raw fetch failed: ' + r.status);
+      const html = await r.text();
+      document.open();
+      document.write(html);
+      document.close();
+    } catch(e) {
+      console.error('Self-update failed', e);
+      const b = document.getElementById('autoUpdateBanner');
+      if (b) b.innerHTML = '⚠️ Auto-update blocked by browser · please re-download index.html';
+    }
   }
 
   function _showUpdateBanner(newSha) {
@@ -3296,16 +3317,16 @@
     const banner = document.createElement('div');
     banner.id = 'autoUpdateBanner';
     banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:linear-gradient(90deg,#5cb88a,#4a9d75);color:#0d0d12;z-index:99999;padding:12px 16px;text-align:center;font-family:\'JetBrains Mono\',monospace;font-weight:700;font-size:13px;box-shadow:0 4px 20px rgba(92,184,138,0.4);letter-spacing:.02em;';
-    banner.innerHTML = `🆕 NEW VERSION AVAILABLE · auto-refreshing in <span id="autoUpdateCountdown">10</span>s · <a href="#" id="autoUpdateNow" style="color:#0d0d12;text-decoration:underline;margin-left:8px;">refresh now</a> · <a href="#" id="autoUpdateDismiss" style="color:#0d0d12;text-decoration:underline;margin-left:8px;opacity:0.7;">later</a>`;
+    banner.innerHTML = `🆕 NEW VERSION AVAILABLE · updating in <span id="autoUpdateCountdown">10</span>s · <a href="#" id="autoUpdateNow" style="color:#0d0d12;text-decoration:underline;margin-left:8px;">update now</a> · <a href="#" id="autoUpdateDismiss" style="color:#0d0d12;text-decoration:underline;margin-left:8px;opacity:0.7;">later</a>`;
     document.body.appendChild(banner);
-    document.getElementById('autoUpdateNow').onclick = (e) => { e.preventDefault(); location.reload(); };
+    document.getElementById('autoUpdateNow').onclick = (e) => { e.preventDefault(); _applyUpdate(newSha); };
     document.getElementById('autoUpdateDismiss').onclick = (e) => { e.preventDefault(); banner.remove(); _updateBannerShown = false; clearInterval(intv); _knownSha = newSha; };
     let n = 10;
     const intv = setInterval(() => {
       n--;
       const el = document.getElementById('autoUpdateCountdown');
       if (el) el.textContent = n;
-      if (n <= 0) { clearInterval(intv); location.reload(); }
+      if (n <= 0) { clearInterval(intv); _applyUpdate(newSha); }
     }, 1000);
   }
 
