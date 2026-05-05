@@ -2,7 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- viewport-fit=cover for notched iPhones (safe-area), maximum-scale=1 +
+       user-scalable=no to stop iOS auto-zooming on input focus when fields
+       have a font-size below 16px. Apple-mobile-web-app-capable lets the
+       dashboard run full-screen when added to the home screen. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="ICT AutoPilot" />
   <title>Ahmad · ICT AutoPilot v21</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1066,6 +1073,25 @@
     .assets-grid { grid-template-columns: repeat(3, 1fr); }
     .signals-grid { grid-template-columns: repeat(3, 1fr); }
     .ap-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ── iOS Safari fixes ───────────────────────────────────────────────
+     1. font-size: 16px on text-style inputs prevents auto-zoom on focus
+        (iOS auto-zooms whenever a focused input's font-size is < 16px).
+     2. -webkit-tap-highlight-color: transparent kills the gray flash on
+        every button tap.
+     3. body padding uses safe-area-inset for notched iPhones (works only
+        when viewport-fit=cover is set in the meta tag, which we do). */
+  input[type="text"], input[type="number"], input[type="email"],
+  input[type="search"], input[type="password"], textarea, select {
+    font-size: 16px;
+  }
+  * { -webkit-tap-highlight-color: transparent; }
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
   </style>
 </head>
@@ -2929,6 +2955,12 @@
   let lastSyncTime = null;
   const BINANCE_SYMBOLS = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','SUIUSDT','ASTERUSDT'];
   const BINANCE_HOSTS = ['api.binance.com','data-api.binance.vision'];
+
+  // iOS Safari < 17.4 (Mar 2024) does not support AbortSignal.timeout — calling
+  // it directly throws TypeError and breaks the entire fetch. _t(ms) returns a
+  // timeout signal where supported and undefined otherwise, so fetches still
+  // work on older iOS (just without a client-side timeout).
+  const _t = (ms) => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(ms) : undefined;
   // MEXC perp contract symbols, indexed by Binance ticker for fallback when Binance is blocked/down
   const MEXC_PERP_MAP = {
     'BTCUSDT':'BTC_USDT','ETHUSDT':'ETH_USDT','SOLUSDT':'SOL_USDT','BNBUSDT':'BNB_USDT',
@@ -3178,10 +3210,37 @@
     if (alertSoundEnabled) playAlertSound('test');
   }
 
+  // iOS Safari blocks AudioContext until a user gesture unlocks it. We keep
+  // a single shared context and resume it on the first tap/click anywhere
+  // on the page so subsequent automatic ENTER NOW alerts can actually beep.
+  let _audioCtx = null;
+  function _getAudioCtx() {
+    if (!_audioCtx) {
+      const Ctor = window.AudioContext || window.webkitAudioContext;
+      if (!Ctor) return null;
+      try { _audioCtx = new Ctor(); } catch (e) { return null; }
+    }
+    if (_audioCtx.state === 'suspended' && _audioCtx.resume) {
+      try { _audioCtx.resume(); } catch (e) {}
+    }
+    return _audioCtx;
+  }
+  function _unlockAudioOnGesture() {
+    const handler = () => {
+      _getAudioCtx();
+      document.removeEventListener('touchstart', handler);
+      document.removeEventListener('click', handler);
+    };
+    document.addEventListener('touchstart', handler, { once: true, passive: true });
+    document.addEventListener('click', handler, { once: true });
+  }
+  if (typeof document !== 'undefined' && document.addEventListener) _unlockAudioOnGesture();
+
   function playAlertSound(type) {
     if (!alertSoundEnabled) return;
     try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const ctx = _getAudioCtx();
+      if (!ctx) return;
       const notes = type === 'entry' ? [[660, 0, 0.12], [880, 0.14, 0.30], [1100, 0.32, 0.55]] : [[880, 0, 0.25]];
       notes.forEach(([freq, start, end]) => {
         const osc = ctx.createOscillator();
@@ -3193,7 +3252,8 @@
         osc.start(ctx.currentTime + start);
         osc.stop(ctx.currentTime + end);
       });
-      setTimeout(() => ctx.close(), 700);
+      // Don't close the shared context — closing it would force a re-unlock
+      // gesture before the next alert (which can't happen automatically).
     } catch(e) {}
   }
 
@@ -3717,7 +3777,7 @@
       const _ccKey = CRYPTOCOMPARE_API_KEY ? `&api_key=${CRYPTOCOMPARE_API_KEY}` : '';
       const url = `https://min-api.cryptocompare.com/data/v2/news/?categories=${cat}&excludeCategories=Sponsored&lang=EN${_ccKey}`;
       const opts = {};
-      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(8000);
+      opts.signal = _t(8000);
       const r = await fetch(url, opts);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
@@ -3852,7 +3912,7 @@
     try {
       const proxyUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}&count=20`;
       const opts = {};
-      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(10000);
+      opts.signal = _t(10000);
       const r = await fetch(proxyUrl, opts);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
@@ -3878,7 +3938,7 @@
       const topic = lcMap[a.symbol] || a.symbol.toLowerCase();
       try {
         const opts = { headers: { 'Authorization': 'Bearer ' + LUNARCRUSH_API_KEY } };
-        if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(8000);
+        opts.signal = _t(8000);
         const r = await fetch(`https://lunarcrush.com/api4/public/topic/${topic}/posts/v1`, opts);
         if (!r.ok) return [];
         const j = await r.json();
@@ -3903,7 +3963,7 @@
     if (!SCRAPEBADGER_API_KEY) return null;
     const apiUrl = `https://api.scrapebadger.com/v1/?api_key=${encodeURIComponent(SCRAPEBADGER_API_KEY)}&url=${encodeURIComponent(url)}`;
     const fetchOpts = {};
-    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) fetchOpts.signal = AbortSignal.timeout(opts.timeout || 15000);
+    fetchOpts.signal = _t(opts.timeout || 15000);
     try {
       const r = await fetch(apiUrl, fetchOpts);
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -4073,7 +4133,7 @@
       const _ccKey = CRYPTOCOMPARE_API_KEY ? `&api_key=${CRYPTOCOMPARE_API_KEY}` : '';
       const url = `https://min-api.cryptocompare.com/data/v2/news/?excludeCategories=Sponsored&lang=EN${_ccKey}`;
       const opts = {};
-      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(10000);
+      opts.signal = _t(10000);
       const r = await fetch(url, opts);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
@@ -4432,7 +4492,7 @@
   // ═══════════════════════════════════════════════════════
   async function fetchFearGreed() {
     try {
-      const r = await fetch('https://api.alternative.me/fng/?limit=1', {signal: AbortSignal.timeout(8000)});
+      const r = await fetch('https://api.alternative.me/fng/?limit=1', {signal: _t(8000)});
       const d = await r.json();
       const val = parseInt(d.data[0].value);
       const cls = d.data[0].value_classification;
@@ -4459,7 +4519,7 @@
     if (!content) return;
     try {
       const results = await Promise.allSettled(FUTURES_SYMBOLS.map(sym =>
-        fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`, {signal: AbortSignal.timeout(6000)}).then(r => r.json())
+        fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`, {signal: _t(6000)}).then(r => r.json())
       ));
       const rows = results.map((r, i) => {
         if (r.status !== 'fulfilled') return null;
@@ -4486,7 +4546,7 @@
     if (!feed) return;
     feed.innerHTML = '<div style="color:var(--text-mute);padding:8px 0;">Fetching latest crypto news…</div>';
     try {
-      const r = await fetch('https://api.coingecko.com/api/v3/news?per_page=20', {signal: AbortSignal.timeout(10000)});
+      const r = await fetch('https://api.coingecko.com/api/v3/news?per_page=20', {signal: _t(10000)});
       const d = await r.json();
       const news = (d.data || d).slice(0, 15);
       if (!news.length) throw new Error('No news');
@@ -4890,7 +4950,7 @@
       let data = null;
       for (const host of BINANCE_HOSTS) {
         try {
-          const r = await fetch(`https://${host}/api/v3/klines?symbol=${sym}&interval=1m&startTime=${startTs}&endTime=${targetTs}&limit=${limit}`, {signal: AbortSignal.timeout(8000)});
+          const r = await fetch(`https://${host}/api/v3/klines?symbol=${sym}&interval=1m&startTime=${startTs}&endTime=${targetTs}&limit=${limit}`, {signal: _t(8000)});
           data = await r.json();
           if (Array.isArray(data) && data.length) break;
         } catch(e) {}
@@ -5563,7 +5623,7 @@
   async function fetchBinanceKlines(symbol, interval, limit=50) {
     for (const host of BINANCE_HOSTS) {
       try {
-        const ctrl = AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined;
+        const ctrl = _t(6000);
         const r = await fetch(`https://${host}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, {cache:'no-store', signal: ctrl});
         if (!r.ok) continue;
         const j = await r.json();
@@ -5586,7 +5646,7 @@
   ];
   async function fetchMexcContract(path, opts = {}) {
     const url = 'https://contract.mexc.com' + path;
-    const ctrl = opts.signal || (AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined);
+    const ctrl = opts.signal || (_t(6000));
     for (const wrap of MEXC_PROXIES) {
       try {
         const r = await fetch(wrap(url), { cache: 'no-store', signal: ctrl });
@@ -5620,7 +5680,7 @@
 
   async function fetchMexcSpotKlines(spotSym, interval, limit=50) {
     try {
-      const ctrl = AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined;
+      const ctrl = _t(6000);
       const r = await fetch(`https://api.mexc.com/api/v3/klines?symbol=${spotSym}&interval=${TF_MEXC_SPOT[interval]||'1m'}&limit=${limit}`, {cache:'no-store', signal: ctrl});
       if (!r.ok) return null;
       const j = await r.json();
@@ -6162,7 +6222,7 @@
   // Source priority: MEXC Futures → TradingView Scanner → Yahoo Finance
   // ═══════════════════════════════════════
   async function fetchNonBinancePrices() {
-    const sig = () => AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined;
+    const sig = () => _t(4000);
     let updated = false;
 
     // helper: parse metals.live response — handles both {gold:x} and [{gold:x}] formats
@@ -6745,7 +6805,7 @@
     host.innerHTML = '<div style="color:var(--text-mute);font-size:11px;padding:14px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;">⟳ analyzing token across GeckoTerminal + GoPlus…</div>';
     try {
       const opts = {};
-      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(15000);
+      opts.signal = _t(15000);
       const tokenLower = addr.toLowerCase();
       const [tokenRes, poolsRes] = await Promise.all([
         fetch(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${tokenLower}`, opts),
@@ -6912,7 +6972,7 @@
     try {
       const tokenUrl = `https://${host}/api?module=account&action=tokentx&address=${addr}&sort=desc&page=1&offset=15`;
       const opts = {};
-      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(10000);
+      opts.signal = _t(10000);
       const r = await fetch(tokenUrl, opts);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
@@ -7047,7 +7107,7 @@
     host.innerHTML = '⟳ loading…';
     try {
       const opts = {};
-      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(10000);
+      opts.signal = _t(10000);
       const [protoRes, stableRes, chainRes] = await Promise.all([
         fetch('https://api.llama.fi/protocols', opts),
         fetch('https://stablecoins.llama.fi/stablecoins?includePrices=true', opts),
@@ -7134,7 +7194,7 @@
       try {
         const url = `https://api.gopluslabs.io/api/v1/token_security/56?contract_addresses=${batch.map(c => c.toLowerCase()).join(',')}`;
         const opts = {};
-        if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(15000);
+        opts.signal = _t(15000);
         const r = await fetch(url, opts);
         if (!r.ok) continue;
         const j = await r.json();
@@ -7332,7 +7392,7 @@
     const host = document.getElementById('bscMemeHost');
     if (host && !_bscTrendingCache.length) host.innerHTML = '<div style="color:var(--text-mute);font-size:11px;padding:8px 0;">⟳ loading meme insights from GeckoTerminal…</div>';
     const opts = {};
-    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(15000);
+    opts.signal = _t(15000);
     let trendingErr = null, newErr = null;
     const [trendingResult, newResult] = await Promise.allSettled([
       _gtFetchWithRetry('https://api.geckoterminal.com/api/v2/networks/bsc/trending_pools?include=base_token,dex&page=1', opts, 2),
