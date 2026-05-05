@@ -1183,6 +1183,7 @@
           <!-- 🔔 Live AI entry alerts (auto-derived, 3+ TFs aligned) -->
           <div style="display:flex;justify-content:flex-end;margin-bottom:4px;">
             <button id="alertSoundBtn" onclick="toggleAlertSound()" title="Toggle alert sound" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);border-radius:6px;padding:3px 10px;font-size:14px;cursor:pointer;line-height:1.4;">🔔</button>
+            <button id="wakeLockBadge" onclick="toggleWakeLock()" title="Wake-lock idle — re-engages in next Kill Zone" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);border-radius:6px;padding:3px 10px;font-size:14px;cursor:pointer;line-height:1.4;">💤</button>
           </div>
           <div id="entryAlertsHost" style="margin-bottom:16px;"></div>
 
@@ -2160,8 +2161,27 @@
   // ═══════════════════════════════════════
   // SIGNAL BOARD
   // ═══════════════════════════════════════
+
+  // A setup is invalidated when price has already crossed its stop-loss —
+  // structurally broken, no longer a valid trade. We refuse to fire ENTER /
+  // ARMED on invalidated setups even if they momentarily revisit the entry
+  // zone, because the structural premise (sweep/CHoCH/OB) that justified
+  // the entry is gone. The user must manually re-set levels to clear it.
+  function isInvalidated(asset) {
+    if (!asset) return false;
+    const sl = +asset.sl, entry = +asset.entry, price = +asset.price;
+    if (!isFinite(sl) || sl <= 0) return false;
+    if (!isFinite(entry) || entry <= 0) return false;
+    if (!isFinite(price) || price <= 0) return false;
+    if (sl === entry) return false; // malformed, treat as "not invalidated"
+    const isLong = entry > sl; // SL sits below entry for longs
+    return isLong ? price <= sl : price >= sl;
+  }
+
   function getSignal(asset, gst) {
     if (isMarketClosed(asset, gst)) return 'closed';
+    // Hard short-circuit: invalidated setups never produce a tradeable signal.
+    if (isInvalidated(asset)) return 'invalid';
     const pct = Math.abs((asset.price - asset.entry) / asset.entry);
     const score = asset.checks.reduce((a,b)=>a+b,0);
     const session = getCurrentSession(gst);
@@ -2198,9 +2218,10 @@
       const dir = a.price > a.entry ? '↑' : a.price < a.entry ? '↓' : '=';
       const priceColor = a.change24h > 0 ? 'var(--bull)' : a.change24h < 0 ? 'var(--bear)' : 'var(--text)';
       const isClosed = sig === 'closed';
-      const badgeClass = isClosed ? 'badge-skip' : `badge-${sig}`;
-      const cardClass = isClosed ? 'skip' : sig === 'enter' ? 'enter' : sig === 'armed' ? 'armed' : sig === 'watch' ? 'watch' : sig === 'skip' ? 'skip' : '';
-      const badgeText = isClosed ? `🔒 CLOSED · ${nextMarketOpen(gst)}` : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+      const isInvalid = sig === 'invalid';
+      const badgeClass = isClosed || isInvalid ? 'badge-skip' : `badge-${sig}`;
+      const cardClass = isClosed || isInvalid ? 'skip' : sig === 'enter' ? 'enter' : sig === 'armed' ? 'armed' : sig === 'watch' ? 'watch' : sig === 'skip' ? 'skip' : '';
+      const badgeText = isClosed ? `🔒 CLOSED · ${nextMarketOpen(gst)}` : isInvalid ? '🚫 INVALIDATED' : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
       const modeTag = a.tradeMode === 'spot' ? ' <span style="font-size:8px;background:rgba(201,169,97,0.15);color:var(--gold);border-radius:3px;padding:1px 4px;">SPOT</span>' : '';
 
       // Feature 1: MTF Badge
@@ -2624,8 +2645,8 @@
     const isBull = (asset.bias || '').toUpperCase().includes('BULL');
     const _tp = asset.tp || asset.tp1 || 0;
     const rr = asset.entry && asset.sl && _tp ? Math.abs((_tp - asset.entry)/(asset.entry - asset.sl)).toFixed(1) : '—';
-    const sigColor = sig === 'closed' ? 'var(--liq)' : sig === 'enter' ? 'var(--bear)' : sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
-    const sigLabel = sig === 'closed' ? `🔒 MARKET CLOSED · reopens ${nextMarketOpen(gst)}` : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+    const sigColor = sig === 'closed' ? 'var(--liq)' : sig === 'invalid' ? 'var(--bear)' : sig === 'enter' ? 'var(--bear)' : sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
+    const sigLabel = sig === 'closed' ? `🔒 MARKET CLOSED · reopens ${nextMarketOpen(gst)}` : sig === 'invalid' ? '🚫 INVALIDATED · price crossed SL' : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
     const savedRemark = (() => { try { return JSON.parse(localStorage.getItem('ict_remarks') || '{}')[asset.symbol] || ''; } catch(e) { return ''; } })();
 
     // MTF section — computed before template to avoid nested backtick syntax error
@@ -3225,6 +3246,63 @@
     if (alertSoundEnabled) playAlertSound('test');
   }
 
+  // Screen Wake Lock — keep iPhone/laptop screens awake during Kill Zones so
+  // the user doesn't miss the ENTER NOW alert. iOS Safari 16.4+ supports
+  // navigator.wakeLock; older browsers and unsupported environments are
+  // skipped silently. The lock is auto-released when the tab becomes hidden,
+  // so we re-acquire on visibility change while a KZ is active.
+  let _wakeLock = null;
+  let _wakeLockEnabled = true;
+  try { _wakeLockEnabled = JSON.parse(localStorage.getItem('ict_wakelock_enabled') ?? 'true'); } catch (e) {}
+  async function _acquireWakeLock() {
+    if (!_wakeLockEnabled) return;
+    if (_wakeLock) return;
+    if (typeof navigator === 'undefined' || !navigator.wakeLock) return;
+    try {
+      _wakeLock = await navigator.wakeLock.request('screen');
+      _wakeLock.addEventListener('release', () => { _wakeLock = null; _updateWakeLockBadge(); });
+      _updateWakeLockBadge();
+    } catch (e) { _wakeLock = null; }
+  }
+  async function _releaseWakeLock() {
+    if (!_wakeLock) return;
+    try { await _wakeLock.release(); } catch (e) {}
+    _wakeLock = null;
+    _updateWakeLockBadge();
+  }
+  function _isInKillZoneNow() {
+    try {
+      const s = getCurrentSession(getGST());
+      return !!(s && s.type !== 'dead');
+    } catch (e) { return false; }
+  }
+  function _maintainWakeLock() {
+    if (!_wakeLockEnabled) { _releaseWakeLock(); return; }
+    if (_isInKillZoneNow()) _acquireWakeLock(); else _releaseWakeLock();
+  }
+  function _updateWakeLockBadge() {
+    const el = document.getElementById('wakeLockBadge');
+    if (!el) return;
+    if (!_wakeLockEnabled) { el.textContent = '💤'; el.title = 'Wake-lock off (tap to enable)'; return; }
+    el.textContent = _wakeLock ? '🔋' : '💤';
+    el.title = _wakeLock
+      ? 'Screen kept awake — Kill Zone active'
+      : 'Wake-lock idle — re-engages in next Kill Zone';
+  }
+  function toggleWakeLock() {
+    _wakeLockEnabled = !_wakeLockEnabled;
+    try { localStorage.setItem('ict_wakelock_enabled', JSON.stringify(_wakeLockEnabled)); } catch (e) {}
+    _maintainWakeLock();
+    _updateWakeLockBadge();
+  }
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') _maintainWakeLock();
+    });
+    // Re-check every 60s — handles KZ start/end transitions.
+    setInterval(_maintainWakeLock, 60000);
+  }
+
   // iOS Safari blocks AudioContext until a user gesture unlocks it. We keep
   // a single shared context and resume it on the first tap/click anywhere
   // on the page so subsequent automatic ENTER NOW alerts can actually beep.
@@ -3641,6 +3719,13 @@
   function analyzeAsset(asset, gst) {
     if (isMarketClosed(asset, gst)) {
       return `🔒 Market closed (weekend). ${asset.symbol} reopens ${nextMarketOpen(gst)}. No analysis or entries until market reopens.`;
+    }
+    if (isInvalidated(asset)) {
+      const isBull = (asset.bias || '').toUpperCase().includes('BULL');
+      const dirL = isBull ? 'LONG' : 'SHORT';
+      const slStrL = `$${(+asset.sl).toLocaleString(undefined,{maximumFractionDigits:4})}`;
+      const priceStrL = `$${(+asset.price).toLocaleString(undefined,{maximumFractionDigits:4})}`;
+      return `🚫 SETUP INVALIDATED. Price ${priceStrL} has crossed your ${dirL} stop-loss at ${slStrL} — the structural premise (sweep / CHoCH / OB) that justified this entry is gone. Stand aside. If you still want to trade ${asset.symbol}, re-do the ICT read on fresh structure and update entry / SL / TP — do not chase the broken setup.`;
     }
     const pct = Math.abs((asset.price - asset.entry) / asset.entry * 100);
     const score = asset.checks.reduce((a,b)=>a+b,0);
