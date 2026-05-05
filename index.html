@@ -6246,7 +6246,16 @@
       renderAssets();
       try { renderAnalysis(); } catch(e) {}
       try { renderMarketRead(); } catch(e) {}
-      if (typeof updateTVAnalysis === 'function' && tvCurrentSymbol) updateTVAnalysis(tvCurrentSymbol);
+      // Live Chart price badge: Binance assets get this from the WS handler,
+      // but GOLD/SILVER/US100 only flow through this poller, so refresh the
+      // badge here if one of them is the active chart symbol.
+      if (typeof tvCurrentSymbol !== 'undefined' && tvCurrentSymbol) {
+        const cur = ASSETS.find(a => a.symbol === tvCurrentSymbol);
+        if (cur && cur.price > 0 && typeof updateChartPriceBadge === 'function') {
+          updateChartPriceBadge(cur.price);
+        }
+        if (typeof updateTVAnalysis === 'function') updateTVAnalysis(tvCurrentSymbol);
+      }
       try { refreshOpenModal(); } catch(e) {}
     }
   }
