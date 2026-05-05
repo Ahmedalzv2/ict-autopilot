@@ -3478,8 +3478,16 @@
     const overlay = document.createElement('div');
     overlay.className = 'alert-overlay';
     overlay.id = 'armedOverlay';
+    // Backdrop-tap closes the overlay — clicking outside the inner alert-box
+    // (i.e. directly on the dimmed background) dismisses without redirecting,
+    // matching native iOS sheet semantics.
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) dismissAlert();
+    });
     overlay.innerHTML = `
-      <div class="alert-box" style="border-color:${color}; box-shadow: 0 0 80px ${isEnter ? 'rgba(224,93,93,0.4)' : isArmed ? 'rgba(92,184,138,0.3)' : 'rgba(242,179,61,0.25)'}, 0 32px 80px rgba(0,0,0,0.9);">
+      <div class="alert-box" style="border-color:${color}; box-shadow: 0 0 80px ${isEnter ? 'rgba(224,93,93,0.4)' : isArmed ? 'rgba(92,184,138,0.3)' : 'rgba(242,179,61,0.25)'}, 0 32px 80px rgba(0,0,0,0.9); position:relative;">
+        <button onclick="dismissAlert()" aria-label="Close alert" title="Close · ESC also works"
+          style="position:absolute;top:10px;right:10px;width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;font-size:18px;font-weight:700;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;z-index:10;">✕</button>
         <div class="alert-beacon" style="background:${color}18; border-color:${color}; animation: beaconPulse 1.2s infinite;">
           ${icon}
         </div>
@@ -3546,6 +3554,11 @@
     `;
     document.body.appendChild(overlay);
 
+    // Register the ESC-to-dismiss listener for this overlay session.
+    if (_armedOverlayEsc) document.removeEventListener('keydown', _armedOverlayEsc);
+    _armedOverlayEsc = (e) => { if (e.key === 'Escape') dismissAlert(); };
+    document.addEventListener('keydown', _armedOverlayEsc);
+
     // Flash title
     let flashCount = 0;
     const origTitle = document.title;
@@ -3560,8 +3573,19 @@
 
   function dismissAlert() {
     const overlay = document.getElementById('armedOverlay');
-    if (overlay) { overlay.style.opacity = '0'; overlay.style.transition = 'opacity .2s'; setTimeout(() => overlay.remove(), 200); }
+    if (!overlay) return;
+    overlay.style.opacity = '0';
+    overlay.style.transition = 'opacity .2s';
+    setTimeout(() => overlay.remove(), 200);
+    // Stop the overlay-only ESC listener so it doesn't leak across alerts.
+    if (_armedOverlayEsc) {
+      document.removeEventListener('keydown', _armedOverlayEsc);
+      _armedOverlayEsc = null;
+    }
   }
+  // ESC dismisses the active alert overlay (no redirect). Listener is set up
+  // when an overlay is shown and torn down on dismiss to avoid leaks.
+  let _armedOverlayEsc = null;
 
   function acknowledgeAlert(symbol) {
     console.log('[acknowledgeAlert] clicked for', symbol);
