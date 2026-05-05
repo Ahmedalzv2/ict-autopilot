@@ -5574,13 +5574,33 @@
     return null;
   }
 
+  // MEXC's contract API (`contract.mexc.com`) does not send CORS headers,
+  // so direct browser fetches are blocked. We try direct first (in case the
+  // user's network or a future MEXC update allows it), then fall through to
+  // public CORS proxies that just relay the request — the data is still
+  // 100% MEXC, only the transport changes.
+  const MEXC_PROXIES = [
+    (u) => u, // direct
+    (u) => 'https://corsproxy.io/?' + encodeURIComponent(u),
+    (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+  ];
+  async function fetchMexcContract(path, opts = {}) {
+    const url = 'https://contract.mexc.com' + path;
+    const ctrl = opts.signal || (AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined);
+    for (const wrap of MEXC_PROXIES) {
+      try {
+        const r = await fetch(wrap(url), { cache: 'no-store', signal: ctrl });
+        if (!r.ok) continue;
+        return await r.json();
+      } catch (e) { /* try next transport */ }
+    }
+    return null;
+  }
+
   async function fetchMexcKlines(contractSym, interval, limit=50) {
     try {
       const start = Math.floor((Date.now() - limit * (TF_MS[interval]||60000)) / 1000);
-      const ctrl = AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined;
-      const r = await fetch(`https://contract.mexc.com/api/v1/contract/kline/${contractSym}?interval=${TF_MEXC[interval]||'Min1'}&start=${start}`, {cache:'no-store', signal: ctrl});
-      if (!r.ok) return null;
-      const j = await r.json();
+      const j = await fetchMexcContract(`/api/v1/contract/kline/${contractSym}?interval=${TF_MEXC[interval]||'Min1'}&start=${start}`);
       const d = j?.data;
       if (!d) return null;
       // Shape A: parallel arrays { time:[...], open:[...], high:[...], low:[...], close:[...], vol:[...] }
@@ -6153,15 +6173,13 @@
     };
 
     // helper: read last price from MEXC contract ticker (perp futures)
+    // Goes through fetchMexcContract so the request gets a CORS-proxy fallback
+    // when the browser blocks contract.mexc.com directly.
     const mexcContractPrice = async (contractSym) => {
-      try {
-        const r = await fetch(`https://contract.mexc.com/api/v1/contract/ticker?symbol=${contractSym}`, {cache:'no-store', signal:sig()});
-        if (!r.ok) return null;
-        const j = await r.json();
-        const d = Array.isArray(j?.data) ? j.data[0] : j?.data;
-        const p = parseFloat(d?.lastPrice ?? d?.last ?? d?.fairPrice);
-        return isFinite(p) && p > 0 ? p : null;
-      } catch(e) { return null; }
+      const j = await fetchMexcContract(`/api/v1/contract/ticker?symbol=${contractSym}`);
+      const d = Array.isArray(j?.data) ? j.data[0] : j?.data;
+      const p = parseFloat(d?.lastPrice ?? d?.last ?? d?.fairPrice);
+      return isFinite(p) && p > 0 ? p : null;
     };
 
     // helper: read last price from MEXC spot ticker
