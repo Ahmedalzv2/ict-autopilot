@@ -1280,7 +1280,7 @@
       <div id="live-chart" class="tab-content">
         <div class="page-header">
           <h1>📈 Live Chart</h1>
-          <p>Price syncs every 30s. Crypto via Binance SPOT (MEXC perp fallback), GOLD/SILVER via MEXC perp (XAUT_USDT / SILVER_USDT), US100 via FP Markets (TradingView). Chart and dashboard always show the same price.</p>
+          <p>Price syncs every 30s. Crypto via Binance SPOT (MEXC perp fallback), GOLD/SILVER MEXC-only (XAUT_USDT / SILVER_USDT perps, no Binance/OANDA fallback), US100 via FP Markets (TradingView). Chart and dashboard always show the same price.</p>
         </div>
         <div style="margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
           <div style="font-size:12px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;font-weight:600;margin-right:8px;">Asset:</div>
@@ -5818,12 +5818,15 @@
 
   function _resolveSymbols(asset) {
     // Returns { binance, mexc, mexcSpot, binanceFallback } pair-symbol candidates per asset.
-    // binanceFallback runs after MEXC fails — used for SILVER/GOLD where Binance lists a
-    // synthetic XAGUSDT/XAUTUSDT that's not great for live price (drifts) but is fine for
-    // candle structure (FVG/OB/sweep detection).
-    if (asset.symbol === 'GOLD')   return { binance:'XAUTUSDT', mexc:'XAUT_USDT', mexcSpot:'XAUTUSDT', binanceFallback:null };
-    if (asset.symbol === 'SILVER') return { binance:null,        mexc:'SILVER_USDT', mexcSpot:'XAGUSDT',  binanceFallback:'XAGUSDT' };
-    if (asset.symbol === 'US100')  return { binance:null,        mexc:null,        mexcSpot:null,       binanceFallback:null }; // CFD-only
+    // GOLD/SILVER are MEXC-only by agreement: never fall back to Binance synthetic
+    // XAGUSDT/XAUTUSDT — they quote a different scale (~$32 spot silver) and would
+    // produce candle data that doesn't align with the perp-scale (~$72) entries on
+    // the dashboard. SILVER MEXC-spot XAGUSDT has the same scale problem and is also
+    // skipped. GOLD MEXC-spot XAUTUSDT is a tokenized-gold pair that tracks the perp
+    // closely so it's safe as a fallback.
+    if (asset.symbol === 'GOLD')   return { binance:null, mexc:'XAUT_USDT',   mexcSpot:'XAUTUSDT', binanceFallback:null };
+    if (asset.symbol === 'SILVER') return { binance:null, mexc:'SILVER_USDT', mexcSpot:null,       binanceFallback:null };
+    if (asset.symbol === 'US100')  return { binance:null, mexc:null,          mexcSpot:null,       binanceFallback:null }; // CFD-only
     const base = asset.symbol + 'USDT';
     return { binance: base, mexc: (MEXC_PERP_MAP[base] || asset.symbol + '_USDT'), mexcSpot: base, binanceFallback: null };
   }
@@ -6172,35 +6175,31 @@
       } catch(e) { return null; }
     };
 
-    // ── GOLD: MEXC perp XAUT_USDT → MEXC spot XAUTUSDT → Binance XAUTUSDT → TV OANDA:XAUUSD ──
+    // ── GOLD (MEXC-only): MEXC perp XAUT_USDT → MEXC spot XAUTUSDT → TV scanner MEXC:XAUTUSDT.P ──
+    // All three sources are MEXC. The TV scanner is just a CORS-friendly proxy
+    // for MEXC's quote — never falls through to OANDA/Binance/spot-gold pairs
+    // which would either drift from the perp or quote at a different scale.
     const goldAsset = ASSETS.find(a => a.symbol === 'GOLD');
     if (goldAsset) {
       let price = await mexcContractPrice('XAUT_USDT');
       if (!(price > 1000)) price = await mexcSpotPrice('XAUTUSDT');
-      if (!(price > 1000)) for (const host of ['api.binance.com','data-api.binance.vision']) {
-        try {
-          const r = await fetch(`https://${host}/api/v3/ticker/price?symbol=XAUTUSDT`, {cache:'no-store', signal:sig()});
-          if (r.ok) { const p = parseFloat((await r.json())?.price); if (p > 1000) { price = p; break; } }
-        } catch(e) {}
-      }
       if (!(price > 1000)) try {
-        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['OANDA:XAUUSD','TVC:GOLD']},columns:['close']}), cache:'no-store', signal:sig()});
-        if (r.ok) { const j = await r.json(); price = j?.data?.[0]?.d?.[0] || j?.data?.[1]?.d?.[0] || null; }
+        const r = await fetch('https://scanner.tradingview.com/global/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbols:{tickers:['MEXC:XAUTUSDT.P']},columns:['close']}), cache:'no-store', signal:sig()});
+        if (r.ok) { const j = await r.json(); const p = j?.data?.[0]?.d?.[0]; if (p > 1000) price = p; }
       } catch(e) {}
       if (price && price > 1000) {
         goldAsset.price = price; updated = true;
         console.log('%c📡 GOLD: $' + price.toFixed(2), 'color:#ffd700;font-family:monospace');
         if (typeof autoUpdateChecks === 'function') autoUpdateChecks(goldAsset);
-      } else console.warn('GOLD: all sources failed or bad value:', price);
+      } else console.warn('GOLD: MEXC sources all failed or bad value:', price);
     }
 
-    // ── SILVER: MEXC perp SILVER_USDT → TV scanner MEXC:SILVERUSDT.P → Binance XAGUSDT ──
-    // Three sources, all of which trade close to the perp the chart loads
-    // (MEXC:SILVERUSDT.P ~$72-76). MEXC contract API often blocks browser
-    // CORS — the TV scanner and Binance fallbacks both proxy/expose data
-    // that browsers can fetch reliably. Do NOT fall back to OANDA:XAGUSD
-    // or spot XAG — those quote real silver per oz (~$32) and would
-    // override the perp price you actually trade.
+    // ── SILVER (MEXC-only): MEXC perp SILVER_USDT → TV scanner MEXC:SILVERUSDT.P ──
+    // Both sources are MEXC. The TV scanner is a CORS-friendly proxy for the
+    // same MEXC perp the chart embeds (~$72-76). Never falls through to
+    // OANDA:XAGUSD, Binance synthetic XAGUSDT or MEXC spot XAGUSDT — all of
+    // those quote real silver per oz (~$32) and would clash with the
+    // perp-scale entry/SL/TP set on the dashboard.
     const silverAsset = ASSETS.find(a => a.symbol === 'SILVER');
     if (silverAsset) {
       const inRange = p => isFinite(p) && p > 0 && p < 1000;
@@ -6213,17 +6212,11 @@
           if (inRange(p)) price = p;
         }
       } catch(e) {}
-      if (!inRange(price)) for (const host of BINANCE_HOSTS) {
-        try {
-          const r = await fetch(`https://${host}/api/v3/ticker/price?symbol=XAGUSDT`, {cache:'no-store', signal:sig()});
-          if (r.ok) { const p = parseFloat((await r.json())?.price); if (inRange(p)) { price = p; break; } }
-        } catch(e) {}
-      }
       if (inRange(price)) {
         silverAsset.price = price; updated = true;
         console.log('%c📡 SILVER: $' + price.toFixed(2), 'color:#c0c0c0;font-family:monospace');
         if (typeof autoUpdateChecks === 'function') autoUpdateChecks(silverAsset);
-      } else console.warn('SILVER: MEXC + TV + Binance all failed');
+      } else console.warn('SILVER: MEXC sources all failed');
     }
 
     // ── US100 via TradingView Scanner → Yahoo ──
