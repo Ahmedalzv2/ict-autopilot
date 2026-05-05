@@ -54,12 +54,14 @@ describe('getSignal: ENTER NOW (proximity ≤ 0.05%)', () => {
     assert.equal(app.getSignal(a, LDN), 'enter');
   });
 
-  test('CURRENT BEHAVIOR (worth confirming): ENTER fires even in Dead Zone', () => {
-    // Proximity-only check — no session gate. If you want Dead Zone to
-    // suppress ENTER too, this test will need to change with the code.
+  test('Dead Zone suppresses ENTER even at perfect proximity (ICT no-trade rule)', () => {
+    // Dead Zone (19:00–22:00 GST) is algorithmic chop with no directional
+    // bias — ICT methodology forbids entries here regardless of how close
+    // price is to a setup. Was a bug: proximity check used to run before
+    // the Dead-Zone gate so ENTER would slip through.
     const app = loadWithMTF({ h1: 'bull', h4: 'bull', d1: 'bull' });
     const a = makeAsset({ price: 100.04 });
-    assert.equal(app.getSignal(a, DEAD), 'enter');
+    assert.equal(app.getSignal(a, DEAD), 'skip');
   });
 
   test('CURRENT BEHAVIOR: ENTER fires regardless of score', () => {
@@ -233,6 +235,71 @@ describe('getMacroBlackout + getSignal "blackout" short-circuit', () => {
     assert.match(text, /MACRO BLACKOUT/);
     assert.match(text, /CPI/i);
     assert.doesNotMatch(text, /ENTER NOW — EXECUTE/);
+  });
+});
+
+describe('analyzeAsset methodology line — only fires on entry-ready, in-range TFs', () => {
+  // The methodology line previously fell back to "highest-score TF" even when
+  // no TF was entry-ready, surfacing stale low-TF noise (e.g. 1m FVG at $73
+  // when price is at $75) and nonsense P/D values (580% of range). These
+  // tests pin the cleanup: only render when a TF is entry-ready AND its
+  // dealing-range mid is near current price.
+  test('no entry-ready TF → no methodology line', () => {
+    const ctx = loadApp();
+    ctx.app.mtfCache = { TEST: { h1: 'bull', h4: 'bull', d1: 'bull' } };
+    const a = {
+      symbol: 'TEST', bias: 'BULLISH', entry: 100, sl: 99, tp: 105, tp1: 105,
+      grade: 'a', price: 100.04, change24h: 0,
+      checks: [1,1,1,1,1,1,1,1,1,1], reason: '',
+      tfEntries: {
+        '1m': { dir: 'bull', score: 2, entryReady: false,
+                fvg: true, fvgZone: { lo: 73.5, hi: 73.6, dir: 'bull' } },
+      },
+    };
+    const text = ctx.app.analyzeAsset(a, LDN);
+    // Should not surface the 1m noise
+    assert.doesNotMatch(text, /Triggered by/);
+    assert.doesNotMatch(text, /Building on/);
+    assert.doesNotMatch(text, /73\.5|73\.6/);
+  });
+
+  test('entry-ready TF but levels far out of range → suppressed', () => {
+    const ctx = loadApp();
+    ctx.app.mtfCache = { TEST: { h1: 'bull', h4: 'bull', d1: 'bull' } };
+    const a = {
+      symbol: 'TEST', bias: 'BULLISH', entry: 100, sl: 99, tp: 105, tp1: 105,
+      grade: 'a', price: 75.66, change24h: 0,
+      checks: [1,1,1,1,1,1,1,1,1,1], reason: '',
+      tfEntries: {
+        // entry-ready 1m but its dealing range is at $73.5 — drift from
+        // price (~$75.66) is way more than 1.5× range, so suppress.
+        '1m': { dir: 'bull', score: 4, entryReady: true,
+                fvg: true, fvgZone: { lo: 73.56, hi: 73.59, dir: 'bull' },
+                pd: { high: 73.65, low: 73.50, eq: 73.575, range: 0.15 } },
+      },
+    };
+    const text = ctx.app.analyzeAsset(a, LDN);
+    assert.doesNotMatch(text, /Triggered by/);
+    // and especially never a P/D > 100% nonsense
+    assert.doesNotMatch(text, /\d{3,}% of/);
+  });
+
+  test('entry-ready TF with in-range levels → methodology line renders', () => {
+    const ctx = loadApp();
+    ctx.app.mtfCache = { TEST: { h1: 'bull', h4: 'bull', d1: 'bull' } };
+    const a = {
+      symbol: 'TEST', bias: 'BULLISH', entry: 100, sl: 99, tp: 105, tp1: 105,
+      grade: 'a', price: 100.04, change24h: 0,
+      checks: [1,1,1,1,1,1,1,1,1,1], reason: '',
+      tfEntries: {
+        '1h': { dir: 'bull', score: 4, entryReady: true,
+                fvg: true, fvgZone: { lo: 99.5, hi: 100.2, dir: 'bull' },
+                pd: { high: 102, low: 98, eq: 100, range: 4 } },
+      },
+    };
+    const text = ctx.app.analyzeAsset(a, LDN);
+    assert.match(text, /Triggered by 4\/4 confluences on 1H/);
+    assert.match(text, /1H FVG/);
   });
 });
 
