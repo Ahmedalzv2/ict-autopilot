@@ -2590,6 +2590,21 @@
     if (!a) return;
     // Re-render content while keeping the modal open. Suppress the symbol track reset.
     openSetupModal(a, true);
+    // Keep the per-TF kline analysis (and therefore the methodology line) fresh
+    // while the modal sits open. Throttled to 30s per asset so we don't hammer
+    // MEXC every render. autoAnalyzeAsset is idempotent — it overwrites
+    // tfEntries when fresh klines arrive.
+    const now = Date.now();
+    const lastTf = a.tfEntriesUpdated || 0;
+    if (now - lastTf > 30000 && typeof autoAnalyzeAsset === 'function') {
+      a._tfRefreshing = a._tfRefreshing || false;
+      if (!a._tfRefreshing) {
+        a._tfRefreshing = true;
+        autoAnalyzeAsset(a)
+          .then(() => { a._tfRefreshing = false; try { refreshOpenModal(); } catch(e) {} })
+          .catch(() => { a._tfRefreshing = false; });
+      }
+    }
   }
 
   function openSetupModal(asset, _isRefresh) {
@@ -3564,6 +3579,65 @@
     return Math.max(0, Math.min(99, Math.round(scoreComp + proxComp + sessComp)));
   }
 
+  // Builds the "Triggered by:" sentence by reading the per-TF analysis from
+  // asset.tfEntries (populated by autoAnalyzeAsset on MEXC/Binance klines).
+  // Returns an empty string when no TF has reached entry-ready status, so the
+  // surrounding paragraph stays readable without it. The point of this line
+  // is to make the brief analysis show the *methodology behind the entry* —
+  // which timeframe fired, which ICT concept(s) confirmed, where price sits
+  // relative to the dealing range.
+  function _methodologyReason(asset, gst) {
+    const tfes = asset.tfEntries;
+    if (!tfes || tfes.closed) return '';
+    const wantDir = ((asset.bias || '').toLowerCase().includes('bull')) ? 'bull' : 'bear';
+    const TFS = ['1m','5m','15m','1h','4h','1d'];
+    const TFL = { '1m':'1m','5m':'5m','15m':'15m','1h':'1H','4h':'4H','1d':'Daily' };
+    // Pick the highest-TF entry-ready leg in the same direction. Higher TFs
+    // generally win — a 1H confluence is a stronger context than a 5m one.
+    let best = null;
+    for (let i = TFS.length - 1; i >= 0; i--) {
+      const e = tfes[TFS[i]];
+      if (!e || e.error) continue;
+      if (e.dir !== wantDir) continue;
+      if (!e.entryReady) continue;
+      best = { tf: TFS[i], e };
+      break;
+    }
+    // No entry-ready TF? Fall back to whichever TF has the highest score in
+    // our direction so the user still sees the structural read.
+    if (!best) {
+      let bestScore = 0;
+      for (const tf of TFS) {
+        const e = tfes[tf];
+        if (!e || e.error || e.dir !== wantDir) continue;
+        if ((e.score || 0) > bestScore) { bestScore = e.score; best = { tf, e }; }
+      }
+    }
+    if (!best) return '';
+    const { tf, e } = best;
+    const fmt = v => v >= 1000 ? v.toFixed(2) : v >= 10 ? v.toFixed(3) : v >= 1 ? v.toFixed(4) : v.toFixed(6);
+    const parts = [];
+    if (e.fvg && e.fvgZone)        parts.push(`${TFL[tf]} FVG ${fmt(e.fvgZone.lo)}–${fmt(e.fvgZone.hi)}`);
+    if (e.obZone)                  parts.push(`${TFL[tf]} OB ${fmt(e.obZone.lo)}–${fmt(e.obZone.hi)}`);
+    if (e.sweep && e.sweepLevel)   parts.push(`liquidity swept @ ${fmt(e.sweepLevel.level)}`);
+    if (e.choch)                   parts.push('CHoCH confirmed');
+    if (e.displacement)            parts.push('displacement candle');
+    if (e.rejection)               parts.push('wick rejection');
+    // Premium/Discount classification on the TF's own dealing range.
+    if (e.pd && asset.price) {
+      const cls = asset.price > e.pd.eq ? 'premium' : asset.price < e.pd.eq ? 'discount' : 'equilibrium';
+      const range = e.pd.range || (e.pd.high - e.pd.low);
+      const off = range > 0 ? Math.round(((asset.price - e.pd.low) / range) * 100) : 50;
+      // For LONG, a discount entry is methodologically correct; for SHORT, premium.
+      const aligned = (wantDir === 'bull' && cls === 'discount') || (wantDir === 'bear' && cls === 'premium');
+      parts.push(`P/D: ${cls} (${off}% of ${TFL[tf]} range)${aligned ? ' ✓' : ''}`);
+    }
+    if (parts.length === 0) return '';
+    const verb = e.entryReady ? 'Triggered by' : 'Building on';
+    const tfReadiness = `${e.score||0}/4 confluences on ${TFL[tf]}`;
+    return `${verb} ${tfReadiness}: ${parts.join(' · ')}.`;
+  }
+
   function analyzeAsset(asset, gst) {
     if (isMarketClosed(asset, gst)) {
       return `🔒 Market closed (weekend). ${asset.symbol} reopens ${nextMarketOpen(gst)}. No analysis or entries until market reopens.`;
@@ -3640,6 +3714,12 @@
     }
 
     let analysis = `${para}\n`;
+    // Methodology line: which TF and which ICT concept(s) justify the signal.
+    // Pulled from the per-TF analysis (asset.tfEntries) populated by
+    // autoAnalyzeAsset over MEXC/Binance klines. Empty when no TF has fired
+    // yet so it doesn't add noise.
+    const why = _methodologyReason(asset, gst);
+    if (why) analysis += `📐 ${why}\n`;
     analysis += `Bias: ${isBull?'Bullish':'Bearish'} · ${gradeNote} · R:R ${rr}:1 · ${sessNote}\n`;
     if (triggeredChecks.length > 0) analysis += `✓ Confirmed: ${triggeredChecks.join(', ')}.\n`;
     if (missingChecks.length > 0) analysis += `✗ Still needed: ${missingChecks.join(', ')}.`;
