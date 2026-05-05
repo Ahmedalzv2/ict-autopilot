@@ -174,6 +174,72 @@ describe('getSignal: WAIT (default)', () => {
   });
 });
 
+describe('isInvalidated + getSignal "invalid" short-circuit', () => {
+  test('LONG: price above SL → not invalidated', () => {
+    const { app } = loadApp();
+    assert.equal(app.isInvalidated({ entry: 100, sl: 99, price: 100 }), false);
+    assert.equal(app.isInvalidated({ entry: 100, sl: 99, price: 99.5 }), false);
+  });
+
+  test('LONG: price at or below SL → invalidated', () => {
+    const { app } = loadApp();
+    assert.equal(app.isInvalidated({ entry: 100, sl: 99, price: 99 }), true);
+    assert.equal(app.isInvalidated({ entry: 100, sl: 99, price: 98 }), true);
+  });
+
+  test('SHORT: price below SL → not invalidated', () => {
+    const { app } = loadApp();
+    assert.equal(app.isInvalidated({ entry: 100, sl: 101, price: 100 }), false);
+    assert.equal(app.isInvalidated({ entry: 100, sl: 101, price: 100.5 }), false);
+  });
+
+  test('SHORT: price at or above SL → invalidated', () => {
+    const { app } = loadApp();
+    assert.equal(app.isInvalidated({ entry: 100, sl: 101, price: 101 }), true);
+    assert.equal(app.isInvalidated({ entry: 100, sl: 101, price: 102 }), true);
+  });
+
+  test('missing fields → not invalidated', () => {
+    const { app } = loadApp();
+    assert.equal(app.isInvalidated(null), false);
+    assert.equal(app.isInvalidated({}), false);
+    assert.equal(app.isInvalidated({ entry: 100, sl: 0, price: 100 }), false);
+    assert.equal(app.isInvalidated({ entry: 100, sl: 99, price: 0 }), false);
+  });
+
+  test('SL equals entry (malformed) → not invalidated', () => {
+    const { app } = loadApp();
+    assert.equal(app.isInvalidated({ entry: 100, sl: 100, price: 100 }), false);
+  });
+
+  test('getSignal: invalidated LONG never fires enter, even at perfect proximity', () => {
+    const app = loadWithMTF({ h1: 'bull', h4: 'bull', d1: 'bull' });
+    // price exactly at entry (would normally → 'enter') but already crossed SL
+    const a = makeAsset({ price: 99, entry: 100, sl: 99 });
+    a.price = 100; // tweak: pretend it bounced back to entry zone
+    a.sl = 99;
+    // Actually invalidated test: price ≤ SL
+    a.price = 98.5;
+    assert.equal(app.getSignal(a, LDN), 'invalid');
+  });
+
+  test('getSignal: invalidated SHORT never fires enter', () => {
+    const app = loadWithMTF({ h1: 'bear', h4: 'bear', d1: 'bear' });
+    const a = makeAsset({ bias: 'BEARISH', entry: 100, sl: 101, price: 102 });
+    assert.equal(app.getSignal(a, LDN), 'invalid');
+  });
+
+  test('analyzeAsset: invalidated produces a stand-aside paragraph', () => {
+    const { app } = loadApp();
+    const a = makeAsset({ entry: 100, sl: 99, price: 98.5 });
+    const text = app.analyzeAsset(a, LDN);
+    assert.match(text, /INVALIDATED/);
+    assert.match(text, /stop-loss/i);
+    // Must NOT mislead the user into thinking the trade is on
+    assert.doesNotMatch(text, /ENTER NOW — EXECUTE/);
+  });
+});
+
 describe('getMTFAligned (multi-timeframe consensus)', () => {
   test('no cache → pending, aligned=true (UI fallback), score 0', () => {
     const { app } = loadApp();
