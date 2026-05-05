@@ -3390,6 +3390,54 @@
     } catch(e) {}
   }
 
+  // Pre-trade context helpers (used only by showArmedOverlay).
+  // Forces the user to actually read the methodology + risk context before
+  // pulling the trigger on a real entry, rather than just acking the alert.
+
+  // Minutes until the active Kill Zone closes (null when no active session).
+  function _kzMinutesRemaining(gst) {
+    const s = getCurrentSession(gst);
+    if (!s || s.type === 'dead') return null;
+    const nowMin = totalMinutes(gst.getHours(), gst.getMinutes());
+    const endMin = totalMinutes(s.endH, s.endM);
+    const diff = endMin - nowMin;
+    return diff > 0 ? diff : null;
+  }
+
+  // Count journal entries with today's GST date — gives the user a "how many
+  // trades today" tally so they can self-throttle near the end of a session.
+  function _tradesToday(gst) {
+    try {
+      const todayKey = `${gst.getFullYear()}-${String(gst.getMonth()+1).padStart(2,'0')}-${String(gst.getDate()).padStart(2,'0')}`;
+      return (journal || []).filter(e => {
+        if (!e || !e.timestamp) return false;
+        const d = new Date(e.timestamp);
+        const k = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        return k === todayKey;
+      }).length;
+    } catch (e) { return 0; }
+  }
+
+  // Account / risk preferences come from the position-size calculator already
+  // in the asset modal. If both are set we render concrete units & notional
+  // here; otherwise we point the user at where to set them.
+  function _positionSizeText(asset) {
+    try {
+      const account = parseFloat(localStorage.getItem('ict_calc_account'));
+      const riskPct = parseFloat(localStorage.getItem('ict_calc_risk'));
+      if (!account || !riskPct || !asset.entry || !asset.sl) {
+        return 'Set account + risk % in the asset modal calculator to see size here';
+      }
+      const stopDist = Math.abs(asset.entry - asset.sl);
+      if (!stopDist) return '—';
+      const riskDollar = account * riskPct / 100;
+      const units = riskDollar / stopDist;
+      const notional = units * asset.entry;
+      const sym = asset.symbol.replace(/USDT$/i, '');
+      return `Risk $${riskDollar.toLocaleString(undefined,{maximumFractionDigits:2})} · ${units.toLocaleString(undefined,{maximumFractionDigits:4})} ${sym} · Notional $${notional.toLocaleString(undefined,{maximumFractionDigits:2})}`;
+    } catch (e) { return '—'; }
+  }
+
   function showArmedOverlay(asset, signal, analysis) {
     // Remove any existing overlay
     const existing = document.getElementById('armedOverlay');
@@ -3446,13 +3494,28 @@
           </div>
         </div>
 
+        ${isEnter ? (() => {
+          const why = (typeof _methodologyReason === 'function') ? _methodologyReason(asset, gst) : '';
+          const kzMin = _kzMinutesRemaining(gst);
+          const tradesN = _tradesToday(gst);
+          const posTxt = _positionSizeText(asset);
+          return `
+        <div style="background:rgba(201,169,97,0.05);border:1px solid rgba(201,169,97,0.35);border-radius:10px;padding:14px;margin:14px 0;text-align:left;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.7;">
+          <div style="font-size:10px;color:var(--gold);font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;">📋 Pre-trade checklist · read before executing</div>
+          ${why ? `<div style="margin-bottom:6px;"><span style="color:var(--text-mute);">📐 Why:</span> <span style="color:var(--text);">${why}</span></div>` : ''}
+          <div style="margin-bottom:6px;"><span style="color:var(--text-mute);">⏰ KZ remaining:</span> <span style="color:${kzMin===null?'var(--text-mute)':'var(--bull)'};">${kzMin===null ? 'Off-session — reconsider' : kzMin + ' min until ' + sessName + ' closes'}</span></div>
+          <div style="margin-bottom:6px;"><span style="color:var(--text-mute);">📊 Trades today:</span> <span style="color:${tradesN >= 3 ? 'var(--bear)' : 'var(--text)'};">${tradesN}${tradesN >= 3 ? ' — at session limit, consider standing down' : ''}</span></div>
+          <div><span style="color:var(--text-mute);">💰 Size:</span> <span style="color:var(--text);">${posTxt}</span></div>
+        </div>`;
+        })() : ''}
+
         <div class="alert-analysis">${analysis}</div>
 
         <button class="alert-dismiss-btn" style="background:${color}" onclick="acknowledgeAlert('${asset.symbol}')">
-          ✓ Acknowledge · Open Live Chart
+          ${isEnter ? '✅ I read the checklist · Open Live Chart' : '✓ Acknowledge · Open Live Chart'}
         </button>
         <div style="margin-top:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">
-          Alert logged to history · monitoring continues
+          ${isEnter ? 'Trade auto-logged to journal · outcome tracked vs TP/SL' : 'Alert logged to history · monitoring continues'}
         </div>
       </div>
     `;
