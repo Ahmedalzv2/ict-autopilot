@@ -2213,9 +2213,14 @@
     // Macro blackout: ±30 min around high-impact USD prints — algo whips kill
     // ICT structure, so stand down regardless of how clean the setup looks.
     if (getMacroBlackout()) return 'blackout';
+    const session = getCurrentSession(gst);
+    // Dead Zone is a no-trade window per ICT methodology — algorithmic chop,
+    // no directional bias. ENTER NOW must NOT fire here even at perfect
+    // proximity (this was a bug: the proximity check used to run before the
+    // Dead-Zone gate, so 'enter' would slip through during 19:00–22:00 GST).
+    if (session && session.type === 'dead') return 'skip';
     const pct = Math.abs((asset.price - asset.entry) / asset.entry);
     const score = asset.checks.reduce((a,b)=>a+b,0);
-    const session = getCurrentSession(gst);
     const inKZ = session && session.type !== 'dead';
 
     // MTF Alignment Check — require 2/3 aligned for armed
@@ -2233,7 +2238,7 @@
     // ALMOST ENTRY: approaching entry zone
     if (pct <= 0.005 && score >= 7) return 'watch';
 
-    if (score < 4 || (session && session.type === 'dead')) return 'skip';
+    if (score < 4) return 'skip';
     return 'wait';
   }
 
@@ -2342,8 +2347,9 @@
   // ═══════════════════════════════════════
   function saveLevels() {
     const out = {};
-    ASSETS.forEach(a => { 
+    ASSETS.forEach(a => {
       const obj = { entry: a.entry, sl: a.sl, tp1: a.tp1||a.tp||0 };
+      if (a.entryTf) obj.entryTf = a.entryTf;
       if (a.levels) {
         obj.levels = {
           obZone: a.levels.obZone || null,
@@ -2366,6 +2372,7 @@
         if (lv.entry > 0) a.entry = lv.entry;
         if (lv.sl > 0) a.sl = lv.sl;
         if (lv.tp1 > 0) { a.tp1 = lv.tp1; a.tp = lv.tp1; }
+        if (lv.entryTf) a.entryTf = lv.entryTf;
         if (lv.levels) {
           a.levels = {
             obZone: lv.levels.obZone || null,
@@ -2733,7 +2740,20 @@
         </div>
       </div>
 
-      <!-- Entry pinpoint -->
+      <!-- Entry pinpoint — tag with source TF when applied from per-TF
+           detector, or "manual" when user-seeded. Eliminates ambiguity about
+           which timeframe these levels are tuned to. -->
+      ${(() => {
+        const tfMap = { '1m':'1m','5m':'5m','15m':'15m','1h':'1H','4h':'4H','1d':'Daily','1w':'Weekly' };
+        const srcLabel = asset.entryTf ? (tfMap[asset.entryTf] || asset.entryTf) + ' setup' : 'Manual setup';
+        const stopDist = (asset.entry && asset.sl) ? Math.abs(asset.entry - asset.sl) : 0;
+        const stopPct  = (stopDist && asset.entry) ? (stopDist / asset.entry * 100) : 0;
+        return `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.08em;">
+        <span><span style="color:var(--gold);">⏱</span> Levels source: <span style="color:var(--text);font-weight:700;">${srcLabel}</span></span>
+        <span>SL distance: <span style="color:var(--text);font-weight:700;">${stopPct.toFixed(2)}%</span></span>
+      </div>`;
+      })()}
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px;">
         <div style="background:rgba(92,184,138,0.08);border:1px solid rgba(92,184,138,0.25);border-radius:8px;padding:10px;text-align:center;">
           <div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;">📍 Entry</div>
@@ -3511,9 +3531,14 @@
 
         <div class="alert-analysis">${analysis}</div>
 
-        <button class="alert-dismiss-btn" style="background:${color}" onclick="acknowledgeAlert('${asset.symbol}')">
-          ${isEnter ? '✅ I read the checklist · Open Live Chart' : '✓ Acknowledge · Open Live Chart'}
-        </button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;">
+          <button class="alert-dismiss-btn" style="background:${color};flex:1;min-width:200px;" onclick="acknowledgeAlert('${asset.symbol}')">
+            ${isEnter ? '✅ Acknowledge · Open Live Chart' : '✓ Acknowledge · Open Live Chart'}
+          </button>
+          <button class="alert-dismiss-btn" style="background:transparent;border:1.5px solid ${color};color:${color};flex:1;min-width:140px;" onclick="dismissAlert()">
+            ✕ Acknowledge · Close
+          </button>
+        </div>
         <div style="margin-top:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">
           ${isEnter ? 'Trade auto-logged to journal · outcome tracked vs TP/SL' : 'Alert logged to history · monitoring continues'}
         </div>
@@ -3773,26 +3798,27 @@
     const wantDir = ((asset.bias || '').toLowerCase().includes('bull')) ? 'bull' : 'bear';
     const TFS = ['1m','5m','15m','1h','4h','1d'];
     const TFL = { '1m':'1m','5m':'5m','15m':'15m','1h':'1H','4h':'4H','1d':'Daily' };
-    // Pick the highest-TF entry-ready leg in the same direction. Higher TFs
-    // generally win — a 1H confluence is a stronger context than a 5m one.
+    // Only surface TFs that are entry-ready in the same direction. The earlier
+    // "highest-score fallback" was misleading — when no TF is actually ready,
+    // it surfaced stale low-TF noise (e.g. 1m levels at $73 while the user's
+    // entry is at $75) which is worse than no methodology line at all.
+    // Walk from highest TF down; an HTF-anchored confluence dominates.
     let best = null;
     for (let i = TFS.length - 1; i >= 0; i--) {
       const e = tfes[TFS[i]];
       if (!e || e.error) continue;
       if (e.dir !== wantDir) continue;
       if (!e.entryReady) continue;
+      // Sanity check: the TF's structural levels must be near current price.
+      // If price has moved more than 2% away from the TF's dealing-range mid,
+      // the levels are stale and we should not cite them.
+      if (e.pd && asset.price) {
+        const range = e.pd.range || (e.pd.high - e.pd.low) || 0;
+        const drift = Math.abs(asset.price - e.pd.eq);
+        if (range > 0 && drift > range * 1.5) continue; // out of dealing range
+      }
       best = { tf: TFS[i], e };
       break;
-    }
-    // No entry-ready TF? Fall back to whichever TF has the highest score in
-    // our direction so the user still sees the structural read.
-    if (!best) {
-      let bestScore = 0;
-      for (const tf of TFS) {
-        const e = tfes[tf];
-        if (!e || e.error || e.dir !== wantDir) continue;
-        if ((e.score || 0) > bestScore) { bestScore = e.score; best = { tf, e }; }
-      }
     }
     if (!best) return '';
     const { tf, e } = best;
@@ -3804,19 +3830,22 @@
     if (e.choch)                   parts.push('CHoCH confirmed');
     if (e.displacement)            parts.push('displacement candle');
     if (e.rejection)               parts.push('wick rejection');
-    // Premium/Discount classification on the TF's own dealing range.
+    // Premium/Discount on the TF's own dealing range. Only render when the
+    // resulting % is sane (0–100); otherwise price is outside the range and
+    // the classification is meaningless.
     if (e.pd && asset.price) {
-      const cls = asset.price > e.pd.eq ? 'premium' : asset.price < e.pd.eq ? 'discount' : 'equilibrium';
       const range = e.pd.range || (e.pd.high - e.pd.low);
-      const off = range > 0 ? Math.round(((asset.price - e.pd.low) / range) * 100) : 50;
-      // For LONG, a discount entry is methodologically correct; for SHORT, premium.
-      const aligned = (wantDir === 'bull' && cls === 'discount') || (wantDir === 'bear' && cls === 'premium');
-      parts.push(`P/D: ${cls} (${off}% of ${TFL[tf]} range)${aligned ? ' ✓' : ''}`);
+      if (range > 0) {
+        const off = Math.round(((asset.price - e.pd.low) / range) * 100);
+        if (off >= 0 && off <= 100) {
+          const cls = asset.price > e.pd.eq ? 'premium' : asset.price < e.pd.eq ? 'discount' : 'equilibrium';
+          const aligned = (wantDir === 'bull' && cls === 'discount') || (wantDir === 'bear' && cls === 'premium');
+          parts.push(`P/D: ${cls} (${off}% of ${TFL[tf]} range)${aligned ? ' ✓' : ''}`);
+        }
+      }
     }
     if (parts.length === 0) return '';
-    const verb = e.entryReady ? 'Triggered by' : 'Building on';
-    const tfReadiness = `${e.score||0}/4 confluences on ${TFL[tf]}`;
-    return `${verb} ${tfReadiness}: ${parts.join(' · ')}.`;
+    return `Triggered by ${e.score||0}/4 confluences on ${TFL[tf]}: ${parts.join(' · ')}.`;
   }
 
   function analyzeAsset(asset, gst) {
@@ -6834,7 +6863,7 @@
         <div style="font-size:16px;font-weight:700;color:var(--gold);font-family:'JetBrains Mono',monospace;">$${sug.tp}</div>
       </div>
     </div>` : '';
-    const applyBtn = (sug && asset && asset.symbol) ? `<button onclick="(function(){ const a=ASSETS.find(x=>x.symbol==='${asset.symbol}'); if(!a) return; a.entry=${sug.entry}; a.sl=${sug.sl}; a.tp=${sug.tp}; a.tp1=${sug.tp}; try{saveLevels();}catch(e){} try{showToast('✓ ${asset.symbol} levels applied from ${tfLabel}','ok');}catch(e){} try{updateTVAnalysis('${asset.symbol}');}catch(e){} try{renderSetups();renderAssets();}catch(e){} })()" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;margin-top:6px;">⇣ Apply ${tfLabel} levels to ${asset.symbol}</button>` : '';
+    const applyBtn = (sug && asset && asset.symbol) ? `<button onclick="(function(){ const a=ASSETS.find(x=>x.symbol==='${asset.symbol}'); if(!a) return; a.entry=${sug.entry}; a.sl=${sug.sl}; a.tp=${sug.tp}; a.tp1=${sug.tp}; a.entryTf='${tf}'; try{saveLevels();}catch(e){} try{showToast('✓ ${asset.symbol} levels applied from ${tfLabel}','ok');}catch(e){} try{updateTVAnalysis('${asset.symbol}');}catch(e){} try{renderSetups();renderAssets();refreshOpenModal();}catch(e){} })()" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;margin-top:6px;">⇣ Apply ${tfLabel} levels to ${asset.symbol}</button>` : '';
     return `<div style="background:linear-gradient(180deg, rgba(201,169,97,0.06), transparent);border:1.5px solid var(--gold);border-radius:12px;padding:16px;margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;align-items:center;gap:8px;">
