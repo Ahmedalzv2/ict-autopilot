@@ -174,6 +174,68 @@ describe('getSignal: WAIT (default)', () => {
   });
 });
 
+describe('getMacroBlackout + getSignal "blackout" short-circuit', () => {
+  // Pick a known high-impact event from ECON_EVENTS to anchor the tests on.
+  // 2026-05-13 17:30 UTC = US CPI (high impact). Tests stub Date.now() to land
+  // inside / outside the ±30 min window around it.
+  const CPI_MS = Date.parse('2026-05-13T17:30:00Z');
+  const NFP_MS = Date.parse('2026-05-02T17:30:00Z');
+
+  test('inside ±30 min window of high-impact event → returns event', () => {
+    const { app } = loadApp({ now: new Date(CPI_MS) }); // exactly at print
+    const bo = app.getMacroBlackout();
+    assert.ok(bo, 'expected blackout at print time');
+    assert.match(bo.event, /CPI/i);
+    assert.equal(bo.mins, 0);
+  });
+
+  test('29 min before high-impact event → blackout active', () => {
+    const { app } = loadApp({ now: new Date(CPI_MS - 29 * 60_000) });
+    const bo = app.getMacroBlackout();
+    assert.ok(bo);
+    assert.equal(bo.mins, 29);
+  });
+
+  test('29 min after high-impact event → blackout active', () => {
+    const { app } = loadApp({ now: new Date(CPI_MS + 29 * 60_000) });
+    const bo = app.getMacroBlackout();
+    assert.ok(bo);
+    assert.equal(bo.mins, -29);
+  });
+
+  test('31 min outside the window → no blackout', () => {
+    const { app: a1 } = loadApp({ now: new Date(CPI_MS - 31 * 60_000) });
+    assert.equal(a1.getMacroBlackout(), null);
+    const { app: a2 } = loadApp({ now: new Date(CPI_MS + 31 * 60_000) });
+    assert.equal(a2.getMacroBlackout(), null);
+  });
+
+  test('picks the closest event when multiple are in range', () => {
+    // No two ECON_EVENTS are within 60 min of each other in the seed list, so
+    // we just verify "closest" by anchoring exactly on NFP — should return NFP.
+    const { app } = loadApp({ now: new Date(NFP_MS) });
+    const bo = app.getMacroBlackout();
+    assert.ok(bo);
+    assert.match(bo.event, /NFP|Payrolls/i);
+  });
+
+  test('getSignal returns "blackout" inside the window, even with perfect setup', () => {
+    const ctx = loadApp({ now: new Date(CPI_MS) });
+    ctx.app.mtfCache = { TEST: { h1: 'bull', h4: 'bull', d1: 'bull' } };
+    const a = makeAsset({ price: 100, checks: [1,1,1,1,1,1,1,1,1,1] }); // would normally → enter
+    assert.equal(ctx.app.getSignal(a, LDN), 'blackout');
+  });
+
+  test('analyzeAsset: blackout produces a stand-aside paragraph naming the event', () => {
+    const ctx = loadApp({ now: new Date(CPI_MS) });
+    const a = makeAsset({ price: 100 });
+    const text = ctx.app.analyzeAsset(a, LDN);
+    assert.match(text, /MACRO BLACKOUT/);
+    assert.match(text, /CPI/i);
+    assert.doesNotMatch(text, /ENTER NOW — EXECUTE/);
+  });
+});
+
 describe('isInvalidated + getSignal "invalid" short-circuit', () => {
   test('LONG: price above SL → not invalidated', () => {
     const { app } = loadApp();

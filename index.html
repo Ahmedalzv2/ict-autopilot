@@ -2178,10 +2178,41 @@
     return isLong ? price <= sl : price >= sl;
   }
 
+  // Macro blackout — algorithmic news whips around high-impact USD prints
+  // (FOMC, CPI, NFP, PCE, GDP) destroy ICT structure, so we suppress
+  // ENTER NOW signals in a ±30 min window around any high/critical-impact
+  // event from ECON_EVENTS (or the live ForexFactory cache when available).
+  // Returns the imminent event with its time-delta in minutes, or null.
+  function getMacroBlackout() {
+    const now = Date.now();
+    const winMs = 30 * 60 * 1000;
+    const sources = [];
+    if (typeof ECON_EVENTS !== 'undefined' && Array.isArray(ECON_EVENTS)) sources.push(...ECON_EVENTS);
+    if (typeof _forexFactoryCache !== 'undefined' && Array.isArray(_forexFactoryCache)) sources.push(..._forexFactoryCache);
+    let best = null;
+    for (const ev of sources) {
+      if (ev.impact !== 'high' && ev.impact !== 'critical') continue;
+      if (!ev.date || !ev.time) continue;
+      const eventMs = Date.parse(`${ev.date}T${ev.time}:00Z`);
+      if (!isFinite(eventMs)) continue;
+      const dt = eventMs - now;
+      if (Math.abs(dt) <= winMs) {
+        if (!best || Math.abs(dt) < Math.abs(best._dt)) {
+          best = { event: ev.event, mins: Math.round(dt / 60000), impact: ev.impact, _dt: dt };
+        }
+      }
+    }
+    if (best) delete best._dt;
+    return best;
+  }
+
   function getSignal(asset, gst) {
     if (isMarketClosed(asset, gst)) return 'closed';
     // Hard short-circuit: invalidated setups never produce a tradeable signal.
     if (isInvalidated(asset)) return 'invalid';
+    // Macro blackout: ±30 min around high-impact USD prints — algo whips kill
+    // ICT structure, so stand down regardless of how clean the setup looks.
+    if (getMacroBlackout()) return 'blackout';
     const pct = Math.abs((asset.price - asset.entry) / asset.entry);
     const score = asset.checks.reduce((a,b)=>a+b,0);
     const session = getCurrentSession(gst);
@@ -2219,9 +2250,14 @@
       const priceColor = a.change24h > 0 ? 'var(--bull)' : a.change24h < 0 ? 'var(--bear)' : 'var(--text)';
       const isClosed = sig === 'closed';
       const isInvalid = sig === 'invalid';
-      const badgeClass = isClosed || isInvalid ? 'badge-skip' : `badge-${sig}`;
-      const cardClass = isClosed || isInvalid ? 'skip' : sig === 'enter' ? 'enter' : sig === 'armed' ? 'armed' : sig === 'watch' ? 'watch' : sig === 'skip' ? 'skip' : '';
-      const badgeText = isClosed ? `🔒 CLOSED · ${nextMarketOpen(gst)}` : isInvalid ? '🚫 INVALIDATED' : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+      const isBlackout = sig === 'blackout';
+      const blackoutInfo = isBlackout ? getMacroBlackout() : null;
+      const badgeClass = isClosed || isInvalid || isBlackout ? 'badge-skip' : `badge-${sig}`;
+      const cardClass = isClosed || isInvalid || isBlackout ? 'skip' : sig === 'enter' ? 'enter' : sig === 'armed' ? 'armed' : sig === 'watch' ? 'watch' : sig === 'skip' ? 'skip' : '';
+      const blackoutLabel = blackoutInfo
+        ? `📅 MACRO · ${blackoutInfo.mins >= 0 ? 'in ' + blackoutInfo.mins + 'm' : Math.abs(blackoutInfo.mins) + 'm ago'}`
+        : '📅 MACRO BLACKOUT';
+      const badgeText = isClosed ? `🔒 CLOSED · ${nextMarketOpen(gst)}` : isInvalid ? '🚫 INVALIDATED' : isBlackout ? blackoutLabel : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
       const modeTag = a.tradeMode === 'spot' ? ' <span style="font-size:8px;background:rgba(201,169,97,0.15);color:var(--gold);border-radius:3px;padding:1px 4px;">SPOT</span>' : '';
 
       // Feature 1: MTF Badge
@@ -2645,8 +2681,12 @@
     const isBull = (asset.bias || '').toUpperCase().includes('BULL');
     const _tp = asset.tp || asset.tp1 || 0;
     const rr = asset.entry && asset.sl && _tp ? Math.abs((_tp - asset.entry)/(asset.entry - asset.sl)).toFixed(1) : '—';
-    const sigColor = sig === 'closed' ? 'var(--liq)' : sig === 'invalid' ? 'var(--bear)' : sig === 'enter' ? 'var(--bear)' : sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
-    const sigLabel = sig === 'closed' ? `🔒 MARKET CLOSED · reopens ${nextMarketOpen(gst)}` : sig === 'invalid' ? '🚫 INVALIDATED · price crossed SL' : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
+    const _bo = sig === 'blackout' ? getMacroBlackout() : null;
+    const sigColor = sig === 'closed' ? 'var(--liq)' : sig === 'invalid' ? 'var(--bear)' : sig === 'blackout' ? 'var(--liq)' : sig === 'enter' ? 'var(--bear)' : sig === 'armed' ? 'var(--bull)' : sig === 'watch' ? 'var(--liq)' : sig === 'skip' ? 'var(--bear)' : 'var(--text-mute)';
+    const sigLabel = sig === 'closed' ? `🔒 MARKET CLOSED · reopens ${nextMarketOpen(gst)}`
+      : sig === 'invalid' ? '🚫 INVALIDATED · price crossed SL'
+      : sig === 'blackout' ? `📅 MACRO BLACKOUT · ${_bo ? _bo.event : 'high-impact event'}${_bo ? (_bo.mins >= 0 ? ' (in ' + _bo.mins + ' min)' : ' (' + Math.abs(_bo.mins) + ' min ago)') : ''}`
+      : sig === 'enter' ? '🔴 ENTER NOW' : sig === 'armed' ? `${conf}% · ALMOST ENTRY POINT` : sig === 'watch' ? `${conf}% · ALMOST ENTRY` : sig === 'skip' ? 'SKIP' : `${conf}% · WAIT`;
     const savedRemark = (() => { try { return JSON.parse(localStorage.getItem('ict_remarks') || '{}')[asset.symbol] || ''; } catch(e) { return ''; } })();
 
     // MTF section — computed before template to avoid nested backtick syntax error
@@ -3726,6 +3766,13 @@
       const slStrL = `$${(+asset.sl).toLocaleString(undefined,{maximumFractionDigits:4})}`;
       const priceStrL = `$${(+asset.price).toLocaleString(undefined,{maximumFractionDigits:4})}`;
       return `🚫 SETUP INVALIDATED. Price ${priceStrL} has crossed your ${dirL} stop-loss at ${slStrL} — the structural premise (sweep / CHoCH / OB) that justified this entry is gone. Stand aside. If you still want to trade ${asset.symbol}, re-do the ICT read on fresh structure and update entry / SL / TP — do not chase the broken setup.`;
+    }
+    const _macroBO = getMacroBlackout();
+    if (_macroBO) {
+      const when = _macroBO.mins >= 0
+        ? `in ${_macroBO.mins} min`
+        : `${Math.abs(_macroBO.mins)} min ago`;
+      return `📅 MACRO BLACKOUT — ${_macroBO.event} ${when}. High-impact USD prints destroy ICT structure with algo-driven whips. No new positions in the ±30 min window around the print, regardless of how clean the setup looks. Wait for price action to settle (typically 30–60 min post-event) and re-read fresh structure before entering.`;
     }
     const pct = Math.abs((asset.price - asset.entry) / asset.entry * 100);
     const score = asset.checks.reduce((a,b)=>a+b,0);
