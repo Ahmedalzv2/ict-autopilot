@@ -6939,6 +6939,109 @@
     </div>`;
   }
 
+  // Side-by-side Spot vs Futures trade opinions, anchored on appropriate
+  // timeframes so the user can compare the two views and pick. Both read
+  // asset.tfEntries (populated from MEXC/Binance klines via autoAnalyzeAsset).
+  // Designed to surface bigger setups (1H/4H/Daily) instead of 1m scalps —
+  // the user explicitly asked for "bigger size entries" with wider stops/TPs.
+  function _renderTradeOpinions(asset) {
+    if (!asset || !asset.tfEntries || asset.tfEntries.closed) {
+      return `<div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;font-size:11px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;">⟳ Computing spot vs futures opinion — needs MEXC/Binance kline analysis to populate (runs every 60s).</div>`;
+    }
+    const wantDir = ((asset.bias || '').toLowerCase().includes('bull')) ? 'bull' : 'bear';
+    const fmt = v => v >= 1000 ? v.toFixed(2) : v >= 10 ? v.toFixed(3) : v >= 1 ? v.toFixed(4) : v.toFixed(6);
+    const TFL = { '1m':'1m','5m':'5m','15m':'15m','1h':'1H','4h':'4H','1d':'Daily' };
+
+    // Pick the best TF in each lane.
+    //   FUTURES — 1H first, fall back 4H → 15m. Killzone-timed, leverage-aware.
+    //   SPOT    — 1D first, fall back 4H → 1H. Accumulation zone, no SL pressure.
+    const pickTf = (preferOrder) => {
+      // 1) entry-ready in same direction
+      for (const tf of preferOrder) {
+        const e = asset.tfEntries[tf];
+        if (e && !e.error && e.dir === wantDir && e.entryReady) return { tf, e, ready: true };
+      }
+      // 2) any entry-ready in same direction
+      for (const tf of preferOrder) {
+        const e = asset.tfEntries[tf];
+        if (e && !e.error && e.dir === wantDir) return { tf, e, ready: false };
+      }
+      return null;
+    };
+
+    const futuresPick = pickTf(['1h','4h','15m']);
+    const spotPick    = pickTf(['1d','4h','1h']);
+
+    const buildSetup = (pick, fallbackRR) => {
+      if (!pick) return null;
+      const e = pick.e;
+      const tf = pick.tf;
+      // Use the structural zone for entry: OB if available (refined), else FVG mid.
+      const zone = (e.obZone && e.obZone.lo > 0) ? e.obZone : (e.fvgZone || null);
+      if (!zone || !(zone.lo > 0)) return null;
+      const entry = (zone.lo + zone.hi) / 2;
+      const buf = (zone.hi - zone.lo) * 0.15;
+      const sl = wantDir === 'bull'
+        ? (e.sweepLevel ? e.sweepLevel.level - buf : zone.lo - buf)
+        : (e.sweepLevel ? e.sweepLevel.level + buf : zone.hi + buf);
+      const stopDist = Math.abs(entry - sl);
+      const rr = fallbackRR;
+      const tp = wantDir === 'bull' ? entry + stopDist * rr : entry - stopDist * rr;
+      const round = v => v >= 1000 ? +v.toFixed(2) : v >= 10 ? +v.toFixed(3) : v >= 1 ? +v.toFixed(4) : +v.toFixed(6);
+      return { tf, entry: round(entry), sl: round(sl), tp: round(tp), rr, stopPct: stopDist / entry * 100 };
+    };
+
+    const fSetup = buildSetup(futuresPick, 1.7); // futures: 1.7R (killzone-friendly)
+    const sSetup = buildSetup(spotPick,    2.5); // spot: 2.5R minimum (longer hold)
+
+    const dirLabel = wantDir === 'bull' ? '🟢 LONG' : '🔴 SHORT';
+    const dirColor = wantDir === 'bull' ? 'var(--bull)' : 'var(--bear)';
+    const apply = (s, label) => s ? `<button onclick="(function(){const a=ASSETS.find(x=>x.symbol==='${asset.symbol}');if(!a)return;a.entry=${s.entry};a.sl=${s.sl};a.tp=${s.tp};a.tp1=${s.tp};a.entryTf='${s.tf}';try{saveLevels();}catch(e){}try{showToast('✓ ${asset.symbol} levels applied from ${label} (${TFL[s.tf]})','ok');}catch(e){}try{updateTVAnalysis('${asset.symbol}');refreshOpenModal();renderAssets();}catch(e){}})()" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;width:100%;margin-top:8px;">⇣ Apply ${label} levels (${TFL[s.tf]})</button>` : '';
+
+    const card = (kind, s, headerColor, accentBg, hold, leverageLine) => {
+      if (!s) {
+        return `<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:14px;">
+          <div style="font-size:10px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;font-family:'JetBrains Mono',monospace;">${kind}</div>
+          <div style="font-size:11px;color:var(--text-mute);">No ${kind.toLowerCase()} setup detected on its preferred TFs yet — keep watching.</div>
+        </div>`;
+      }
+      return `<div style="background:${accentBg};border:1px solid ${headerColor};border-radius:10px;padding:14px;font-family:'JetBrains Mono',monospace;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div style="font-size:10px;color:${headerColor};text-transform:uppercase;letter-spacing:.1em;font-weight:700;">${kind} · ${TFL[s.tf]} setup</div>
+          <span style="font-size:10px;color:${dirColor};font-weight:700;">${dirLabel}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-mute);margin-bottom:8px;">${hold}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px;">
+          <div style="background:rgba(92,184,138,0.10);border:1px solid rgba(92,184,138,0.30);border-radius:6px;padding:7px;text-align:center;">
+            <div style="font-size:8px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px;">📍 Entry</div>
+            <div style="font-size:13px;font-weight:700;color:var(--bull);">$${fmt(s.entry)}</div>
+          </div>
+          <div style="background:rgba(224,93,93,0.10);border:1px solid rgba(224,93,93,0.30);border-radius:6px;padding:7px;text-align:center;">
+            <div style="font-size:8px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px;">🛑 SL</div>
+            <div style="font-size:13px;font-weight:700;color:var(--bear);">$${fmt(s.sl)}</div>
+          </div>
+          <div style="background:rgba(201,169,97,0.10);border:1px solid rgba(201,169,97,0.30);border-radius:6px;padding:7px;text-align:center;">
+            <div style="font-size:8px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px;">🎯 TP</div>
+            <div style="font-size:13px;font-weight:700;color:var(--gold);">$${fmt(s.tp)}</div>
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--text-mute);">SL distance: <span style="color:var(--text);font-weight:700;">${s.stopPct.toFixed(2)}%</span> · R:R <span style="color:var(--text);font-weight:700;">1:${s.rr}</span>${leverageLine}</div>
+        ${apply(s, kind)}
+      </div>`;
+    };
+
+    return `
+      <div style="margin-top:18px;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:14px;">
+        <div style="font-size:11px;color:var(--gold);font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;font-family:'JetBrains Mono',monospace;">⚖️ Spot vs Futures · pick the lane that fits your account</div>
+        <div style="font-size:10px;color:var(--text-mute);margin-bottom:12px;font-family:'JetBrains Mono',monospace;">Spot favours HTF accumulation (1D / 4H · weeks-long hold · no SL pressure). Futures favours killzone timing (1H / 4H · hours-to-days hold · leveraged · SL respected).</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;">
+          ${card('FUTURES', fSetup, 'rgba(92,184,138,0.5)', 'rgba(92,184,138,0.05)', 'Killzone-timed · hours-to-days hold · leverage 3–5×', ' · suggest 3–5× leverage')}
+          ${card('SPOT',    sSetup, 'rgba(201,169,97,0.5)', 'rgba(201,169,97,0.05)', 'Accumulation zone · 1–3 weeks hold · no leverage · scale in', '')}
+        </div>
+      </div>
+    `;
+  }
+
   function updateTVAnalysis(symbol) {
     const a = ASSETS.find(x => x.symbol === symbol);
     // Update live price badge in chart header
@@ -7021,6 +7124,7 @@
         </div>
       </div>
       ${_renderLiveChartTFLevels(asset)}
+      ${_renderTradeOpinions(asset)}
     `;
   }
 
