@@ -60,6 +60,10 @@ const EXPORTS = [
   '_hmacSha256Hex', '_signMexcRequest', '_mexcContractSymbol',
   'computeMexcOrderQty',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
+  // scalp mode + cooldown
+  'getScalpTf', 'setScalpTf',
+  'isMexcInCooldown', 'clearMexcCooldown', 'MEXC_COOLDOWN_MS',
+  'scalpMonitorTick', '_normalizeBiasDir', '_suggestedEntryForTf',
 ];
 
 function extractScript(html) {

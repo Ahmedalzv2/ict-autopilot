@@ -3498,6 +3498,55 @@
     return n;
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Scalp mode (per-asset). Picks which timeframe drives auto-execution.
+  //   'htf'  → fires on asset.entry (HTF setup, hours-to-days hold)
+  //   '1m'   → fires on the per-TF 1m suggested entry (scalp)
+  // Only SILVER is wired right now per the same per-asset rollout pattern.
+  // Storage key: ict_scalp_tf_<SYMBOL>. Defaults to 'htf'.
+  // ─────────────────────────────────────────────────────────────────────
+  const SCALP_TF_VALID = new Set(['htf', '1m']);
+  function getScalpTf(symbol) {
+    try {
+      const v = localStorage.getItem('ict_scalp_tf_' + String(symbol || '')) || 'htf';
+      return SCALP_TF_VALID.has(v) ? v : 'htf';
+    } catch (e) { return 'htf'; }
+  }
+  function setScalpTf(symbol, tf) {
+    const v = SCALP_TF_VALID.has(tf) ? tf : 'htf';
+    try { localStorage.setItem('ict_scalp_tf_' + String(symbol || ''), v); } catch (e) {}
+    return v;
+  }
+
+  // Per-asset cooldown so a flickering price around an entry doesn't fire
+  // 10 orders in a row. Default 5 minutes. The cooldown applies to both
+  // HTF and scalp paths — once SILVER fires anywhere, no more SILVER
+  // orders for COOLDOWN_MS.
+  const MEXC_COOLDOWN_MS = 5 * 60 * 1000;
+  const _lastMexcFireMs = {};   // in-memory; reloads pick up from localStorage
+  function _mexcCooldownKey(sym) { return 'ict_mexc_last_fire_' + String(sym || ''); }
+  function _getLastMexcFireMs(sym) {
+    if (_lastMexcFireMs[sym]) return _lastMexcFireMs[sym];
+    try {
+      const v = parseInt(localStorage.getItem(_mexcCooldownKey(sym)) || '0', 10);
+      _lastMexcFireMs[sym] = isFinite(v) ? v : 0;
+      return _lastMexcFireMs[sym];
+    } catch (e) { return 0; }
+  }
+  function _setLastMexcFireMs(sym, ts) {
+    _lastMexcFireMs[sym] = ts;
+    try { localStorage.setItem(_mexcCooldownKey(sym), String(ts)); } catch (e) {}
+  }
+  function isMexcInCooldown(sym, nowMs) {
+    const now = (typeof nowMs === 'number') ? nowMs : Date.now();
+    const last = _getLastMexcFireMs(sym);
+    return last > 0 && (now - last) < MEXC_COOLDOWN_MS;
+  }
+  function clearMexcCooldown(sym) {
+    _lastMexcFireMs[sym] = 0;
+    try { localStorage.removeItem(_mexcCooldownKey(sym)); } catch (e) {}
+  }
+
   // HMAC-SHA256(secret, message) → lowercase hex via SubtleCrypto.
   async function _hmacSha256Hex(secret, message) {
     const c = (typeof crypto !== 'undefined' && crypto.subtle) ? crypto : null;
@@ -3695,6 +3744,66 @@
     return placeMexcFuturesOrder(a, side, a.entry, a.sl, tp, qty, lev, { testFire: true });
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Scalp monitor — fires SILVER orders on the per-TF 1m setup instead
+  // of the HTF main entry. Runs on every poll tick. Gates:
+  //   1. master switch ON
+  //   2. asset's scalp TF is '1m' (default 'htf' = no scalp)
+  //   3. _suggestedEntryForTf returned a clean 1m setup (FVG present)
+  //   4. 1m direction matches HTF bias (no counter-trend scalps)
+  //   5. live price within ARMED proximity of the 1m entry (0.15%)
+  //   6. asset not in 5-min cooldown from a previous fire
+  // Returns the placeMexcFuturesOrder result for visibility, or a
+  // skip-shape { fired:false, reason } when any gate fails.
+  // ─────────────────────────────────────────────────────────────────────
+  const SCALP_PROXIMITY_PCT = 0.15;  // same threshold as the HTF "armed" tier
+
+  function _normalizeBiasDir(bias) {
+    const s = String(bias || '').toLowerCase();
+    if (s.indexOf('bull') >= 0) return 'bull';
+    if (s.indexOf('bear') >= 0) return 'bear';
+    return null;
+  }
+
+  async function scalpMonitorTick(asset) {
+    if (!asset || !_liveTradingEnabled) return { fired: false, reason: 'master-off' };
+    if (!_mexcContractSymbol(asset)) return { fired: false, reason: 'unsupported-symbol' };
+    const tf = getScalpTf(asset.symbol);
+    if (tf !== '1m') return { fired: false, reason: 'scalp-off' };
+
+    const tfData = asset.tfEntries && asset.tfEntries['1m'];
+    if (!tfData || tfData.error) return { fired: false, reason: 'no-1m-data' };
+    const sug = (typeof _suggestedEntryForTf === 'function') ? _suggestedEntryForTf(tfData, '1m') : null;
+    if (!sug) return { fired: false, reason: 'no-1m-setup' };
+
+    // HTF agreement: 1m direction must match the asset's HTF bias.
+    const htfDir = _normalizeBiasDir(asset.bias);
+    if (!htfDir) return { fired: false, reason: 'no-htf-bias' };
+    if (sug.dir !== htfDir) return { fired: false, reason: 'htf-disagrees', sugDir: sug.dir, htfDir };
+
+    // Proximity check — only fire when live price is at the 1m entry.
+    if (!asset.price || !sug.entry) return { fired: false, reason: 'no-price' };
+    const distPct = Math.abs((asset.price - sug.entry) / sug.entry) * 100;
+    if (distPct > SCALP_PROXIMITY_PCT) return { fired: false, reason: 'too-far', distPct };
+
+    // Cooldown — once any SILVER order fires (HTF or scalp), no more for
+    // MEXC_COOLDOWN_MS regardless of which path tried to fire.
+    if (isMexcInCooldown(asset.symbol)) return { fired: false, reason: 'cooldown' };
+
+    const side = sug.dir === 'bull' ? 'LONG' : 'SHORT';
+    const qty = computeMexcOrderQty(asset, sug.entry, sug.sl) || 1;
+    const lev = getSilverLeverage();
+
+    // Pre-record cooldown so a slow round-trip doesn't fire twice. If
+    // placeMexcFuturesOrder returns a hard "skip" (e.g. master flipped
+    // off mid-flight), we'd still hold cooldown — that's safer than the
+    // alternative.
+    _setLastMexcFireMs(asset.symbol, Date.now());
+
+    const r = await placeMexcFuturesOrder(asset, side, sug.entry, sug.sl, sug.tp, qty, lev, { scalp: true, tf: '1m' });
+    return { fired: true, side, entry: sug.entry, sl: sug.sl, tp: sug.tp, qty, leverage: lev, result: r };
+  }
+
   // Modal button handlers — extracted so the inline onclick="" stays
   // simple (avoids nested-quoting nightmares with confirm() prompts).
   async function _onClickTestMexcConnection() {
@@ -3736,6 +3845,11 @@
     const dryBtn = `<button onclick="setLiveTradingDryRun(${!_liveTradingDryRun});openLiveTradingModal();" style="background:${_liveTradingDryRun?'rgba(242,179,61,0.20)':'rgba(224,93,93,0.20)'};border:1px solid ${_liveTradingDryRun?'var(--liq)':'var(--bear)'};color:${_liveTradingDryRun?'var(--liq)':'var(--bear)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingDryRun?'📝 DRY-RUN':'🔴 LIVE'}</button>`;
     const lev = getSilverLeverage();
     const workerUrl = getMexcWorkerUrl();
+    const silverScalp = getScalpTf('SILVER');
+    const silverInCooldown = isMexcInCooldown('SILVER');
+    const silverCooldownLeftMs = silverInCooldown
+      ? Math.max(0, MEXC_COOLDOWN_MS - (Date.now() - _getLastMexcFireMs('SILVER')))
+      : 0;
     modal.innerHTML = `
       <div class="alert-box" style="position:relative;border-color:var(--gold);max-width:520px;text-align:left;">
         <button onclick="closeLiveTradingModal()" aria-label="Close" style="position:absolute;top:10px;right:10px;width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;font-size:18px;font-weight:700;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;z-index:10;">✕</button>
@@ -3780,11 +3894,26 @@
             <span style="font-size:11px;color:var(--text-mute);">${_liveTradingDryRun?'Logs the order it would send · no real call':'⚠ Real orders to MEXC'}</span>
           </div>
           <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SILVER leverage</div>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
             <select id="ltSilverLev" onchange="setSilverLeverage(this.value);" style="background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
               ${[1,2,3,4,5,7,10].map(n => `<option value="${n}" ${n===lev?'selected':''}>${n}×</option>`).join('')}
             </select>
-            <span style="font-size:11px;color:var(--text-mute);">Used when SILVER ENTER NOW auto-fires</span>
+            <span style="font-size:11px;color:var(--text-mute);">Used when SILVER auto-fires</span>
+          </div>
+          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SILVER auto-exec timeframe</div>
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+            <button onclick="setScalpTf('SILVER','htf');openLiveTradingModal();" style="background:${silverScalp==='htf'?'rgba(201,169,97,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${silverScalp==='htf'?'var(--gold)':'var(--border)'};color:${silverScalp==='htf'?'var(--gold)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">HTF (1H/4H)</button>
+            <button onclick="setScalpTf('SILVER','1m');openLiveTradingModal();" style="background:${silverScalp==='1m'?'rgba(242,179,61,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${silverScalp==='1m'?'var(--liq)':'var(--border)'};color:${silverScalp==='1m'?'var(--liq)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Scalp 1m</button>
+          </div>
+          <div style="font-size:10px;color:var(--text-mute);line-height:1.5;margin-bottom:14px;">
+            ${silverScalp==='1m'
+              ? '⚡ <strong>Scalp 1m active.</strong> Fires on the per-TF 1m FVG/OB setup, only when 1m direction matches HTF bias. 5-min cooldown between fires. <span style="color:var(--bear);">Watch fees vs SL distance — 0.04% taker × 2 = 0.08% round-trip; if 1m SL is &lt;0.10% you have negative edge.</span>'
+              : 'HTF mode (default) — fires on the main asset entry/SL/TP, killzone-timed, hours-to-days hold.'}
+          </div>
+          <div style="font-size:10px;color:var(--gold);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SILVER cooldown</div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span style="font-size:11px;color:${silverInCooldown?'var(--liq)':'var(--text-mute)'};">${silverInCooldown ? '⏳ Locked for ' + Math.ceil(silverCooldownLeftMs/1000) + 's' : '✓ Ready to fire'}</span>
+            ${silverInCooldown ? `<button onclick="clearMexcCooldown('SILVER');openLiveTradingModal();" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:3px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">Clear</button>` : ''}
           </div>
         </div>
 
@@ -3795,9 +3924,11 @@
 
         <div style="margin-top:12px;padding:10px;background:var(--bg-elevated);border:1px dashed var(--border);border-radius:8px;font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;line-height:1.6;">
           ℹ Auto-execution is wired for <strong style="color:var(--text);">SILVER only</strong>.
-          On a SILVER ENTER NOW signal: dry-run journals what would have sent;
-          live mode signs + POSTs through your Worker. Other assets stay
-          manual (use 🔗 Open on MEXC).
+          HTF mode fires on the main entry; Scalp 1m fires on the per-TF
+          1m FVG/OB setup. Both require 1m or HTF direction to match the
+          asset's HTF bias, and obey a 5-min cooldown so a flickering
+          price can't fire repeated orders. Other assets stay manual
+          (use 🔗 Open on MEXC).
         </div>
         ` : ''}
       </div>
@@ -4105,23 +4236,27 @@
           // Urgent vibration: long-short-long-short-long
           if (navigator.vibrate) navigator.vibrate([600, 150, 600, 150, 600]);
 
-          // ── AUTO-EXECUTE — SILVER only ─────────────────────────────
-          // Per-asset rollout: only SILVER is wired to live trading at
-          // this point. _mexcContractSymbol() returns null for any other
-          // symbol, but we also gate here so the call is skipped entirely
-          // (no console noise, no tests on every other asset's ENTER).
-          // _liveTradingEnabled gate matches placeMexcFuturesOrder's own
-          // master-off short-circuit; checking here lets us skip the qty
-          // computation and side derivation when there's nothing to do.
-          if (asset.symbol === 'SILVER' && _liveTradingEnabled) {
+          // ── AUTO-EXECUTE — SILVER only, HTF path ───────────────────
+          // Per-asset rollout: only SILVER is wired to live trading.
+          // _mexcContractSymbol() returns null for any other symbol; we
+          // also gate here to skip qty/side computation entirely.
+          // Skips:
+          //   - master switch off (also enforced inside placeMexcFutures)
+          //   - scalp mode is on for this asset (scalp monitor owns it)
+          //   - in cooldown from a recent fire (HTF or scalp)
+          if (asset.symbol === 'SILVER' && _liveTradingEnabled
+              && getScalpTf(asset.symbol) === 'htf'
+              && !isMexcInCooldown(asset.symbol)) {
             const tp = asset.tp || asset.tp1 || 0;
             const qty = computeMexcOrderQty(asset, asset.entry, asset.sl) || 1;
             const lev = getSilverLeverage();
             const side = String(asset.bias || '').toUpperCase() === 'BEARISH' ? 'SHORT' : 'LONG';
+            // Pre-record cooldown so a slow round-trip doesn't fire twice.
+            _setLastMexcFireMs(asset.symbol, Date.now());
             // Fire-and-forget — don't block the alert overlay on the round-trip.
             placeMexcFuturesOrder(asset, side, asset.entry, asset.sl, tp, qty, lev)
               .then(r => {
-                console.log('[mexc auto-exec]', r);
+                console.log('[mexc auto-exec htf]', r);
                 try {
                   if (r.dryRun) showToast('🧪 SILVER ENTER NOW · [DRY-RUN] logged', 'ok');
                   else if (r.sent) showToast('🟢 SILVER order sent to MEXC', 'ok');
@@ -4129,7 +4264,7 @@
                 } catch (e) {}
               })
               .catch(err => {
-                console.warn('[mexc auto-exec] threw:', err);
+                console.warn('[mexc auto-exec htf] threw:', err);
                 try { showToast('⚠ SILVER auto-exec error', 'err'); } catch (e) {}
               });
           }
@@ -4162,6 +4297,25 @@
       }
 
       prevSignalMap[asset.symbol] = sig;
+
+      // ── SCALP MONITOR ──────────────────────────────────────────────
+      // Independent of HTF "armed/enter" escalation. Runs every tick on
+      // every asset; the function itself short-circuits unless scalp
+      // mode is on for this asset and a 1m setup is at proximity. Fire
+      // and forget — scalp is async-by-design.
+      try {
+        scalpMonitorTick(asset).then(r => {
+          if (r && r.fired) {
+            console.log('[mexc scalp 1m]', r);
+            try {
+              const sub = r.result;
+              if (sub && sub.dryRun) showToast('🧪 SILVER scalp 1m · [DRY-RUN] logged', 'ok');
+              else if (sub && sub.sent) showToast('🟢 SILVER scalp 1m order sent', 'ok');
+              else showToast('⚠ SILVER scalp 1m: ' + (sub && (sub.reason || sub.error) || 'failed'), 'warn');
+            } catch (e) {}
+          }
+        }).catch(err => { console.warn('[mexc scalp 1m] threw:', err); });
+      } catch (e) {}
     });
   }
 
