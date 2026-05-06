@@ -51,11 +51,15 @@ const EXPORTS = [
   'PRICE_PROXY_SYMBOLS',
   // exchange routing
   '_exchangeUrl', 'openOnExchange',
-  // live trading (settings only, no real HTTP yet)
+  // live trading (real signed call via user-deployed Worker)
   'loadLiveTradingState', 'liveTradingStatus',
   'setLiveTradingEnabled', 'setLiveTradingDryRun',
   'getMexcApiKey', 'getMexcApiSecret', 'saveMexcKeys', 'clearMexcKeys',
-  'placeMexcFuturesOrderStub',
+  'getMexcWorkerUrl', 'setMexcWorkerUrl',
+  'getSilverLeverage', 'setSilverLeverage',
+  '_hmacSha256Hex', '_signMexcRequest', '_mexcContractSymbol',
+  'computeMexcOrderQty',
+  'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
 ];
 
 function extractScript(html) {
@@ -156,6 +160,8 @@ export function loadApp(opts = {}) {
     parseInt, parseFloat, isNaN, isFinite,
     Infinity, NaN, undefined,
     AbortSignal,
+    crypto: globalThis.crypto,
+    TextEncoder, TextDecoder,
     console,
     document,
     localStorage: makeStorage(storage),
