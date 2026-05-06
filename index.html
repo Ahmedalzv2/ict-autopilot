@@ -3467,12 +3467,116 @@
     el.title = `Live trading: ${s.label} (tap to configure)`;
   }
 
-  // Stub for the real order call. In dry-run it appends a journal entry
-  // tagged dryRun so the user can see what would have happened without
-  // any HTTP traffic. In live mode it currently no-ops with a clear
-  // toast — wiring the signed call is gated on user signoff.
-  function placeMexcFuturesOrderStub(asset, side, entry, sl, tp, qty, leverage) {
+  // ─────────────────────────────────────────────────────────────────────
+  // Worker URL — user-deployed Cloudflare Worker that proxies signed
+  // requests to contract.mexc.com (which doesn't return CORS headers).
+  // The Worker never sees the API secret. Only the API key + the
+  // pre-computed signature travel through it — same bytes that would
+  // be on the wire to MEXC anyway.
+  // ─────────────────────────────────────────────────────────────────────
+  function getMexcWorkerUrl() { try { return localStorage.getItem('ict_mexc_worker_url') || ''; } catch (e) { return ''; } }
+  function setMexcWorkerUrl(url) {
+    try { localStorage.setItem('ict_mexc_worker_url', String(url || '').replace(/\/$/, '')); } catch (e) {}
+    _updateLiveTradingBadge();
+  }
+
+  // Default leverage for SILVER auto-execution. Dashboard suggests 3–5×
+  // for futures lanes; we pick the safer end. User override stored in
+  // localStorage 'ict_mexc_silver_leverage' (1–20).
+  function getSilverLeverage() {
+    try {
+      const v = parseInt(localStorage.getItem('ict_mexc_silver_leverage') || '3', 10);
+      if (v >= 1 && v <= 20) return v;
+    } catch (e) {}
+    return 3;
+  }
+  function setSilverLeverage(v) {
+    const parsed = parseInt(v, 10);
+    // NaN/empty → fall back to default 3; valid number → clamp to [1, 20].
+    const n = isFinite(parsed) ? Math.max(1, Math.min(20, parsed)) : 3;
+    try { localStorage.setItem('ict_mexc_silver_leverage', String(n)); } catch (e) {}
+    return n;
+  }
+
+  // HMAC-SHA256(secret, message) → lowercase hex via SubtleCrypto.
+  async function _hmacSha256Hex(secret, message) {
+    const c = (typeof crypto !== 'undefined' && crypto.subtle) ? crypto : null;
+    if (!c) throw new Error('crypto.subtle not available');
+    const enc = new TextEncoder();
+    const key = await c.subtle.importKey(
+      'raw', enc.encode(String(secret)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    );
+    const sig = await c.subtle.sign('HMAC', key, enc.encode(String(message)));
+    const bytes = new Uint8Array(sig);
+    let out = '';
+    for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0');
+    return out;
+  }
+
+  // MEXC v1 contract API signature.
+  // Per MEXC docs:  sign = HMAC-SHA256(secret, apiKey + reqTime + paramString)
+  // paramString is JSON body for POST, query string (no leading "?") for GET.
+  async function _signMexcRequest(apiKey, apiSecret, reqTime, paramString) {
+    return _hmacSha256Hex(apiSecret, String(apiKey) + String(reqTime) + String(paramString || ''));
+  }
+
+  // qty = (account × risk%) / |entry − sl|. Mirrors the asset-modal
+  // calculator. Returns null if account/risk aren't set, so callers can
+  // fall back to a manual qty.
+  function computeMexcOrderQty(asset, entry, sl) {
+    try {
+      const account = parseFloat(localStorage.getItem('ict_calc_account'));
+      const riskPct = parseFloat(localStorage.getItem('ict_calc_risk'));
+      if (!account || !riskPct) return null;
+      const dist = Math.abs(Number(entry) - Number(sl));
+      if (!isFinite(dist) || dist <= 0) return null;
+      const units = (account * riskPct / 100) / dist;
+      if (!isFinite(units) || units <= 0) return null;
+      return Math.max(1, Math.round(units * 100) / 100);
+    } catch (e) { return null; }
+  }
+
+  // MEXC contract symbol per asset. SILVER-only by design — auto-exec
+  // is rolled out asset-by-asset after each one is signed off on.
+  function _mexcContractSymbol(asset) {
+    if (!asset) return null;
+    if (asset.symbol === 'SILVER') return 'SILVER_USDT';
+    return null;
+  }
+
+  // Real signed order call. Replaces the old placeMexcFuturesOrderStub.
+  //   master OFF      → { sent:false, reason:'master-off' }
+  //   unknown symbol  → { sent:false, reason:'unsupported-symbol' }
+  //   bad side        → { sent:false, reason:'bad-side' }
+  //   dry-run ON      → journals a [DRY-RUN] entry, no HTTP
+  //   live, no keys   → { sent:false, reason:'no-keys' }
+  //   live, no worker → { sent:false, reason:'no-worker' }
+  //   live OK         → { sent:true, response, status }; also journals [LIVE-OK]
+  //   live ERR        → { sent:false, response, status }; also journals [LIVE-ERR]
+  async function placeMexcFuturesOrder(asset, side, entry, sl, tp, qty, leverage, opts) {
+    opts = opts || {};
     if (!_liveTradingEnabled) return { sent: false, reason: 'master-off' };
+    const mexcSymbol = _mexcContractSymbol(asset);
+    if (!mexcSymbol) return { sent: false, reason: 'unsupported-symbol' };
+
+    const sideUp = String(side || '').toUpperCase();
+    // 1 = open long, 3 = open short  (MEXC v1 contract API)
+    const mexcSide = sideUp === 'LONG' ? 1 : sideUp === 'SHORT' ? 3 : null;
+    if (mexcSide === null) return { sent: false, reason: 'bad-side' };
+
+    const body = {
+      symbol: mexcSymbol,
+      price: Number(entry),
+      vol: Number(qty),
+      leverage: Number(leverage),
+      side: mexcSide,
+      type: 1,         // 1 = limit
+      openType: 1,     // 1 = isolated margin
+      stopLossPrice: Number(sl),
+      takeProfitPrice: Number(tp),
+    };
+
+    // ── DRY-RUN PATH ─────────────────────────────────────────────
     if (_liveTradingDryRun) {
       try {
         const e = {
@@ -3480,21 +3584,144 @@
           symbol: asset.symbol, signal: 'enter',
           priceAtCall: asset.price, entry, sl, tp,
           grade: asset.grade, bias: asset.bias,
-          session: 'live-trading-dry-run',
-          analysis: `[DRY-RUN] ${side} ${asset.symbol} · entry $${entry} · SL $${sl} · TP $${tp} · qty ${qty} · ${leverage}×`,
+          session: opts.testFire ? 'live-trading-test-fire' : 'live-trading-dry-run',
+          analysis: `[DRY-RUN] ${sideUp} ${asset.symbol} · entry $${entry} · SL $${sl} · TP $${tp} · qty ${qty} · ${leverage}×`,
           outcome: null, outcomeChecks: {},
-          dryRun: true,
+          dryRun: true, mexcBody: body,
         };
         if (typeof journal !== 'undefined' && Array.isArray(journal)) {
           journal.unshift(e);
           if (typeof saveJournal === 'function') saveJournal();
         }
       } catch (err) {}
-      return { sent: false, dryRun: true, reason: 'dry-run' };
+      return { sent: false, dryRun: true, body };
     }
-    // Live path: not wired yet. Returns a clear marker so the surrounding
-    // code can show a toast instead of pretending the order went through.
-    return { sent: false, reason: 'live-not-wired', message: 'Real-order placement is not wired yet. Toggle Dry-Run ON or wait for the live wiring PR.' };
+
+    // ── LIVE PATH ────────────────────────────────────────────────
+    const apiKey = getMexcApiKey();
+    const apiSecret = getMexcApiSecret();
+    const workerUrl = getMexcWorkerUrl();
+    if (!apiKey || !apiSecret) return { sent: false, reason: 'no-keys' };
+    if (!workerUrl) return { sent: false, reason: 'no-worker', message: 'Set the Worker URL in live-trading settings.' };
+
+    const reqTime = String(Date.now());
+    const paramJson = JSON.stringify(body);
+    let signature;
+    try {
+      signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramJson);
+    } catch (e) {
+      return { sent: false, reason: 'sign-failed', error: String((e && e.message) || e) };
+    }
+
+    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/order/submit';
+    let resp, json;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ApiKey': apiKey,
+          'Request-Time': reqTime,
+          'Signature': signature,
+        },
+        body: paramJson,
+      });
+      const txt = await resp.text();
+      try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
+    } catch (e) {
+      return { sent: false, reason: 'network', error: String((e && e.message) || e) };
+    }
+
+    const ok = !!(resp.ok && (json.success === true || json.code === 0 || json.code === 200));
+    try {
+      const e = {
+        id: Date.now(), timestamp: Date.now(),
+        symbol: asset.symbol, signal: 'enter',
+        priceAtCall: asset.price, entry, sl, tp,
+        grade: asset.grade, bias: asset.bias,
+        session: opts.testFire ? 'live-trading-test-fire-live' : 'live-trading',
+        analysis: `[${ok ? 'LIVE-OK' : 'LIVE-ERR'}] ${sideUp} ${asset.symbol} · entry $${entry} · SL $${sl} · TP $${tp} · qty ${qty} · ${leverage}× · ${JSON.stringify(json).slice(0, 200)}`,
+        outcome: null, outcomeChecks: {},
+        live: true, mexcResponse: json, mexcStatus: resp.status,
+      };
+      if (typeof journal !== 'undefined' && Array.isArray(journal)) {
+        journal.unshift(e);
+        if (typeof saveJournal === 'function') saveJournal();
+      }
+    } catch (err) {}
+
+    return { sent: ok, status: resp.status, response: json };
+  }
+
+  // Read-only sanity check. Hits the signed account-assets endpoint
+  // through the Worker — never places an order — to verify keys +
+  // Worker URL + signing all work end-to-end.
+  async function testMexcConnection() {
+    const apiKey = getMexcApiKey();
+    const apiSecret = getMexcApiSecret();
+    const workerUrl = getMexcWorkerUrl();
+    if (!apiKey || !apiSecret) return { ok: false, error: 'no-keys' };
+    if (!workerUrl) return { ok: false, error: 'no-worker' };
+    const reqTime = String(Date.now());
+    let signature;
+    try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, ''); }
+    catch (e) { return { ok: false, error: 'sign-failed', detail: String((e && e.message) || e) }; }
+    const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/account/assets';
+    try {
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: { 'ApiKey': apiKey, 'Request-Time': reqTime, 'Signature': signature },
+      });
+      const txt = await resp.text();
+      let json; try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
+      const ok = !!(resp.ok && (json.success === true || json.code === 0 || json.code === 200));
+      return { ok, status: resp.status, response: json };
+    } catch (e) {
+      return { ok: false, error: 'network', detail: String((e && e.message) || e) };
+    }
+  }
+
+  // Manual SILVER test-fire — simulates the ENTER NOW path end-to-end
+  // through placeMexcFuturesOrder. Honors dry-run / live just like a
+  // real signal would, so a dry-run test produces a [DRY-RUN] journal
+  // entry without HTTP traffic.
+  async function testFireSilver() {
+    const a = (typeof ASSETS !== 'undefined') ? ASSETS.find(x => x.symbol === 'SILVER') : null;
+    if (!a) return { sent: false, reason: 'no-silver-asset' };
+    const tp = a.tp || a.tp1 || 0;
+    const qty = computeMexcOrderQty(a, a.entry, a.sl) || 1;
+    const lev = getSilverLeverage();
+    const side = String(a.bias || '').toUpperCase() === 'BEARISH' ? 'SHORT' : 'LONG';
+    return placeMexcFuturesOrder(a, side, a.entry, a.sl, tp, qty, lev, { testFire: true });
+  }
+
+  // Modal button handlers — extracted so the inline onclick="" stays
+  // simple (avoids nested-quoting nightmares with confirm() prompts).
+  async function _onClickTestMexcConnection() {
+    try { showToast('Testing MEXC connection…', 'info'); } catch (e) {}
+    const r = await testMexcConnection();
+    console.log('[mexc] test connection result:', r);
+    try {
+      if (r.ok) showToast('✓ Connection OK · keys + Worker verified', 'ok');
+      else showToast('✗ Connection failed: ' + (r.error || r.status || 'unknown'), 'err');
+    } catch (e) {}
+    return r;
+  }
+  async function _onClickTestFireSilver() {
+    const live = !_liveTradingDryRun;
+    const msg = live
+      ? '⚠ Dry-run is OFF — this will place a REAL SILVER order on MEXC.\n\nProceed?'
+      : 'Test-fire a SILVER order?\n\nDry-run is ON — will journal a [DRY-RUN] entry only, no HTTP traffic.';
+    if (!confirm(msg)) return;
+    try { showToast('Test-firing SILVER…', 'info'); } catch (e) {}
+    const r = await testFireSilver();
+    console.log('[mexc] test fire result:', r);
+    try {
+      if (r.dryRun) showToast('✓ [DRY-RUN] SILVER logged to journal', 'ok');
+      else if (r.sent) showToast('✓ LIVE SILVER order sent · ' + (r.status || ''), 'ok');
+      else showToast('✗ Test fire: ' + (r.reason || r.error || 'failed'), 'err');
+    } catch (e) {}
+    return r;
   }
 
   function openLiveTradingModal() {
@@ -3507,6 +3734,8 @@
     const hasKeys = !!(getMexcApiKey() && getMexcApiSecret());
     const masterBtn = `<button onclick="setLiveTradingEnabled(${!_liveTradingEnabled});openLiveTradingModal();" style="background:${_liveTradingEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${_liveTradingEnabled?'var(--bull)':'var(--border)'};color:${_liveTradingEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingEnabled?'🟢 ON':'🔴 OFF'}</button>`;
     const dryBtn = `<button onclick="setLiveTradingDryRun(${!_liveTradingDryRun});openLiveTradingModal();" style="background:${_liveTradingDryRun?'rgba(242,179,61,0.20)':'rgba(224,93,93,0.20)'};border:1px solid ${_liveTradingDryRun?'var(--liq)':'var(--bear)'};color:${_liveTradingDryRun?'var(--liq)':'var(--bear)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingDryRun?'📝 DRY-RUN':'🔴 LIVE'}</button>`;
+    const lev = getSilverLeverage();
+    const workerUrl = getMexcWorkerUrl();
     modal.innerHTML = `
       <div class="alert-box" style="position:relative;border-color:var(--gold);max-width:520px;text-align:left;">
         <button onclick="closeLiveTradingModal()" aria-label="Close" style="position:absolute;top:10px;right:10px;width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;font-size:18px;font-weight:700;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;z-index:10;">✕</button>
@@ -3529,7 +3758,12 @@
             <div style="font-size:10px;color:var(--text-mute);margin-bottom:4px;text-transform:uppercase;letter-spacing:.1em;">MEXC API Secret</div>
             <input id="ltApiSecret" type="password" autocomplete="off" spellcheck="false" value="${getMexcApiSecret()}" placeholder="paste API secret" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;box-sizing:border-box;" />
           </div>
-          <button onclick="(function(){const k=document.getElementById('ltApiKey').value.trim();const s=document.getElementById('ltApiSecret').value.trim();if(!k||!s){try{showToast('Enter both key and secret','err');}catch(e){}return;}saveMexcKeys(k,s);try{showToast('✓ MEXC keys saved','ok');}catch(e){}openLiveTradingModal();})()" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:8px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;width:100%;font-family:'JetBrains Mono',monospace;">💾 Save keys</button>
+          <div style="margin-bottom:14px;">
+            <div style="font-size:10px;color:var(--text-mute);margin-bottom:4px;text-transform:uppercase;letter-spacing:.1em;">Worker URL <span style="color:var(--gold);text-transform:none;letter-spacing:0;">(your Cloudflare Worker)</span></div>
+            <input id="ltWorkerUrl" type="text" autocomplete="off" spellcheck="false" value="${workerUrl}" placeholder="https://yourname.workers.dev" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;box-sizing:border-box;" />
+            <div style="font-size:10px;color:var(--text-mute);margin-top:4px;line-height:1.4;">Deploy <code>worker.js</code> from this repo to your own Cloudflare account, then paste the *.workers.dev URL here. Your API secret never travels through the Worker.</div>
+          </div>
+          <button onclick="(function(){const k=document.getElementById('ltApiKey').value.trim();const s=document.getElementById('ltApiSecret').value.trim();const w=document.getElementById('ltWorkerUrl').value.trim();if(!k||!s){try{showToast('Enter both key and secret','err');}catch(e){}return;}saveMexcKeys(k,s);if(w)setMexcWorkerUrl(w);try{showToast('✓ MEXC settings saved','ok');}catch(e){}openLiveTradingModal();})()" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:8px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;width:100%;font-family:'JetBrains Mono',monospace;">💾 Save keys + Worker URL</button>
           ${hasKeys ? `<button onclick="(function(){if(confirm('Disconnect and clear MEXC keys? Master switch will also turn off.')){clearMexcKeys();try{showToast('Keys cleared','info');}catch(e){}openLiveTradingModal();}})()" style="background:transparent;border:1px solid var(--bear);color:var(--bear);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;width:100%;margin-top:8px;font-family:'JetBrains Mono',monospace;">🗑 Disconnect & clear keys</button>` : ''}
         </div>
 
@@ -3541,17 +3775,29 @@
             <span style="font-size:11px;color:var(--text-mute);">${_liveTradingEnabled?'Orders may fire on ENTER NOW':'No orders will fire — paper only'}</span>
           </div>
           <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">Dry-run mode</div>
-          <div style="display:flex;align-items:center;gap:10px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
             ${dryBtn}
             <span style="font-size:11px;color:var(--text-mute);">${_liveTradingDryRun?'Logs the order it would send · no real call':'⚠ Real orders to MEXC'}</span>
           </div>
+          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SILVER leverage</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+            <select id="ltSilverLev" onchange="setSilverLeverage(this.value);" style="background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
+              ${[1,2,3,4,5,7,10].map(n => `<option value="${n}" ${n===lev?'selected':''}>${n}×</option>`).join('')}
+            </select>
+            <span style="font-size:11px;color:var(--text-mute);">Used when SILVER ENTER NOW auto-fires</span>
+          </div>
         </div>
+
+        <div style="margin-top:12px;display:flex;gap:8px;">
+          <button onclick="_onClickTestMexcConnection()" style="flex:1;background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:8px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🔍 Test connection</button>
+          <button onclick="_onClickTestFireSilver()" style="flex:1;background:${_liveTradingDryRun?'rgba(242,179,61,0.18)':'rgba(224,93,93,0.18)'};border:1px solid ${_liveTradingDryRun?'var(--liq)':'var(--bear)'};color:${_liveTradingDryRun?'var(--liq)':'var(--bear)'};padding:8px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">🧪 Test fire SILVER</button>
+        </div>
+
         <div style="margin-top:12px;padding:10px;background:var(--bg-elevated);border:1px dashed var(--border);border-radius:8px;font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;line-height:1.6;">
-          ℹ The real-order HTTP call to MEXC is <em>not yet wired</em>. With
-          DRY-RUN ON, ENTER NOW signals will log a [DRY-RUN] entry to the
-          journal showing exactly what would have been sent. Switching DRY-RUN
-          off currently shows a "not wired yet" toast — by design, until you
-          sign off on the live wiring.
+          ℹ Auto-execution is wired for <strong style="color:var(--text);">SILVER only</strong>.
+          On a SILVER ENTER NOW signal: dry-run journals what would have sent;
+          live mode signs + POSTs through your Worker. Other assets stay
+          manual (use 🔗 Open on MEXC).
         </div>
         ` : ''}
       </div>
@@ -3858,6 +4104,35 @@
 
           // Urgent vibration: long-short-long-short-long
           if (navigator.vibrate) navigator.vibrate([600, 150, 600, 150, 600]);
+
+          // ── AUTO-EXECUTE — SILVER only ─────────────────────────────
+          // Per-asset rollout: only SILVER is wired to live trading at
+          // this point. _mexcContractSymbol() returns null for any other
+          // symbol, but we also gate here so the call is skipped entirely
+          // (no console noise, no tests on every other asset's ENTER).
+          // _liveTradingEnabled gate matches placeMexcFuturesOrder's own
+          // master-off short-circuit; checking here lets us skip the qty
+          // computation and side derivation when there's nothing to do.
+          if (asset.symbol === 'SILVER' && _liveTradingEnabled) {
+            const tp = asset.tp || asset.tp1 || 0;
+            const qty = computeMexcOrderQty(asset, asset.entry, asset.sl) || 1;
+            const lev = getSilverLeverage();
+            const side = String(asset.bias || '').toUpperCase() === 'BEARISH' ? 'SHORT' : 'LONG';
+            // Fire-and-forget — don't block the alert overlay on the round-trip.
+            placeMexcFuturesOrder(asset, side, asset.entry, asset.sl, tp, qty, lev)
+              .then(r => {
+                console.log('[mexc auto-exec]', r);
+                try {
+                  if (r.dryRun) showToast('🧪 SILVER ENTER NOW · [DRY-RUN] logged', 'ok');
+                  else if (r.sent) showToast('🟢 SILVER order sent to MEXC', 'ok');
+                  else showToast('⚠ SILVER auto-exec: ' + (r.reason || r.error || 'failed'), 'warn');
+                } catch (e) {}
+              })
+              .catch(err => {
+                console.warn('[mexc auto-exec] threw:', err);
+                try { showToast('⚠ SILVER auto-exec error', 'err'); } catch (e) {}
+              });
+          }
         }
         // ALMOST ENTRY POINT: full overlay + moderate vibration
         else if (sig === 'armed') {
