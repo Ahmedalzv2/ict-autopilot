@@ -51,6 +51,11 @@ const EXPORTS = [
   'PRICE_PROXY_SYMBOLS',
   // exchange routing
   '_exchangeUrl', 'openOnExchange',
+  // live trading (settings only, no real HTTP yet)
+  'loadLiveTradingState', 'liveTradingStatus',
+  'setLiveTradingEnabled', 'setLiveTradingDryRun',
+  'getMexcApiKey', 'getMexcApiSecret', 'saveMexcKeys', 'clearMexcKeys',
+  'placeMexcFuturesOrderStub',
 ];
 
 function extractScript(html) {

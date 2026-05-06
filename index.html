@@ -1184,6 +1184,7 @@
           <div style="display:flex;justify-content:flex-end;margin-bottom:4px;">
             <button id="alertSoundBtn" onclick="toggleAlertSound()" title="Toggle alert sound" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);border-radius:6px;padding:3px 10px;font-size:14px;cursor:pointer;line-height:1.4;">🔔</button>
             <button id="wakeLockBadge" onclick="toggleWakeLock()" title="Wake-lock idle — re-engages in next Kill Zone" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);border-radius:6px;padding:3px 10px;font-size:14px;cursor:pointer;line-height:1.4;">💤</button>
+            <button id="liveTradingBadge" onclick="openLiveTradingModal()" title="Live trading: not connected (tap to configure)" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);border-radius:6px;padding:3px 10px;font-size:14px;cursor:pointer;line-height:1.4;">🔌</button>
           </div>
           <div id="entryAlertsHost" style="margin-bottom:16px;"></div>
 
@@ -3395,6 +3396,171 @@
     });
     // Re-check every 60s — handles KZ start/end transitions.
     setInterval(_maintainWakeLock, 60000);
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 🔌 LIVE TRADING (MEXC) — settings-only foundation
+  // ═══════════════════════════════════════════════════════
+  // This block stores the API keys and the master / dry-run switches but
+  // does NOT yet place any real orders. The actual signed HTTP call to
+  // MEXC's order endpoint is deliberately deferred to a follow-up PR after
+  // the user has confirmed the settings UI works for them.
+  //
+  // States the badge can be in:
+  //   🔌  not connected (no keys saved)
+  //   🟡  connected, master switch OFF (paper-only)
+  //   🟢  connected, master switch ON, dry-run ON  (logs simulated orders)
+  //   🔴  connected, master switch ON, dry-run OFF (real orders — once wired)
+  //
+  // Storage (all localStorage):
+  //   ict_mexc_api_key       — string
+  //   ict_mexc_api_secret    — string
+  //   ict_live_trading_v2    — { enabled: boolean, dryRun: boolean }
+  let _liveTradingEnabled = false;
+  let _liveTradingDryRun = true;
+  function loadLiveTradingState() {
+    try {
+      const s = JSON.parse(localStorage.getItem('ict_live_trading_v2') || '{}');
+      _liveTradingEnabled = s.enabled === true;
+      _liveTradingDryRun = s.dryRun !== false; // default true
+    } catch (e) { _liveTradingEnabled = false; _liveTradingDryRun = true; }
+    _updateLiveTradingBadge();
+  }
+  function _persistLiveTradingState() {
+    try { localStorage.setItem('ict_live_trading_v2', JSON.stringify({ enabled: _liveTradingEnabled, dryRun: _liveTradingDryRun })); } catch (e) {}
+  }
+  function setLiveTradingEnabled(on) { _liveTradingEnabled = !!on; _persistLiveTradingState(); _updateLiveTradingBadge(); }
+  function setLiveTradingDryRun(on)   { _liveTradingDryRun = !!on;   _persistLiveTradingState(); _updateLiveTradingBadge(); }
+
+  function getMexcApiKey()    { try { return localStorage.getItem('ict_mexc_api_key')    || ''; } catch (e) { return ''; } }
+  function getMexcApiSecret() { try { return localStorage.getItem('ict_mexc_api_secret') || ''; } catch (e) { return ''; } }
+  function saveMexcKeys(key, secret) {
+    try {
+      localStorage.setItem('ict_mexc_api_key', String(key || ''));
+      localStorage.setItem('ict_mexc_api_secret', String(secret || ''));
+    } catch (e) {}
+    _updateLiveTradingBadge();
+  }
+  function clearMexcKeys() {
+    try {
+      localStorage.removeItem('ict_mexc_api_key');
+      localStorage.removeItem('ict_mexc_api_secret');
+    } catch (e) {}
+    // Force-disable master switch when keys are removed.
+    _liveTradingEnabled = false;
+    _persistLiveTradingState();
+    _updateLiveTradingBadge();
+  }
+  // Pure status function so tests don't need a DOM.
+  function liveTradingStatus() {
+    const hasKeys = !!(getMexcApiKey() && getMexcApiSecret());
+    if (!hasKeys) return { state: 'not-connected', icon: '🔌', label: 'Not connected' };
+    if (!_liveTradingEnabled) return { state: 'connected-off', icon: '🟡', label: 'Connected · master OFF' };
+    if (_liveTradingDryRun)    return { state: 'on-dryrun',    icon: '🟢', label: 'ON · DRY-RUN' };
+    return { state: 'on-live', icon: '🔴', label: 'ON · LIVE' };
+  }
+  function _updateLiveTradingBadge() {
+    const el = (typeof document !== 'undefined' && document.getElementById) ? document.getElementById('liveTradingBadge') : null;
+    if (!el) return;
+    const s = liveTradingStatus();
+    el.textContent = s.icon;
+    el.title = `Live trading: ${s.label} (tap to configure)`;
+  }
+
+  // Stub for the real order call. In dry-run it appends a journal entry
+  // tagged dryRun so the user can see what would have happened without
+  // any HTTP traffic. In live mode it currently no-ops with a clear
+  // toast — wiring the signed call is gated on user signoff.
+  function placeMexcFuturesOrderStub(asset, side, entry, sl, tp, qty, leverage) {
+    if (!_liveTradingEnabled) return { sent: false, reason: 'master-off' };
+    if (_liveTradingDryRun) {
+      try {
+        const e = {
+          id: Date.now(), timestamp: Date.now(),
+          symbol: asset.symbol, signal: 'enter',
+          priceAtCall: asset.price, entry, sl, tp,
+          grade: asset.grade, bias: asset.bias,
+          session: 'live-trading-dry-run',
+          analysis: `[DRY-RUN] ${side} ${asset.symbol} · entry $${entry} · SL $${sl} · TP $${tp} · qty ${qty} · ${leverage}×`,
+          outcome: null, outcomeChecks: {},
+          dryRun: true,
+        };
+        if (typeof journal !== 'undefined' && Array.isArray(journal)) {
+          journal.unshift(e);
+          if (typeof saveJournal === 'function') saveJournal();
+        }
+      } catch (err) {}
+      return { sent: false, dryRun: true, reason: 'dry-run' };
+    }
+    // Live path: not wired yet. Returns a clear marker so the surrounding
+    // code can show a toast instead of pretending the order went through.
+    return { sent: false, reason: 'live-not-wired', message: 'Real-order placement is not wired yet. Toggle Dry-Run ON or wait for the live wiring PR.' };
+  }
+
+  function openLiveTradingModal() {
+    const existing = document.getElementById('liveTradingModal');
+    if (existing) existing.remove();
+    const modal = document.createElement('div');
+    modal.id = 'liveTradingModal';
+    modal.className = 'alert-overlay';
+    modal.addEventListener('click', e => { if (e.target === modal) closeLiveTradingModal(); });
+    const hasKeys = !!(getMexcApiKey() && getMexcApiSecret());
+    const masterBtn = `<button onclick="setLiveTradingEnabled(${!_liveTradingEnabled});openLiveTradingModal();" style="background:${_liveTradingEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${_liveTradingEnabled?'var(--bull)':'var(--border)'};color:${_liveTradingEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingEnabled?'🟢 ON':'🔴 OFF'}</button>`;
+    const dryBtn = `<button onclick="setLiveTradingDryRun(${!_liveTradingDryRun});openLiveTradingModal();" style="background:${_liveTradingDryRun?'rgba(242,179,61,0.20)':'rgba(224,93,93,0.20)'};border:1px solid ${_liveTradingDryRun?'var(--liq)':'var(--bear)'};color:${_liveTradingDryRun?'var(--liq)':'var(--bear)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingDryRun?'📝 DRY-RUN':'🔴 LIVE'}</button>`;
+    modal.innerHTML = `
+      <div class="alert-box" style="position:relative;border-color:var(--gold);max-width:520px;text-align:left;">
+        <button onclick="closeLiveTradingModal()" aria-label="Close" style="position:absolute;top:10px;right:10px;width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;font-size:18px;font-weight:700;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;z-index:10;">✕</button>
+        <div class="alert-label" style="color:var(--gold);text-align:left;margin-top:0;">⚙️ Live Trading · MEXC</div>
+
+        <div style="margin-top:14px;padding:12px;background:rgba(224,93,93,0.08);border:1px solid rgba(224,93,93,0.3);border-radius:8px;font-size:11px;color:var(--bear);font-family:'JetBrains Mono',monospace;line-height:1.6;">
+          ⚠ <strong>Real money lives behind these keys.</strong> Use API keys
+          scoped to <em>read + trade only</em> — disable withdrawals at MEXC
+          before pasting them here. Keys are stored in this browser's
+          localStorage in cleartext. Anyone who unlocks this device gets your
+          trading account.
+        </div>
+
+        <div style="margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:12px;">
+          <div style="margin-bottom:8px;">
+            <div style="font-size:10px;color:var(--text-mute);margin-bottom:4px;text-transform:uppercase;letter-spacing:.1em;">MEXC API Key</div>
+            <input id="ltApiKey" type="password" autocomplete="off" spellcheck="false" value="${getMexcApiKey()}" placeholder="paste API key" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;box-sizing:border-box;" />
+          </div>
+          <div style="margin-bottom:14px;">
+            <div style="font-size:10px;color:var(--text-mute);margin-bottom:4px;text-transform:uppercase;letter-spacing:.1em;">MEXC API Secret</div>
+            <input id="ltApiSecret" type="password" autocomplete="off" spellcheck="false" value="${getMexcApiSecret()}" placeholder="paste API secret" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;box-sizing:border-box;" />
+          </div>
+          <button onclick="(function(){const k=document.getElementById('ltApiKey').value.trim();const s=document.getElementById('ltApiSecret').value.trim();if(!k||!s){try{showToast('Enter both key and secret','err');}catch(e){}return;}saveMexcKeys(k,s);try{showToast('✓ MEXC keys saved','ok');}catch(e){}openLiveTradingModal();})()" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:8px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;width:100%;font-family:'JetBrains Mono',monospace;">💾 Save keys</button>
+          ${hasKeys ? `<button onclick="(function(){if(confirm('Disconnect and clear MEXC keys? Master switch will also turn off.')){clearMexcKeys();try{showToast('Keys cleared','info');}catch(e){}openLiveTradingModal();}})()" style="background:transparent;border:1px solid var(--bear);color:var(--bear);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;width:100%;margin-top:8px;font-family:'JetBrains Mono',monospace;">🗑 Disconnect & clear keys</button>` : ''}
+        </div>
+
+        ${hasKeys ? `
+        <div style="margin-top:14px;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:12px;">
+          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">Master switch</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+            ${masterBtn}
+            <span style="font-size:11px;color:var(--text-mute);">${_liveTradingEnabled?'Orders may fire on ENTER NOW':'No orders will fire — paper only'}</span>
+          </div>
+          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">Dry-run mode</div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            ${dryBtn}
+            <span style="font-size:11px;color:var(--text-mute);">${_liveTradingDryRun?'Logs the order it would send · no real call':'⚠ Real orders to MEXC'}</span>
+          </div>
+        </div>
+        <div style="margin-top:12px;padding:10px;background:var(--bg-elevated);border:1px dashed var(--border);border-radius:8px;font-size:10px;color:var(--text-mute);font-family:'JetBrains Mono',monospace;line-height:1.6;">
+          ℹ The real-order HTTP call to MEXC is <em>not yet wired</em>. With
+          DRY-RUN ON, ENTER NOW signals will log a [DRY-RUN] entry to the
+          journal showing exactly what would have been sent. Switching DRY-RUN
+          off currently shows a "not wired yet" toast — by design, until you
+          sign off on the live wiring.
+        </div>
+        ` : ''}
+      </div>
+    `;
+    document.body.appendChild(modal);
+  }
+  function closeLiveTradingModal() {
+    const m = document.getElementById('liveTradingModal');
+    if (m) m.remove();
   }
 
   // iOS Safari blocks AudioContext until a user gesture unlocks it. We keep
@@ -8551,6 +8717,7 @@
     _try('rebuildTVSymbolSelect', rebuildTVSymbolSelect);
     _try('loadLevels', loadLevels);
     _try('loadTradeModes', loadTradeModes);
+    _try('loadLiveTradingState', loadLiveTradingState);
     _try('loadJournal', loadJournal);
     _try('checkPendingOutcomes', checkPendingOutcomes);
     _try('renderAssets', renderAssets);
