@@ -49,6 +49,8 @@ const EXPORTS = [
   // non-Binance price feeds (Binance proxy symbols)
   'parseBinanceTicker', 'fetchProxyTicker', 'fetchNonBinancePrices',
   'PRICE_PROXY_SYMBOLS',
+  // exchange routing
+  '_exchangeUrl', 'openOnExchange',
 ];
 
 function extractScript(html) {

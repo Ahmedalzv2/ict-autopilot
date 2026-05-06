@@ -2756,13 +2756,14 @@
     document.getElementById('modalBody').innerHTML = `
       ${spotBannerHtml}
 
-      <!-- Confidence badge + signal status -->
+      <!-- Confidence badge + signal status + Open-on-MEXC shortcut -->
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:14px;background:${sig==='armed'?'rgba(92,184,138,0.08)':sig==='watch'?'rgba(242,179,61,0.08)':'var(--bg)'};border:1px solid ${sig==='armed'?'rgba(92,184,138,0.3)':sig==='watch'?'rgba(242,179,61,0.3)':'var(--border)'};border-radius:10px;">
         <div style="font-size:28px;font-weight:800;font-family:'JetBrains Mono',monospace;color:${sigColor};">${conf}%</div>
-        <div>
+        <div style="flex:1;">
           <div style="font-size:13px;font-weight:700;color:${sigColor};font-family:'JetBrains Mono',monospace;">${sigLabel}</div>
           <div style="font-size:11px;color:var(--text-mute);margin-top:2px;">${isBull?'🟢 BULLISH · LONG':'🔴 BEARISH · SHORT'} · Grade ${(asset.grade||'?').toUpperCase()} · R:R ${rr}:1</div>
         </div>
+        ${_exchangeUrl(asset) ? `<button onclick="openOnExchange('${asset.symbol}')" title="Copy levels and open MEXC ${asset.tradeMode === 'spot' ? 'spot' : 'futures'} page in new tab" style="background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:8px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;white-space:nowrap;">🔗 Open on MEXC</button>` : ''}
       </div>
 
       <!-- Feature 1: MTF Alignment Status -->
@@ -6920,7 +6921,12 @@
         <div style="font-size:16px;font-weight:700;color:var(--gold);font-family:'JetBrains Mono',monospace;">$${sug.tp}</div>
       </div>
     </div>` : '';
-    const applyBtn = (sug && asset && asset.symbol) ? `<button onclick="(function(){ const a=ASSETS.find(x=>x.symbol==='${asset.symbol}'); if(!a) return; a.entry=${sug.entry}; a.sl=${sug.sl}; a.tp=${sug.tp}; a.tp1=${sug.tp}; a.entryTf='${tf}'; try{saveLevels();}catch(e){} try{showToast('✓ ${asset.symbol} levels applied from ${tfLabel}','ok');}catch(e){} try{updateTVAnalysis('${asset.symbol}');}catch(e){} try{renderSetups();renderAssets();refreshOpenModal();}catch(e){} })()" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;margin-top:6px;">⇣ Apply ${tfLabel} levels to ${asset.symbol}</button>` : '';
+    const applyBtn = (sug && asset && asset.symbol)
+      ? `<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
+           <button onclick="(function(){ const a=ASSETS.find(x=>x.symbol==='${asset.symbol}'); if(!a) return; a.entry=${sug.entry}; a.sl=${sug.sl}; a.tp=${sug.tp}; a.tp1=${sug.tp}; a.entryTf='${tf}'; try{saveLevels();}catch(e){} try{showToast('✓ ${asset.symbol} levels applied from ${tfLabel}','ok');}catch(e){} try{updateTVAnalysis('${asset.symbol}');}catch(e){} try{renderSetups();renderAssets();refreshOpenModal();}catch(e){} })()" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;flex:1;">⇣ Apply ${tfLabel} levels</button>
+           ${(_exchangeUrl(asset)) ? `<button onclick="openOnExchange('${asset.symbol}')" style="background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;flex:1;">🔗 Open on MEXC</button>` : ''}
+         </div>`
+      : '';
     return `<div style="background:linear-gradient(180deg, rgba(201,169,97,0.06), transparent);border:1.5px solid var(--gold);border-radius:12px;padding:16px;margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;align-items:center;gap:8px;">
@@ -6999,6 +7005,64 @@
   // Side-by-side Spot vs Futures trade opinions, anchored on appropriate
   // timeframes so the user can compare the two views and pick. Both read
   // asset.tfEntries (populated from MEXC/Binance klines via autoAnalyzeAsset).
+  // Build the MEXC trading-page URL for an asset based on its tradeMode.
+  // Returns null for assets without a MEXC equivalent (US100 lives on
+  // FPMARKETS via TradingView — no MEXC futures contract for the index).
+  // SILVER/GOLD use their MEXC pair codes; everything else uses SYMBOL_USDT.
+  function _exchangeUrl(asset) {
+    if (!asset || !asset.symbol) return null;
+    const sym = asset.symbol;
+    if (sym === 'US100') return null; // no MEXC counterpart
+    const mode = asset.tradeMode === 'spot' ? 'spot' : 'futures';
+    // MEXC pair-code mapping — the dashboard already tracks these for kline
+    // fetches in _resolveSymbols, but those use API codes (XAUT_USDT, etc.).
+    // The web UI uses the same underscore-separated codes.
+    const futurePair = sym === 'SILVER' ? 'SILVER_USDT'
+                     : sym === 'GOLD'   ? 'XAUT_USDT'
+                     : sym + '_USDT';
+    const spotPair   = sym === 'GOLD'   ? 'XAUT_USDT' : sym + '_USDT';
+    if (mode === 'spot') return `https://www.mexc.com/exchange/${spotPair}`;
+    return `https://futures.mexc.com/exchange/${futurePair}?type=swap`;
+  }
+
+  // Copy the entry / SL / TP as plain text to the clipboard so the user can
+  // paste them into MEXC's order-ticket fields (entry / TP / SL inputs).
+  // Falls back to a toast if the Clipboard API is unavailable (older iOS).
+  async function _copyLevelsToClipboard(asset) {
+    if (!asset) return false;
+    const lines = [
+      `${asset.symbol} · ${(asset.bias||'').toUpperCase().includes('BULL') ? 'LONG' : 'SHORT'}`,
+      `Entry: ${asset.entry}`,
+      `Stop:  ${asset.sl}`,
+      `TP1:   ${asset.tp || asset.tp1 || ''}`,
+    ].join('\n');
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(lines);
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  // Open the asset on its MEXC trading page (new tab) with levels copied to
+  // the clipboard — this is the "B" path: still you placing the trade, but
+  // two taps instead of ten. No exchange API calls; nothing leaves the device
+  // beyond the standard URL navigation.
+  function openOnExchange(symbol) {
+    const a = ASSETS.find(x => x.symbol === symbol);
+    if (!a) return;
+    const url = _exchangeUrl(a);
+    if (!url) {
+      try { showToast(`${symbol} has no MEXC counterpart — try TradingView`, 'info'); } catch(e) {}
+      return;
+    }
+    _copyLevelsToClipboard(a).then(copied => {
+      try { showToast(copied ? `📋 Levels copied · opening MEXC` : `Opening MEXC ${symbol}`, 'ok'); } catch(e) {}
+      try { window.open(url, '_blank', 'noopener,noreferrer'); } catch(e) {}
+    });
+  }
+
   // Designed to surface bigger setups (1H/4H/Daily) instead of 1m scalps —
   // the user explicitly asked for "bigger size entries" with wider stops/TPs.
   function _renderTradeOpinions(asset) {
@@ -7053,7 +7117,18 @@
 
     const dirLabel = wantDir === 'bull' ? '🟢 LONG' : '🔴 SHORT';
     const dirColor = wantDir === 'bull' ? 'var(--bull)' : 'var(--bear)';
-    const apply = (s, label) => s ? `<button onclick="(function(){const a=ASSETS.find(x=>x.symbol==='${asset.symbol}');if(!a)return;a.entry=${s.entry};a.sl=${s.sl};a.tp=${s.tp};a.tp1=${s.tp};a.entryTf='${s.tf}';try{saveLevels();}catch(e){}try{showToast('✓ ${asset.symbol} levels applied from ${label} (${TFL[s.tf]})','ok');}catch(e){}try{updateTVAnalysis('${asset.symbol}');refreshOpenModal();renderAssets();}catch(e){}})()" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;width:100%;margin-top:8px;">⇣ Apply ${label} levels (${TFL[s.tf]})</button>` : '';
+    const apply = (s, label) => {
+      if (!s) return '';
+      const applyBtn = `<button onclick="(function(){const a=ASSETS.find(x=>x.symbol==='${asset.symbol}');if(!a)return;a.entry=${s.entry};a.sl=${s.sl};a.tp=${s.tp};a.tp1=${s.tp};a.entryTf='${s.tf}';try{saveLevels();}catch(e){}try{showToast('✓ ${asset.symbol} levels applied from ${label} (${TFL[s.tf]})','ok');}catch(e){}try{updateTVAnalysis('${asset.symbol}');refreshOpenModal();renderAssets();}catch(e){}})()" style="background:rgba(201,169,97,0.18);border:1px solid var(--gold);color:var(--gold);padding:6px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;flex:1;">⇣ Apply ${TFL[s.tf]} levels</button>`;
+      // "Open on MEXC" — copies the levels to the clipboard and opens the
+      // MEXC trading page in a new tab. Hidden for assets with no MEXC
+      // counterpart (US100). User still pulls the trigger; no exchange API
+      // calls are made here.
+      const exchBtn = (_exchangeUrl(asset))
+        ? `<button onclick="openOnExchange('${asset.symbol}')" style="background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:6px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;flex:1;">🔗 Open on MEXC</button>`
+        : '';
+      return `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">${applyBtn}${exchBtn}</div>`;
+    };
 
     const card = (kind, s, headerColor, accentBg, hold, leverageLine) => {
       if (!s) {
