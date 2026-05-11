@@ -66,6 +66,7 @@ const EXPORTS = [
   'getSilverLeverage', 'setSilverLeverage',
   '_hmacSha256Hex', '_signMexcRequest', '_mexcContractSymbol',
   'computeMexcOrderQty', 'getAssetLeverage', 'setAssetLeverage', 'ASSET_LEVERAGE_SPEC',
+  'ASSET_LEVERAGE_DEFAULT',
   'toggleLiveTradingKillSwitch',
   '_isHighLeverage', '_highLevLevels', 'LEVERAGE_HIGH_THRESHOLD',
   '_fastRefreshAssetEntry', '_fastRefreshTick', 'FAST_REFRESH_INTERVAL_MS',
