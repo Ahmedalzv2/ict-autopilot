@@ -34,13 +34,9 @@ describe('_mexcContractSymbol generalised', () => {
     assert.equal(app._mexcContractSymbol({ symbol: 'SILVER' }), 'SILVER_USDT');
   });
 
-  test('returns null for assets not in the contract map', () => {
-    const { app } = loadApp();
-    assert.equal(app._mexcContractSymbol({ symbol: 'BTC' }),  null);
-    assert.equal(app._mexcContractSymbol({ symbol: 'ETH' }),  null);
-    assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }), null);
-    assert.equal(app._mexcContractSymbol(null),               null);
-  });
+  // Note: the broader "any asset derives a contract" coverage now lives in
+  // the dedicated _mexcContractSymbol suite further down — see those tests
+  // for the full BTC/ETH/SUI/GOLD/US100 matrix.
 });
 
 describe('getAssetLeverage / setAssetLeverage per-asset cap', () => {
@@ -75,10 +71,14 @@ describe('getAssetLeverage / setAssetLeverage per-asset cap', () => {
     assert.equal(app.getAssetLeverage('SOL'), 200);
   });
 
-  test('Unknown asset falls back to safe defaults (def=3, max=20)', () => {
+  test('Unknown asset falls back to generic default (def=10, max=200)', () => {
+    // ASSET_LEVERAGE_DEFAULT bumped to {10, 200} so the user can flip ANY
+    // asset to auto-exec and pick up to 200× without me having to whitelist
+    // each symbol case-by-case.
     const { app } = loadApp();
-    assert.equal(app.getAssetLeverage('NEVER_HEARD'), 3);
-    assert.equal(app.setAssetLeverage('NEVER_HEARD', 100), 20);
+    assert.equal(app.getAssetLeverage('NEVER_HEARD'), 10);
+    assert.equal(app.setAssetLeverage('NEVER_HEARD', 500), 200);
+    assert.equal(app.setAssetLeverage('NEVER_HEARD', 50), 50);
   });
 
   test('getSilverLeverage backwards-compat alias still works', () => {
@@ -90,20 +90,59 @@ describe('getAssetLeverage / setAssetLeverage per-asset cap', () => {
   });
 });
 
-describe('Auto-exec eligibility now keyed on _mexcContractSymbol, not symbol', () => {
-  test('SILVER + SOL are both eligible; BTC + GOLD are not', () => {
+describe('_mexcContractSymbol — any asset with a MEXC contract is eligible', () => {
+  test('SILVER, SOL, BTC, ETH, BNB all derive a MEXC contract symbol', () => {
+    // _mexcContractSymbol now delegates to _resolveSymbols, so any asset
+    // whose .mexc field is non-null is eligible — no symbol-by-symbol
+    // whitelist. The user wanted to add any asset without me having to
+    // touch the code.
     const { app } = loadApp();
-    app.loadTradeModes();
-    const eligibleSyms = app.ASSETS
-      .filter(a => app._mexcContractSymbol(a))
-      .map(a => a.symbol);
-    assert.equal(eligibleSyms.length, 2, 'exactly two assets eligible');
-    assert.ok(eligibleSyms.includes('SILVER'), 'SILVER eligible');
-    assert.ok(eligibleSyms.includes('SOL'),    'SOL eligible');
-    // Negative cases — these should NOT auto-exec.
-    for (const sym of ['BTC', 'ETH', 'BNB', 'XRP', 'GOLD', 'US100']) {
-      assert.ok(!eligibleSyms.includes(sym), `${sym} must not be auto-exec eligible`);
-    }
+    assert.equal(app._mexcContractSymbol({ symbol: 'SILVER' }), 'SILVER_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'SOL' }),    'SOL_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'BTC' }),    'BTC_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'ETH' }),    'ETH_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'BNB' }),    'BNB_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'XRP' }),    'XRP_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'SUI' }),    'SUI_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'ASTR' }),   'ASTR_USDT');
+  });
+
+  test('GOLD maps to the tokenized-gold contract (XAUT_USDT)', () => {
+    const { app } = loadApp();
+    assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }), 'XAUT_USDT');
+  });
+
+  test('US100 returns null (CFD-only, not on MEXC)', () => {
+    const { app } = loadApp();
+    assert.equal(app._mexcContractSymbol({ symbol: 'US100' }), null);
+  });
+
+  test('null / unknown-shaped inputs return null safely', () => {
+    const { app } = loadApp();
+    assert.equal(app._mexcContractSymbol(null), null);
+    assert.equal(app._mexcContractSymbol(undefined), null);
+    assert.equal(app._mexcContractSymbol({}), null);
+  });
+});
+
+describe('Default leverage spec applies to any asset not explicitly listed', () => {
+  test('BTC unlisted → default 10×, max 200×', () => {
+    const { app } = loadApp();
+    // BTC isn't in ASSET_LEVERAGE_SPEC — should fall through to the
+    // generic ASSET_LEVERAGE_DEFAULT.
+    assert.equal(app.ASSET_LEVERAGE_SPEC.BTC, undefined);
+    // No persisted value → returns the default.
+    assert.equal(app.getAssetLeverage('BTC'), 10);
+    // Accepts up to 200×, clamps higher.
+    assert.equal(app.setAssetLeverage('BTC', 200), 200);
+    assert.equal(app.setAssetLeverage('BTC', 500), 200);
+    assert.equal(app.setAssetLeverage('BTC', 0), 1);
+  });
+
+  test('User can set ETH to 200× without me touching the code', () => {
+    const { app } = loadApp();
+    assert.equal(app.setAssetLeverage('ETH', 200), 200);
+    assert.equal(app._isHighLeverage('ETH'), true);
   });
 });
 

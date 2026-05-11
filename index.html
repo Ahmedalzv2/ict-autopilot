@@ -3975,8 +3975,13 @@
     SOL:    { def: 200, max: 200 },  // YOLO test (user-confirmed: no rails)
     US100:  { def: 5,   max: 30  },  // CFD-style — leveraged but bounded
   };
+  // Default for any asset not explicitly listed above. The user wanted to be
+  // able to flip ANY asset (BTC, ETH, BNB, XRP, SUI, ASTR, GOLD, …) to
+  // futures + pick a leverage 1–200× without me having to whitelist it
+  // case-by-case. Default 10× stays safe; user can crank to 200× per asset.
+  const ASSET_LEVERAGE_DEFAULT = { def: 10, max: 200 };
   function _leverageSpec(symbol) {
-    return ASSET_LEVERAGE_SPEC[symbol] || { def: 3, max: 20 };
+    return ASSET_LEVERAGE_SPEC[symbol] || ASSET_LEVERAGE_DEFAULT;
   }
   function getAssetLeverage(symbol) {
     const spec = _leverageSpec(symbol);
@@ -4213,18 +4218,17 @@
     } catch (e) { return null; }
   }
 
-  // MEXC contract symbol per asset. Roll-out is per-asset: SILVER first
-  // (conservative leverage, hours-to-days hold), SOL added for weekend
-  // coverage with 200× YOLO settings (user signed off — see ASSET_LEVERAGE_SPEC).
-  // Klines for SOL still come from Binance via _resolveSymbols; only the
-  // execution side (this map) routes to MEXC futures.
-  const MEXC_CONTRACT_MAP = {
-    SILVER: 'SILVER_USDT',
-    SOL:    'SOL_USDT',
-  };
+  // MEXC contract symbol per asset. Single source of truth is _resolveSymbols
+  // (which already handles every asset correctly): generic cryptos derive
+  // {SYMBOL}_USDT, SILVER stays SILVER_USDT, GOLD maps to XAUT_USDT, US100
+  // returns null because it's a CFD that doesn't trade on MEXC. The user can
+  // flip ANY asset to tradeMode='futures' and it'll auto-fire here without
+  // me having to whitelist it case-by-case.
   function _mexcContractSymbol(asset) {
-    if (!asset) return null;
-    return MEXC_CONTRACT_MAP[asset.symbol] || null;
+    if (!asset || !asset.symbol) return null;
+    if (typeof _resolveSymbols !== 'function') return null;
+    const syms = _resolveSymbols(asset);
+    return (syms && syms.mexc) || null;
   }
 
   // Real signed order call. Replaces the old placeMexcFuturesOrderStub.
@@ -4550,6 +4554,81 @@
     return r;
   }
 
+  // Render one auto-exec asset's row inside the Live Trading modal. The
+  // user said "I don't want to manually add one by one" — so this function
+  // is called in a loop over every tradeMode='futures' asset with a MEXC
+  // contract. Everything (header colour, survival-mode hint, dropdown
+  // options) is driven by the asset's symbol + current leverage + scalp tf.
+  function _renderAutoExecAssetBlock(asset) {
+    if (!asset || !_mexcContractSymbol(asset)) return '';
+    const sym = asset.symbol;
+    const spec = _leverageSpec(sym);
+    const lev  = getAssetLeverage(sym);
+    const scalp = getScalpTf(sym);
+    const inCD = isMexcInCooldown(sym);
+    const cdLeftMs = inCD ? Math.max(0, MEXC_COOLDOWN_MS - (Date.now() - _getLastMexcFireMs(sym))) : 0;
+    const hiLev = lev >= LEVERAGE_HIGH_THRESHOLD;
+    // Dropdown options — full leverage ladder when the asset's cap allows
+    // it, trimmed to the cap when it doesn't.
+    const opts = [1,2,3,4,5,7,10,25,50,75,100,150,200].filter(n => n <= spec.max);
+    const headerColor = hiLev ? 'var(--bear)' : 'var(--gold)';
+    const headerPrefix = hiLev ? '⚠ ' : '';
+    const headerSuffix = hiLev ? ' (YOLO TEST)' : '';
+    const liqLine = hiLev ? ` · liquidation ≈ ${(100/lev).toFixed(2)}% from entry` : '';
+    const survivalHint = hiLev
+      ? `<br><br><span style="color:var(--bear);">⚠ At ${lev}× on ${sym}, a ${(100/lev).toFixed(2)}% adverse move = full liquidation.</span> <span style="color:var(--gold);">🛡 High-Leverage Survival Mode active.</span> The structural ICT SL is wider than the liquidation buffer at this leverage, so the auto-fire overrides SL/TP to mechanical levels: SL ≈ ${((100/lev)*0.7).toFixed(3)}% from entry, TP same distance (1:1 R:R). The entry stays at the 1m FVG mid — only the protective levels are mechanical. HTF auto-fire is skipped (SLs too wide); only Scalp 1m fires at this leverage. <strong>1m kline fast-refresh every 5s</strong> so the entry zone stays current right up to fire-time.`
+      : '';
+    return `
+      <div style="margin-top:6px;padding-top:14px;border-top:1px dashed var(--border);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div style="font-size:10px;color:${headerColor};font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${headerPrefix}${sym} leverage${headerSuffix}</div>
+          <button onclick="setTradeMode('${sym}','spot');openLiveTradingModal();" title="Remove ${sym} from auto-exec (back to spot mode)" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:2px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">× Remove</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+          <select onchange="setAssetLeverage('${sym}', this.value);openLiveTradingModal();" style="background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
+            ${opts.map(n => `<option value="${n}" ${n===lev?'selected':''}>${n}×</option>`).join('')}
+          </select>
+          <span style="font-size:11px;color:var(--text-mute);">Used when ${sym} auto-fires${liqLine}</span>
+        </div>
+        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${sym} auto-exec timeframe</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+          <button onclick="setScalpTf('${sym}','htf');openLiveTradingModal();" style="background:${scalp==='htf'?'rgba(201,169,97,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${scalp==='htf'?'var(--gold)':'var(--border)'};color:${scalp==='htf'?'var(--gold)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">HTF (1H/4H)</button>
+          <button onclick="setScalpTf('${sym}','1m');openLiveTradingModal();" style="background:${scalp==='1m'?'rgba(242,179,61,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${scalp==='1m'?'var(--liq)':'var(--border)'};color:${scalp==='1m'?'var(--liq)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Scalp 1m</button>
+        </div>
+        <div style="font-size:10px;color:var(--text-mute);line-height:1.5;margin-bottom:14px;">
+          ${scalp==='1m'
+            ? '⚡ <strong>Scalp 1m active.</strong> Fires on the per-TF 1m FVG/OB setup, only when 1m direction matches HTF bias.'
+            : 'HTF mode — fires on the main asset entry/SL/TP, killzone-timed.'}
+          ${survivalHint}
+        </div>
+        <div style="font-size:10px;color:var(--gold);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${sym} cooldown</div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="font-size:11px;color:${inCD?'var(--liq)':'var(--text-mute)'};">${inCD ? '⏳ Locked for ' + Math.ceil(cdLeftMs/1000) + 's' : '✓ Ready to fire'}</span>
+          ${inCD ? `<button onclick="clearMexcCooldown('${sym}');openLiveTradingModal();" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:3px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">Clear</button>` : ''}
+        </div>
+      </div>`;
+  }
+
+  // Picker that lists every spot-mode asset that has a valid MEXC contract,
+  // so the user can promote any of them to auto-exec in one click. Renders
+  // nothing when there are no candidates (everything's already promoted).
+  function _renderAutoExecAddPicker() {
+    if (typeof ASSETS === 'undefined') return '';
+    const candidates = ASSETS.filter(a => !_isFuturesAsset(a) && _mexcContractSymbol(a));
+    if (!candidates.length) return '';
+    return `
+      <div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border);">
+        <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">+ Add asset to auto-exec</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <select id="ltAddAssetPicker" style="flex:1;background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
+            ${candidates.map(a => `<option value="${a.symbol}">${a.symbol} · ${a.platform || a.type || 'spot'}</option>`).join('')}
+          </select>
+          <button onclick="(function(){const sel=document.getElementById('ltAddAssetPicker');if(!sel)return;setTradeMode(sel.value,'futures');openLiveTradingModal();})()" style="background:rgba(92,184,138,0.18);border:1px solid var(--bull);color:var(--bull);padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">+ Add</button>
+        </div>
+        <div style="font-size:10px;color:var(--text-mute);line-height:1.5;margin-top:6px;">Promotes the picked asset to futures mode and into the auto-exec list. Default leverage is 10× (changeable per asset). Pick 200× if you want it in the YOLO pipeline.</div>
+      </div>`;
+  }
+
   // Render the last connection-test result inline in the modal. Shows
   // status, MEXC code/msg, and a one-line "what to fix" hint so the user
   // doesn't have to open browser dev tools to know which knob to turn.
@@ -4657,19 +4736,9 @@
     const hasKeys = !!(getMexcApiKey() && getMexcApiSecret());
     const masterBtn = `<button onclick="setLiveTradingEnabled(${!_liveTradingEnabled});openLiveTradingModal();" style="background:${_liveTradingEnabled?'rgba(92,184,138,0.25)':'rgba(101,101,109,0.15)'};border:1px solid ${_liveTradingEnabled?'var(--bull)':'var(--border)'};color:${_liveTradingEnabled?'var(--bull)':'var(--text-mute)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingEnabled?'🟢 ON':'🔴 OFF'}</button>`;
     const dryBtn = `<button onclick="setLiveTradingDryRun(${!_liveTradingDryRun});openLiveTradingModal();" style="background:${_liveTradingDryRun?'rgba(242,179,61,0.20)':'rgba(224,93,93,0.20)'};border:1px solid ${_liveTradingDryRun?'var(--liq)':'var(--bear)'};color:${_liveTradingDryRun?'var(--liq)':'var(--bear)'};padding:6px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">${_liveTradingDryRun?'📝 DRY-RUN':'🔴 LIVE'}</button>`;
-    const lev = getSilverLeverage();
     const workerUrl = getMexcWorkerUrl();
-    const silverScalp = getScalpTf('SILVER');
-    const silverInCooldown = isMexcInCooldown('SILVER');
-    const silverCooldownLeftMs = silverInCooldown
-      ? Math.max(0, MEXC_COOLDOWN_MS - (Date.now() - _getLastMexcFireMs('SILVER')))
-      : 0;
-    const solLev = getAssetLeverage('SOL');
-    const solScalp = getScalpTf('SOL');
-    const solInCooldown = isMexcInCooldown('SOL');
-    const solCooldownLeftMs = solInCooldown
-      ? Math.max(0, MEXC_COOLDOWN_MS - (Date.now() - _getLastMexcFireMs('SOL')))
-      : 0;
+    // Per-asset state is computed inside _renderAutoExecAssetBlock so the
+    // modal can render a block per asset without me touching this scope.
     modal.innerHTML = `
       <div class="alert-box" style="position:relative;border-color:var(--gold);max-width:520px;text-align:left;">
         <button onclick="closeLiveTradingModal()" aria-label="Close" style="position:absolute;top:10px;right:10px;width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;font-size:18px;font-weight:700;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;z-index:10;">✕</button>
@@ -4713,54 +4782,8 @@
             ${dryBtn}
             <span style="font-size:11px;color:var(--text-mute);">${_liveTradingDryRun?'Logs the order it would send · no real call':'⚠ Real orders to MEXC'}</span>
           </div>
-          <div style="font-size:10px;color:${lev>=100?'var(--bear)':'var(--gold)'};margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">${lev>=100?'⚠ ':''}SILVER leverage${lev>=100?' (YOLO test)':''}</div>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
-            <select id="ltSilverLev" onchange="setAssetLeverage('SILVER', this.value);openLiveTradingModal();" style="background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
-              ${[1,2,3,4,5,7,10,25,50,75,100,150,200].map(n => `<option value="${n}" ${n===lev?'selected':''}>${n}×</option>`).join('')}
-            </select>
-            <span style="font-size:11px;color:var(--text-mute);">Used when SILVER auto-fires${lev>=100?` · liquidation ≈ ${(100/lev).toFixed(2)}% from entry`:''}</span>
-          </div>
-          <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SILVER auto-exec timeframe</div>
-          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
-            <button onclick="setScalpTf('SILVER','htf');openLiveTradingModal();" style="background:${silverScalp==='htf'?'rgba(201,169,97,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${silverScalp==='htf'?'var(--gold)':'var(--border)'};color:${silverScalp==='htf'?'var(--gold)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">HTF (1H/4H)</button>
-            <button onclick="setScalpTf('SILVER','1m');openLiveTradingModal();" style="background:${silverScalp==='1m'?'rgba(242,179,61,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${silverScalp==='1m'?'var(--liq)':'var(--border)'};color:${silverScalp==='1m'?'var(--liq)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Scalp 1m</button>
-          </div>
-          <div style="font-size:10px;color:var(--text-mute);line-height:1.5;margin-bottom:14px;">
-            ${silverScalp==='1m'
-              ? '⚡ <strong>Scalp 1m active.</strong> Fires on the per-TF 1m FVG/OB setup, only when 1m direction matches HTF bias. 5-min cooldown between fires. <span style="color:var(--bear);">Watch fees vs SL distance — 0.04% taker × 2 = 0.08% round-trip; if 1m SL is &lt;0.10% you have negative edge.</span>'
-              : 'HTF mode (default) — fires on the main asset entry/SL/TP, killzone-timed, hours-to-days hold.'}
-            ${lev>=100 ? `<br><br><span style="color:var(--bear);">⚠ At ${lev}× on SILVER, a ${(100/lev).toFixed(2)}% adverse move = full liquidation.</span> <span style="color:var(--gold);">🛡 High-Leverage Survival Mode active.</span> The structural ICT SL is wider than the liquidation buffer at this leverage, so the auto-fire overrides SL/TP to mechanical levels: SL ≈ ${((100/lev)*0.7).toFixed(3)}% from entry, TP same distance (1:1 R:R). The entry stays at the 1m FVG mid — only the protective levels are mechanical. HTF auto-fire is skipped (SLs too wide); only Scalp 1m fires at this leverage. <strong>1m kline fast-refresh every 5s</strong> so the entry zone stays current right up to fire-time.` : ''}
-          </div>
-          <div style="font-size:10px;color:var(--gold);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SILVER cooldown</div>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;">
-            <span style="font-size:11px;color:${silverInCooldown?'var(--liq)':'var(--text-mute)'};">${silverInCooldown ? '⏳ Locked for ' + Math.ceil(silverCooldownLeftMs/1000) + 's' : '✓ Ready to fire'}</span>
-            ${silverInCooldown ? `<button onclick="clearMexcCooldown('SILVER');openLiveTradingModal();" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:3px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">Clear</button>` : ''}
-          </div>
-
-          <!-- ─── SOL (200× YOLO) ─────────────────────────────────── -->
-          <div style="margin-top:6px;padding-top:14px;border-top:1px dashed var(--border);">
-            <div style="font-size:10px;color:var(--bear);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">⚠ SOL leverage (200× cap — YOLO test)</div>
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
-              <select id="ltSolLev" onchange="setAssetLeverage('SOL', this.value);openLiveTradingModal();" style="background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;">
-                ${[5,10,25,50,75,100,150,200].map(n => `<option value="${n}" ${n===solLev?'selected':''}>${n}×</option>`).join('')}
-              </select>
-              <span style="font-size:11px;color:var(--text-mute);">Used when SOL auto-fires · liquidation ≈ ${(100/solLev).toFixed(2)}% from entry</span>
-            </div>
-            <div style="font-size:10px;color:var(--gold);margin-bottom:8px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SOL auto-exec timeframe</div>
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
-              <button onclick="setScalpTf('SOL','htf');openLiveTradingModal();" style="background:${solScalp==='htf'?'rgba(201,169,97,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${solScalp==='htf'?'var(--gold)':'var(--border)'};color:${solScalp==='htf'?'var(--gold)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">HTF (1H/4H)</button>
-              <button onclick="setScalpTf('SOL','1m');openLiveTradingModal();" style="background:${solScalp==='1m'?'rgba(242,179,61,0.25)':'rgba(101,101,109,0.10)'};border:1px solid ${solScalp==='1m'?'var(--liq)':'var(--border)'};color:${solScalp==='1m'?'var(--liq)':'var(--text-mute)'};padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;">⚡ Scalp 1m</button>
-            </div>
-            <div style="font-size:10px;color:var(--text-mute);line-height:1.5;margin-bottom:14px;">
-              <span style="color:var(--bear);">⚠ At ${solLev}× on SOL, a ${(100/solLev).toFixed(2)}% adverse move = full liquidation. SOL routinely moves that much in minutes. The kill-switch (bottom-right) hard-stops everything.</span>
-              ${solLev >= 100 ? `<br><br><span style="color:var(--gold);">🛡 High-Leverage Survival Mode active.</span> The structural ICT SL is wider than the liquidation buffer at ${solLev}×, so the auto-fire overrides SL/TP to mechanical levels: SL ≈ ${((100/solLev)*0.7).toFixed(3)}% from entry, TP same distance (1:1 R:R). The entry stays at the 1m FVG mid — only the protective levels are mechanical. HTF auto-fire is skipped (SLs too wide); only Scalp 1m fires at this leverage. <strong>1m kline fast-refresh every 5s</strong> so the entry zone stays current right up to fire-time.` : ''}
-            </div>
-            <div style="font-size:10px;color:var(--gold);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;">SOL cooldown</div>
-            <div style="display:flex;align-items:center;gap:10px;">
-              <span style="font-size:11px;color:${solInCooldown?'var(--liq)':'var(--text-mute)'};">${solInCooldown ? '⏳ Locked for ' + Math.ceil(solCooldownLeftMs/1000) + 's' : '✓ Ready to fire'}</span>
-              ${solInCooldown ? `<button onclick="clearMexcCooldown('SOL');openLiveTradingModal();" style="background:transparent;border:1px solid var(--border);color:var(--text-mute);padding:3px 8px;border-radius:5px;font-size:10px;cursor:pointer;font-family:'JetBrains Mono',monospace;">Clear</button>` : ''}
-            </div>
-          </div>
+          ${ASSETS.filter(a => _isFuturesAsset(a) && _mexcContractSymbol(a)).map(a => _renderAutoExecAssetBlock(a)).join('')}
+          ${_renderAutoExecAddPicker()}
         </div>
 
         <div style="margin-top:12px;display:flex;gap:8px;">

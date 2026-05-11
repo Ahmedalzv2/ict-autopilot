@@ -130,12 +130,18 @@ describe('_mexcContractSymbol — per-asset rollout gate', () => {
     assert.equal(app._mexcContractSymbol({ symbol: 'SILVER' }), 'SILVER_USDT');
   });
 
-  test('non-SILVER assets return null (auto-exec disabled)', () => {
+  test('any MEXC-listed asset derives a contract symbol; CFD-only assets return null', () => {
+    // _mexcContractSymbol now delegates to _resolveSymbols so any asset
+    // the user flips to futures auto-exec works without me whitelisting it.
     const { app } = loadApp();
-    assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }), null);
+    assert.equal(app._mexcContractSymbol({ symbol: 'GOLD' }),  'XAUT_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'BTC' }),   'BTC_USDT');
+    assert.equal(app._mexcContractSymbol({ symbol: 'ETH' }),   'ETH_USDT');
+    // US100 stays null — it's an FP Markets CFD, not on MEXC at all.
     assert.equal(app._mexcContractSymbol({ symbol: 'US100' }), null);
-    assert.equal(app._mexcContractSymbol({ symbol: 'BTC' }), null);
+    // Defensive null-handling preserved.
     assert.equal(app._mexcContractSymbol(null), null);
+    assert.equal(app._mexcContractSymbol({}),   null);
   });
 });
 
@@ -175,11 +181,14 @@ describe('placeMexcFuturesOrder', () => {
     assert.equal(r.reason, 'master-off');
   });
 
-  test('non-SILVER asset → unsupported-symbol (per-asset rollout)', async () => {
+  test('CFD-only asset (US100) → unsupported-symbol (no MEXC contract)', async () => {
+    // Most assets are now MEXC-eligible because the contract symbol is
+    // auto-derived from _resolveSymbols. Only assets without a MEXC futures
+    // pair (US100 = FP Markets CFD) still return unsupported-symbol.
     const { app } = loadApp();
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
-    const r = await app.placeMexcFuturesOrder({ symbol: 'GOLD', bias: 'BULLISH' }, 'LONG', 1, 1, 1, 1, 3);
+    const r = await app.placeMexcFuturesOrder({ symbol: 'US100', bias: 'BULLISH' }, 'LONG', 1, 1, 1, 1, 3);
     assert.equal(r.sent, false);
     assert.equal(r.reason, 'unsupported-symbol');
   });

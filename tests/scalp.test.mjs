@@ -108,11 +108,14 @@ describe('scalpMonitorTick', () => {
     assert.equal(r.reason, 'master-off');
   });
 
-  test('non-SILVER asset → unsupported-symbol', async () => {
+  test('CFD-only asset (US100) → unsupported-symbol', async () => {
+    // _mexcContractSymbol now returns the auto-derived contract for any
+    // MEXC-listed asset, so the unsupported-symbol gate now only catches
+    // CFD-only assets like US100.
     const { app } = loadApp();
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
-    const r = await app.scalpMonitorTick({ symbol: 'GOLD', bias: 'BULLISH', tfEntries: {} });
+    const r = await app.scalpMonitorTick({ symbol: 'US100', bias: 'BULLISH', tfEntries: {} });
     assert.equal(r.reason, 'unsupported-symbol');
   });
 
