@@ -8632,12 +8632,27 @@
     // 6 in parallel is ~6× faster than the sequential await chain. Public
     // weight-1 endpoints handle 6 concurrent fine; the fallback chain inside
     // each TF stays sequential so we don't hammer secondaries needlessly.
+    //
+    // Per-TF cache keyed by the TF's own period: a 4h candle only changes
+    // every 4h, so refetching at 60s sweep cadence wastes ~240×. Each TF
+    // reuses its kline until age ≥ TF_MS[tf]; failed fetches don't cache,
+    // so they retry next sweep. 1m is never cached — _fastRefreshAssetEntry
+    // writes asset.tfEntries['1m'] directly every 5s for futures, and a
+    // stale 1m cache would clobber that fresh data.
+    const cache = (asset._tfCache = asset._tfCache || {});
+    const nowMs = Date.now();
     const tfResults = await Promise.all(TF_LIST.map(async tf => {
+      const tfMs = TF_MS[tf] || 60000;
+      const hit = cache[tf];
+      if (tf !== '1m' && hit && hit.kl && (nowMs - hit.ts) < tfMs) {
+        return { tf, kl: hit.kl, src: hit.src + '-cached' };
+      }
       let kl = null, src = 'fail';
       if (syms.binance)         { kl = await fetchBinanceKlines(syms.binance, tf, 50);     if (kl && kl.length >= 22) src = 'binance'; }
       if ((!kl || kl.length < 22) && syms.mexc)            { const k2 = await fetchMexcKlines(syms.mexc, tf, 50);          if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-perp'; } }
       if ((!kl || kl.length < 22) && syms.mexcSpot)        { const k2 = await fetchMexcSpotKlines(syms.mexcSpot, tf, 50);  if (k2 && k2.length >= 22) { kl = k2; src = 'mexc-spot'; } }
       if ((!kl || kl.length < 22) && syms.binanceFallback) { const k2 = await fetchBinanceKlines(syms.binanceFallback, tf, 50); if (k2 && k2.length >= 22) { kl = k2; src = 'binance-fallback'; } }
+      if (kl && kl.length >= 22) cache[tf] = { kl, src, ts: nowMs };
       return { tf, kl, src };
     }));
     const tfEntries = {};
