@@ -281,6 +281,38 @@ describe('scalpMonitorTick', () => {
     assert.ok(Math.abs(body.takeProfitPrice - 74.83) < 0.05, `ceiling tp ${body.takeProfitPrice}`);
   });
 
+  test('entry side mapping: bull FVG → side=1 (open LONG), bear FVG → side=3 (open SHORT)', async () => {
+    // Explicit end-to-end verification of bias→side mapping. User reported
+    // "trades always go other way" — this confirms the code mapping itself
+    // is correct (any losing pattern they're seeing comes from signal
+    // quality / fill selection bias, NOT inverted entries).
+    function silverWithBull1m() {
+      return {
+        symbol: 'SILVER', bias: 'BULLISH', price: 75.65, grade: 'b',
+        tfEntries: { '1m': { dir: 'bull', fvgZone: { dir: 'bull', lo: 75.55, mid: 75.65, hi: 75.75 }, score: 3, entryReady: true } },
+      };
+    }
+    const bullCtx = loadApp({
+      storage: { journal: '[]', ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }), ict_scalp_tf_SILVER: '1m' },
+    });
+    bullCtx.app.loadLiveTradingState();
+    const rBull = await bullCtx.app.scalpMonitorTick(silverWithBull1m());
+    assert.equal(rBull.fired, true, `bull fire expected, got ${JSON.stringify(rBull)}`);
+    assert.equal(rBull.side, 'LONG', 'bull FVG must map to LONG side');
+    assert.equal(bullCtx.app.journal[0].mexcBody.side, 1, 'MEXC body.side must be 1 (open long) for bull');
+
+    const bearCtx = loadApp({
+      storage: { journal: '[]', ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
+        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }), ict_scalp_tf_SILVER: '1m' },
+    });
+    bearCtx.app.loadLiveTradingState();
+    const rBear = await bearCtx.app.scalpMonitorTick(silverWithBear1m());
+    assert.equal(rBear.fired, true);
+    assert.equal(rBear.side, 'SHORT', 'bear FVG must map to SHORT side');
+    assert.equal(bearCtx.app.journal[0].mexcBody.side, 3, 'MEXC body.side must be 3 (open short) for bear');
+  });
+
   test('SECOND fire within pending-fire lock is BLOCKED (closes the duplicate-fire race)', async () => {
     // Real-world bug: user ended up with 12 stacked SILVER trades because
     // _positionsTick (5s poll) didn't reflect the new position before the
