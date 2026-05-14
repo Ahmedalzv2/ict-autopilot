@@ -168,7 +168,7 @@ describe('_profitGuardian — break-even protection for winning positions', () =
   });
 });
 
-describe('_trailingTakeProfit — high-lev runners (arm at +20% margin, exit on 5% pullback)', () => {
+describe('_trailingTakeProfit — high-lev runners (arm at +14% margin, exit on 2% pullback)', () => {
   function liveSetupHighLev(app, sandbox) {
     app.loadTradeModes();
     app.saveMexcKeys('k', 's');
@@ -179,17 +179,17 @@ describe('_trailingTakeProfit — high-lev runners (arm at +20% margin, exit on 
     app.setAssetLeverage('SOL', 200);
   }
 
-  test('thresholds: arm at 20% NET margin, trail by 5%', () => {
+  test('thresholds: arm at 14% NET margin, trail by 2%', () => {
     const { app } = loadApp();
-    assert.equal(app.TRAIL_ARM_NET_MARGIN_PCT, 20);
-    assert.equal(app.TRAIL_FROM_PEAK_MARGIN_PCT, 5);
+    assert.equal(app.TRAIL_ARM_NET_MARGIN_PCT, 14);
+    assert.equal(app.TRAIL_FROM_PEAK_MARGIN_PCT, 2);
   });
 
-  test('does not arm when peak margin is below 20% NET', async () => {
+  test('does not arm when peak margin is below 14% NET', async () => {
     const { app, sandbox } = loadApp();
     liveSetupHighLev(app, sandbox);
     // Long entry 100, mark 100.05 → +0.05% price × 200× = +10% gross → -6% net
-    // (after 16% fee burden). Below the +20% arm threshold.
+    // (after 16% fee burden). Below the +14% arm threshold.
     openLong(app, 'SOL', 100, 100.05);
     const closeBodies = [];
     sandbox.fetch = async (url, init) => {
@@ -203,11 +203,11 @@ describe('_trailingTakeProfit — high-lev runners (arm at +20% margin, exit on 
     };
     Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
     await app._trailingTakeProfit();
-    assert.equal(app._trailState.SOL?.armed, false, 'must not arm below +20% NET margin');
+    assert.equal(app._trailState.SOL?.armed, false, 'must not arm below +14% NET margin');
     assert.equal(closeBodies.length, 0, 'no close call');
   });
 
-  test('arms when long position touches +20% NET margin (= +0.18% price at 200×)', async () => {
+  test('arms when long position touches +14% NET margin (= +0.15% price at 200×)', async () => {
     const { app, sandbox } = loadApp();
     liveSetupHighLev(app, sandbox);
     // Long entry 100, mark 100.20 → +0.20% price × 200× = +40% gross → +24% net.
@@ -215,11 +215,11 @@ describe('_trailingTakeProfit — high-lev runners (arm at +20% margin, exit on 
     Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
     sandbox.fetch = async () => ({ ok: true, status: 200, text: async () => '{"success":true,"code":0}' });
     await app._trailingTakeProfit();
-    assert.equal(app._trailState.SOL.armed, true, 'should arm — peak NET margin clears +20%');
-    assert.ok(app._trailState.SOL.peakNetMarginPct >= 20, `peak ≥ 20%, got ${app._trailState.SOL.peakNetMarginPct}`);
+    assert.equal(app._trailState.SOL.armed, true, 'should arm — peak NET margin clears +14%');
+    assert.ok(app._trailState.SOL.peakNetMarginPct >= 14, `peak ≥ 14%, got ${app._trailState.SOL.peakNetMarginPct}`);
   });
 
-  test('armed long retraces 5% from peak → market close (side=2 type=5)', async () => {
+  test('armed long retraces 2% from peak → market close (side=2 type=5)', async () => {
     const { app, sandbox } = loadApp();
     liveSetupHighLev(app, sandbox);
     openLong(app, 'SOL', 100, 100.30);  // +60% gross → +44% net peak

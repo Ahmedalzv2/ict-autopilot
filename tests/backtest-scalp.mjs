@@ -418,19 +418,19 @@ function fmt(s) {
   const { app } = loadApp();
 
   const configs = {
-    // Baseline: trail-only, no visible ceiling (current ship — what user
-    // sees as "no TP" on the MEXC order surface).
-    'A · TRAIL 20/5, no ceiling (current)':   { leverage: 200, trail: { armPct: 20, trailPct: 5 }, cancelTtlBars: 2 },
-    // Proposed fix: same trail, but with a visible ceiling TP on the order.
-    // Ceiling fires if price runs straight through it without retracing
-    // 5% from peak first. Capped upside vs no ceiling.
-    'B · TRAIL 20/5 + ceiling 100':           { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 100 }, cancelTtlBars: 2 },
-    'C · TRAIL 20/5 + ceiling 200':           { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
-    'D · TRAIL 20/5 + ceiling 500':           { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 500 }, cancelTtlBars: 2 },
-    // Sanity check: very tight ceiling = same as fixed TP, no trail benefit.
-    'E · TRAIL 20/5 + ceiling 30 (tight)':    { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 30 }, cancelTtlBars: 2 },
-    // For comparison — old fixed +20 TP.
-    'F · Fixed +20 TP, 90s fill':             { leverage: 200, tpNetPct: 20, cancelTtlBars: 2 },
+    // Current shipped: arm trail at +20% NET margin, trail by 5%.
+    'A · TRAIL 20/5 (current ship)':          { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
+    // User request: "TP 14% so we can have many trade". Arm at +14%, trail
+    // 5% → typical exit ~+9% margin. Faster cycle, more trades.
+    'B · TRAIL 14/5 (user request)':          { leverage: 200, trail: { armPct: 14, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
+    // Tighter trail — closer to "fixed 14% with tiny wiggle".
+    'C · TRAIL 14/2 (tighter trail)':         { leverage: 200, trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2 },
+    // Effectively fixed +14% TP (trail=0 → exit at arm level).
+    'D · Fixed +14% TP (no trail)':           { leverage: 200, tpNetPct: 14, cancelTtlBars: 2 },
+    // For comparison — the old "as designed" with a +9% target.
+    'E · TRAIL 9/5 (even faster)':            { leverage: 200, trail: { armPct: 9, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
+    // What we used to ship before today.
+    'F · Fixed +20% TP':                      { leverage: 200, tpNetPct: 20, cancelTtlBars: 2 },
   };
 
   console.log('─'.repeat(96));

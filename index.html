@@ -4205,14 +4205,14 @@
   //
   // Quick-take target is NET of round-trip fees. Gross TP price has fees
   // added back so the actual fill yields the configured net %.
-  //   200× + 20% net + 16% fees = 36% gross margin = 0.18% price
-  //   100× + 20% net + 8%  fees = 28% gross margin = 0.28% price
-  // SL is mechanical (0.7 × 100/lev price%). At 200× that's 0.35%, ~2× the
-  // 0.18% TP — sub-1:1 RR. User-driven choice: smaller targets, faster
-  // turnover, more trades. Break-even win rate ≈ 76% at NET 20%. Backtest
-  // shows ~50-65% actual win rate, so this is sub-edge; shipped on user
-  // request, not because the harness says it works.
-  const QUICK_TAKE_NET_MARGIN_PCT = 20;
+  //   200× + 14% net + 16% fees = 30% gross margin = 0.15% price
+  //   100× + 14% net + 8%  fees = 22% gross margin = 0.22% price
+  // High-lev path no longer uses this constant for the actual TP — it
+  // ships a far-out ceiling and trail-manages the exit (see
+  // TRAIL_ARM_NET_MARGIN_PCT). This value is now: (a) the diagnostic
+  // "would-be" target shown in the UI, and (b) the fixed TP for the
+  // low-lev path. User-driven choice: faster turnover, more trades.
+  const QUICK_TAKE_NET_MARGIN_PCT = 14;
   // Legacy alias preserved so any external code reading the constant still
   // works; semantically it now means the NET target.
   const QUICK_TAKE_MARGIN_PCT = QUICK_TAKE_NET_MARGIN_PCT;
@@ -4786,8 +4786,8 @@
   //
   // Backtest evidence in tests/backtest-scalp.mjs (config "TRAIL").
   // ─────────────────────────────────────────────────────────────────────
-  const TRAIL_ARM_NET_MARGIN_PCT      = 20;   // peak NET margin % required to arm
-  const TRAIL_FROM_PEAK_MARGIN_PCT    = 5;    // pull-back from peak that triggers close
+  const TRAIL_ARM_NET_MARGIN_PCT      = 14;   // peak NET margin % required to arm
+  const TRAIL_FROM_PEAK_MARGIN_PCT    = 2;    // pull-back from peak that triggers close
   // Visible-ceiling TP on the MEXC order body. Almost never reached in
   // realistic 1m scalp ranges (≈1.08% price at 200×) — the trail closes
   // the position well before this for typical winners. Its job is purely
