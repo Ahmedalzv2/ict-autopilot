@@ -5010,14 +5010,15 @@
   // ─────────────────────────────────────────────────────────────────────
   const TRAIL_ARM_NET_MARGIN_PCT      = 14;   // peak NET margin % required to arm
   const TRAIL_FROM_PEAK_MARGIN_PCT    = 2;    // pull-back from peak that triggers close
-  // Visible-ceiling TP on the MEXC order body. Almost never reached in
-  // realistic 1m scalp ranges (≈1.08% price at 200×) — the trail closes
-  // the position well before this for typical winners. Its job is purely
-  // (a) make the order surface a visible TP value in MEXC's UI so the
-  // position doesn't look broken, and (b) act as a hard ceiling on truly
-  // extreme runners (genuinely "moon" trades). Backtest impact vs the
-  // trail-only model: zero on SILVER, ≤1% NET margin/trade on SOL.
-  const TRAIL_CEILING_NET_MARGIN_PCT  = 200;
+  // Visible TP on the MEXC order body. User spec: "TP at 10-20% NET margin,
+  // take it, take the next trade." Set to +15% NET margin (midpoint of
+  // requested range) — at 200× that's +0.155% price (≈ entry × 1.00155
+  // for long, × 0.99845 for short). MEXC will close the position the
+  // instant this level prints, no waiting for trail pullback. The trail
+  // still runs as a wick-catcher: if price spikes to +14% peak then
+  // retraces 2% before hitting the +15% ceiling, trail locks in the
+  // partial win at ~+12%.
+  const TRAIL_CEILING_NET_MARGIN_PCT  = 15;
   const _trailState = {};                // { [sym]: { peakNetMarginPct, armed } }
   const _trailClosed = {};               // { [sym]: { ts, peakPct, exitPct, sent } }
 

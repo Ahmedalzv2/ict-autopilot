@@ -63,16 +63,16 @@ describe('_highLevLevels mechanical SL/TP override', () => {
     assert.ok(Math.abs(actualSlPct - expectedSlPct) < 0.01, `SL should be ~${expectedSlPct}% from entry, got ${actualSlPct.toFixed(3)}%`);
   });
 
-  test('high-lev tp is a far-out ceiling (NET 200% margin ≈ 1.08% price at 200×)', () => {
+  test('high-lev tp = NET 15% ceiling (≈0.155% price at 200×) — user spec for fast turnover', () => {
     const { app, sandbox } = loadApp();
     const sol = setupSol(app, 200);
     const raw = rawSug('bull', 0.8);
     const out = app._highLevLevels(sol, raw);
-    assert.ok(typeof out.tp === 'number' && out.tp > out.entry, 'high-lev tp must be a visible numeric ceiling above entry for bull');
+    assert.ok(typeof out.tp === 'number' && out.tp > out.entry, 'high-lev tp must be a visible TP above entry for bull');
     const tpPricePct = ((out.tp - out.entry) / out.entry) * 100;
-    // NET 200% + 16% fees = 216% gross margin / 200× = 1.08% price.
-    assert.ok(Math.abs(tpPricePct - 1.08) < 0.01, `ceiling ≈ 1.08% price at 200×, got ${tpPricePct.toFixed(3)}%`);
-    // Diagnostic fields still expose the legacy +20% target for the UI.
+    // NET 15% + 16% fees = 31% gross margin / 200× = 0.155% price.
+    assert.ok(Math.abs(tpPricePct - 0.155) < 0.005, `ceiling ≈ 0.155% price at 200×, got ${tpPricePct.toFixed(4)}%`);
+    // Diagnostic fields preserved.
     assert.ok(typeof out._diagTp === 'number', '_diagTp present for diagnostics');
     assert.ok(typeof out._diagTpPct === 'number', '_diagTpPct present for diagnostics');
   });

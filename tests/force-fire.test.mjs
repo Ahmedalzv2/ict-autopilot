@@ -52,11 +52,10 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     assert.equal(r.entry, 80, 'fires at LIVE price, not stale FVG mid');
     const slPct = ((80 - r.sl) / 80) * 100;
     assert.ok(Math.abs(slPct - 0.35) < 0.01, `expected SL ≈ 0.35% at 200×, got ${slPct.toFixed(3)}%`);
-    // High-lev force-fires ship with a far-out ceiling TP (NET 200%
-    // margin ≈ 1.08% price at 200×). Visible in MEXC UI; trail handles
-    // typical exits well before this fires.
+    // High-lev force-fires ship with TP at NET 15% margin (~0.155% price
+    // at 200×). MEXC fires the close the instant this level prints.
     const tpPct = ((r.tp - 80) / 80) * 100;
-    assert.ok(Math.abs(tpPct - 1.08) < 0.01, `ceiling TP ≈ 1.08% price at 200×, got ${tpPct.toFixed(3)}%`);
+    assert.ok(Math.abs(tpPct - 0.155) < 0.005, `ceiling TP ≈ 0.155% price at 200×, got ${tpPct.toFixed(4)}%`);
   });
 
   test('low-lev asset: SL/TP use the flat 0.4% mechanical default', async () => {
