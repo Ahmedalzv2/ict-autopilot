@@ -275,11 +275,11 @@ describe('scalpMonitorTick', () => {
     assert.equal(body.side, 3); // 3 = open short
     // SILVER defaults to 200× (trio) → MARKET order (type 5), no price
     // field. Mechanical SL ships (entry 75.65 SHORT × 1.0035 ≈ 75.92).
-    // TP ships at entry × (1 - 0.0023) ≈ 75.48 (NET 30% margin).
+    // TP ships at entry × (1 - 0.0015) ≈ 75.54 (NET 14%, GROSS 30%).
     assert.equal(body.type, 5, 'high-lev = market order');
     assert.equal(body.price, undefined, 'market omits price');
     assert.ok(Math.abs(body.stopLossPrice - 75.92) < 0.02, `sl ${body.stopLossPrice}`);
-    assert.ok(Math.abs(body.takeProfitPrice - 75.48) < 0.02, `tp ${body.takeProfitPrice}`);
+    assert.ok(Math.abs(body.takeProfitPrice - 75.54) < 0.02, `tp ${body.takeProfitPrice}`);
   });
 
   test('entry side mapping: bull FVG → side=1 (open LONG), bear FVG → side=3 (open SHORT)', async () => {
