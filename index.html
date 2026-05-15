@@ -4637,13 +4637,16 @@
     return null;
   }
 
-  // Pull closed-position history from MEXC. Used by compareTradeStyle to
-  // see what actually filled-and-closed on the exchange, then cross-
-  // referenced against the local journal to split bot fires from manual.
+  // Pull historical orders per-symbol from MEXC. The position-history
+  // endpoint returns code 1001 ("Contract does not exist") in some account
+  // configurations even when the docs say symbol is optional; the order-
+  // history endpoint is more reliable and isolates failures per symbol
+  // (so a single bad symbol doesn't break the whole comparison).
   //
-  // Returns { ok, positions: [...] } where each position has:
-  //   symbol, positionType (1=long, 2=short), openType, leverage,
-  //   openAvgPrice, closeAvgPrice, closeProfit, vol, openTime, closeTime
+  // Returns { ok, orders: [...], errors: [...] } where each order has:
+  //   symbol, orderId, side (1=open long, 2=close short, 3=open short,
+  //   4=close long), state (3=completed), dealAvgPrice, dealVol, profit
+  //   (realized PnL for close orders), createTime, updateTime
   async function fetchMexcPositionHistory(opts) {
     opts = opts || {};
     const apiKey    = getMexcApiKey();
@@ -4651,129 +4654,186 @@
     const workerUrl = getMexcWorkerUrl();
     if (!apiKey || !apiSecret) return { ok: false, error: 'no-keys' };
     if (!workerUrl)            return { ok: false, error: 'no-worker' };
-    const days = Number(opts.days) > 0 ? Number(opts.days) : 30;
+    const days = Number(opts.days) > 0 ? Number(opts.days) : 7;
     const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
     const pageSize = Number(opts.pageSize) > 0 ? Number(opts.pageSize) : 100;
+    // Default symbols: derive from ASSETS list (every futures-eligible
+    // asset). User can override via opts.symbols.
+    const defaultSymbols = (typeof ASSETS !== 'undefined' && Array.isArray(ASSETS))
+      ? ASSETS.map(a => _mexcContractSymbol && _mexcContractSymbol(a)).filter(Boolean)
+      : ['SOL_USDT', 'SILVER_USDT', 'GOLD_USDT'];
+    const symbols = Array.isArray(opts.symbols) && opts.symbols.length ? opts.symbols : defaultSymbols;
     const all = [];
-    for (let page = 1; page <= 20; page++) {
-      const reqTime = String(Date.now());
-      // MEXC signature for GET includes query params sorted alphabetically.
-      // page_num precedes page_size lexicographically.
-      const paramStr = `page_num=${page}&page_size=${pageSize}`;
-      let signature;
-      try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramStr); }
-      catch (e) { return { ok: false, error: 'sign-failed', detail: String((e && e.message) || e) }; }
-      const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/position/list/history_positions?' + paramStr;
-      let resp, json;
-      try {
-        resp = await fetch(url, {
-          method: 'GET',
-          headers: { 'ApiKey': apiKey, 'Request-Time': reqTime, 'Signature': signature },
-        });
-        const txt = await resp.text();
-        try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
-      } catch (e) {
-        return { ok: false, error: 'network', detail: String((e && e.message) || e) };
+    const errors = [];
+    for (const sym of symbols) {
+      for (let page = 1; page <= 10; page++) {
+        const reqTime = String(Date.now());
+        // Params sorted alphabetically: page_num, page_size, start_time, symbol
+        const paramStr = `page_num=${page}&page_size=${pageSize}&start_time=${cutoffMs}&symbol=${sym}`;
+        let signature;
+        try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramStr); }
+        catch (e) { errors.push({ symbol: sym, page, error: 'sign-failed', detail: String((e && e.message) || e) }); break; }
+        const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/order/list/history_orders?' + paramStr;
+        let resp, json;
+        try {
+          resp = await fetch(url, {
+            method: 'GET',
+            headers: { 'ApiKey': apiKey, 'Request-Time': reqTime, 'Signature': signature },
+          });
+          const txt = await resp.text();
+          try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
+        } catch (e) {
+          errors.push({ symbol: sym, page, error: 'network', detail: String((e && e.message) || e) });
+          break;
+        }
+        const success = !!(resp.ok && (json.success === true || json.code === 0));
+        if (!success) {
+          errors.push({ symbol: sym, page, status: resp.status, response: json });
+          break;
+        }
+        const list = Array.isArray(json.data) ? json.data
+                   : (json.data && Array.isArray(json.data.resultList)) ? json.data.resultList
+                   : [];
+        // Tag each order with the symbol we queried (MEXC includes it but we
+        // normalize defensively) and keep only completed fills.
+        for (const o of list) {
+          if (Number(o.state) === 3) all.push({ ...o, symbol: o.symbol || sym });
+        }
+        if (list.length < pageSize) break;
+        const oldest = list[list.length - 1];
+        if (oldest && Number(oldest.createTime || oldest.updateTime || 0) < cutoffMs) break;
       }
-      const ok = !!(resp.ok && (json.success === true || json.code === 0));
-      if (!ok) return { ok: false, status: resp.status, response: json };
-      // Some MEXC envelopes wrap the list under data.resultList; handle both.
-      const list = Array.isArray(json.data) ? json.data
-                 : (json.data && Array.isArray(json.data.resultList)) ? json.data.resultList
-                 : [];
-      all.push(...list);
-      // Stop when this page is short OR oldest entry on the page is past cutoff.
-      if (list.length < pageSize) break;
-      const oldest = list[list.length - 1];
-      if (oldest && Number(oldest.closeTime || oldest.updateTime || 0) < cutoffMs) break;
     }
-    return { ok: true, positions: all.filter(p => Number(p.closeTime || p.updateTime || 0) >= cutoffMs) };
+    return {
+      ok: errors.length < symbols.length,  // ok if at least one symbol succeeded
+      orders: all.filter(o => Number(o.createTime || o.updateTime || 0) >= cutoffMs),
+      errors,
+      symbolsQueried: symbols,
+    };
   }
 
-  // Pure function: classify each closed MEXC position as bot-fired or
-  // manual, by matching its openTime + symbol + openAvgPrice against the
-  // local journal of bot fires. Match window ±10s on openTime; price match
-  // within 0.05% of openAvgPrice (round-trip slippage tolerance).
-  function _classifyTradesAgainstJournal(positions, journalEntries) {
-    const bareSym = (s) => String(s || '').replace(/_USDT$/, '');
-    const botFires = (Array.isArray(journalEntries) ? journalEntries : [])
-      .filter(e => e && e.live === true && e.mexcResponse && e.timestamp && e.symbol)
-      .map(e => ({
-        ts: Number(e.timestamp),
-        sym: String(e.symbol),
-        entry: Number(e.entry),
-        orderId: (e.mexcResponse && e.mexcResponse.data && e.mexcResponse.data.orderId != null)
-                  ? String(e.mexcResponse.data.orderId) : null,
-        matched: false,
-      }));
-    const out = { bot: [], manual: [] };
-    for (const p of (Array.isArray(positions) ? positions : [])) {
-      const psym = bareSym(p.symbol);
-      const popen = Number(p.openTime || 0);
-      const pPrice = Number(p.openAvgPrice || 0);
-      let match = null;
-      for (const f of botFires) {
-        if (f.matched) continue;
-        if (f.sym !== psym) continue;
-        if (Math.abs(f.ts - popen) > 10_000) continue;
-        const priceOk = pPrice > 0 && f.entry > 0
-          ? (Math.abs(f.entry - pPrice) / pPrice) < 0.0005
-          : true;
-        if (!priceOk) continue;
-        match = f;
-        break;
+  // Pair completed orders (state=3) into open/close trades. Groups by
+  // symbol, sorts chronologically, walks pairing the first open (side
+  // 1 or 3) with the next close (side 2 or 4). Unpaired orders are
+  // dropped (e.g. a still-open position whose close hasn't filled yet).
+  function _pairOrdersIntoTrades(orders) {
+    const bySym = {};
+    for (const o of (Array.isArray(orders) ? orders : [])) {
+      const sym = String(o.symbol || '');
+      if (!sym) continue;
+      (bySym[sym] = bySym[sym] || []).push(o);
+    }
+    const trades = [];
+    for (const sym of Object.keys(bySym)) {
+      const list = bySym[sym].slice().sort((a, b) => Number(a.createTime || 0) - Number(b.createTime || 0));
+      let openOrder = null;
+      for (const o of list) {
+        const side = Number(o.side);
+        const isOpen  = (side === 1 || side === 3);
+        const isClose = (side === 2 || side === 4);
+        if (isOpen && !openOrder) { openOrder = o; continue; }
+        if (isClose && openOrder) {
+          trades.push({
+            symbol: sym,
+            sideOpen: Number(openOrder.side),  // 1 = long, 3 = short
+            openOrderId:  String(openOrder.orderId || ''),
+            closeOrderId: String(o.orderId || ''),
+            openPrice:  Number(openOrder.dealAvgPrice || openOrder.price || 0),
+            closePrice: Number(o.dealAvgPrice || o.price || 0),
+            vol:        Number(o.dealVol || o.vol || 0),
+            profit:     Number(o.profit || 0),
+            fee:        Number(openOrder.fee || 0) + Number(o.fee || 0),
+            leverage:   Number(openOrder.leverage || o.leverage || 0),
+            openTime:   Number(openOrder.createTime || 0),
+            closeTime:  Number(o.updateTime || o.createTime || 0),
+          });
+          openOrder = null;
+        }
       }
-      if (match) { match.matched = true; out.bot.push(p); }
-      else { out.manual.push(p); }
+    }
+    return trades;
+  }
+
+  // Pure function: classify each paired trade as bot or manual by exact
+  // orderId match against the local journal. Journal records the OPENING
+  // orderId for every successful bot fire, so this is deterministic — no
+  // tolerance windows, no false positives.
+  function _classifyTradesAgainstJournal(trades, journalEntries) {
+    const journalOrderIds = new Set();
+    for (const e of (Array.isArray(journalEntries) ? journalEntries : [])) {
+      if (!e || e.live !== true || !e.mexcResponse) continue;
+      const data = e.mexcResponse.data;
+      const orderId = data && data.orderId != null ? String(data.orderId) : null;
+      if (orderId) journalOrderIds.add(orderId);
+    }
+    const out = { bot: [], manual: [] };
+    for (const t of (Array.isArray(trades) ? trades : [])) {
+      if (journalOrderIds.has(String(t.openOrderId))) out.bot.push(t);
+      else out.manual.push(t);
     }
     return out;
   }
 
-  // Aggregate stats over a bag of closed positions.
-  function _summarizeTrades(positions) {
-    const wins = positions.filter(p => Number(p.closeProfit) > 0).length;
-    const losses = positions.filter(p => Number(p.closeProfit) < 0).length;
-    const totalPnl = positions.reduce((a, p) => a + Number(p.closeProfit || 0), 0);
-    const totalFee = positions.reduce((a, p) => a + Number(p.fee || 0), 0);
-    const n = positions.length;
+  // Aggregate stats over paired trades (each with a `profit` field).
+  function _summarizeTrades(trades) {
+    const arr = Array.isArray(trades) ? trades : [];
+    const wins   = arr.filter(t => Number(t.profit) > 0).length;
+    const losses = arr.filter(t => Number(t.profit) < 0).length;
+    const totalPnl = arr.reduce((a, t) => a + Number(t.profit || 0), 0);
+    const totalFee = arr.reduce((a, t) => a + Number(t.fee    || 0), 0);
+    const n = arr.length;
     return {
       n, wins, losses,
       winRate: (wins + losses) ? wins / (wins + losses) : 0,
       totalPnl, totalFee,
       avgPnl: n ? totalPnl / n : 0,
-      avgWin:    wins   ? positions.filter(p => Number(p.closeProfit) > 0).reduce((a, p) => a + Number(p.closeProfit), 0) / wins : 0,
-      avgLoss:   losses ? positions.filter(p => Number(p.closeProfit) < 0).reduce((a, p) => a + Number(p.closeProfit), 0) / losses : 0,
+      avgWin:  wins   ? arr.filter(t => Number(t.profit) > 0).reduce((a, t) => a + Number(t.profit), 0) / wins   : 0,
+      avgLoss: losses ? arr.filter(t => Number(t.profit) < 0).reduce((a, t) => a + Number(t.profit), 0) / losses : 0,
     };
   }
 
-  // Console helper: pull recent closed positions from MEXC, classify each
-  // as bot vs manual via the journal, print a comparison table.
+  // Console helper: pull recent orders from MEXC, pair into trades,
+  // classify each as bot vs manual via the journal, print a comparison.
   // Invoke from the browser devtools: `await compareTradeStyle(7)` for last 7d.
   async function compareTradeStyle(days) {
     const r = await fetchMexcPositionHistory({ days: days || 7 });
-    if (!r.ok) { try { console.error('[compareTradeStyle] history fetch failed:', r); } catch (e) {} return r; }
-    const journ = (typeof journal !== 'undefined' && Array.isArray(journal)) ? journal : [];
-    const split = _classifyTradesAgainstJournal(r.positions, journ);
-    const bot = _summarizeTrades(split.bot);
+    if (!r.orders || !r.orders.length) {
+      try {
+        console.error('[compareTradeStyle] no orders returned. Diagnostic:', r);
+        if (r.errors && r.errors.length) {
+          console.error('Per-symbol failures:');
+          for (const e of r.errors) console.error('  ', e.symbol, '→', e.response || e.error || e);
+        }
+      } catch (e) {}
+      return r;
+    }
+    const trades = _pairOrdersIntoTrades(r.orders);
+    const journ  = (typeof journal !== 'undefined' && Array.isArray(journal)) ? journal : [];
+    const split  = _classifyTradesAgainstJournal(trades, journ);
+    const bot    = _summarizeTrades(split.bot);
     const manual = _summarizeTrades(split.manual);
     const fmt = (s, label) => ({
       who: label,
       trades: s.n,
       wins: s.wins,
       losses: s.losses,
-      'win %': (s.winRate * 100).toFixed(1) + '%',
-      'net $': '$' + s.totalPnl.toFixed(4),
+      'win %':     (s.winRate * 100).toFixed(1) + '%',
+      'net $':       '$' + s.totalPnl.toFixed(4),
       'avg/trade $': '$' + s.avgPnl.toFixed(4),
-      'avg win $': '$' + s.avgWin.toFixed(4),
-      'avg loss $': '$' + s.avgLoss.toFixed(4),
+      'avg win $':   '$' + s.avgWin.toFixed(4),
+      'avg loss $':  '$' + s.avgLoss.toFixed(4),
       'total fee $': '$' + s.totalFee.toFixed(4),
     });
     try {
       console.log(`\n══════════ Trade-style comparison (last ${days || 7}d) ══════════`);
       console.table([ fmt(bot, '🤖 BOT'), fmt(manual, '👤 MANUAL') ]);
-      console.log(`Closed positions: ${r.positions.length}  ·  Bot ${bot.n}  ·  Manual ${manual.n}\n`);
+      console.log(`Orders fetched: ${r.orders.length}  ·  Paired trades: ${trades.length}  ·  Bot ${bot.n}  ·  Manual ${manual.n}`);
+      if (r.errors && r.errors.length) {
+        console.warn(`Note: ${r.errors.length} symbol(s) returned errors (probably not tradeable on MEXC for this account). Other symbols included normally.`);
+      }
+      console.log('');
     } catch (e) {}
-    return { bot, manual, raw: split };
+    return { bot, manual, trades: split, ordersFetched: r.orders.length, errors: r.errors };
   }
 
   async function fetchMexcOpenPositions() {
