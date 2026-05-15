@@ -4637,6 +4637,145 @@
     return null;
   }
 
+  // Pull closed-position history from MEXC. Used by compareTradeStyle to
+  // see what actually filled-and-closed on the exchange, then cross-
+  // referenced against the local journal to split bot fires from manual.
+  //
+  // Returns { ok, positions: [...] } where each position has:
+  //   symbol, positionType (1=long, 2=short), openType, leverage,
+  //   openAvgPrice, closeAvgPrice, closeProfit, vol, openTime, closeTime
+  async function fetchMexcPositionHistory(opts) {
+    opts = opts || {};
+    const apiKey    = getMexcApiKey();
+    const apiSecret = getMexcApiSecret();
+    const workerUrl = getMexcWorkerUrl();
+    if (!apiKey || !apiSecret) return { ok: false, error: 'no-keys' };
+    if (!workerUrl)            return { ok: false, error: 'no-worker' };
+    const days = Number(opts.days) > 0 ? Number(opts.days) : 30;
+    const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+    const pageSize = Number(opts.pageSize) > 0 ? Number(opts.pageSize) : 100;
+    const all = [];
+    for (let page = 1; page <= 20; page++) {
+      const reqTime = String(Date.now());
+      // MEXC signature for GET includes query params sorted alphabetically.
+      // page_num precedes page_size lexicographically.
+      const paramStr = `page_num=${page}&page_size=${pageSize}`;
+      let signature;
+      try { signature = await _signMexcRequest(apiKey, apiSecret, reqTime, paramStr); }
+      catch (e) { return { ok: false, error: 'sign-failed', detail: String((e && e.message) || e) }; }
+      const url = workerUrl.replace(/\/$/, '') + '/api/v1/private/position/list/history_positions?' + paramStr;
+      let resp, json;
+      try {
+        resp = await fetch(url, {
+          method: 'GET',
+          headers: { 'ApiKey': apiKey, 'Request-Time': reqTime, 'Signature': signature },
+        });
+        const txt = await resp.text();
+        try { json = JSON.parse(txt); } catch (e) { json = { raw: txt }; }
+      } catch (e) {
+        return { ok: false, error: 'network', detail: String((e && e.message) || e) };
+      }
+      const ok = !!(resp.ok && (json.success === true || json.code === 0));
+      if (!ok) return { ok: false, status: resp.status, response: json };
+      // Some MEXC envelopes wrap the list under data.resultList; handle both.
+      const list = Array.isArray(json.data) ? json.data
+                 : (json.data && Array.isArray(json.data.resultList)) ? json.data.resultList
+                 : [];
+      all.push(...list);
+      // Stop when this page is short OR oldest entry on the page is past cutoff.
+      if (list.length < pageSize) break;
+      const oldest = list[list.length - 1];
+      if (oldest && Number(oldest.closeTime || oldest.updateTime || 0) < cutoffMs) break;
+    }
+    return { ok: true, positions: all.filter(p => Number(p.closeTime || p.updateTime || 0) >= cutoffMs) };
+  }
+
+  // Pure function: classify each closed MEXC position as bot-fired or
+  // manual, by matching its openTime + symbol + openAvgPrice against the
+  // local journal of bot fires. Match window ±10s on openTime; price match
+  // within 0.05% of openAvgPrice (round-trip slippage tolerance).
+  function _classifyTradesAgainstJournal(positions, journalEntries) {
+    const bareSym = (s) => String(s || '').replace(/_USDT$/, '');
+    const botFires = (Array.isArray(journalEntries) ? journalEntries : [])
+      .filter(e => e && e.live === true && e.mexcResponse && e.timestamp && e.symbol)
+      .map(e => ({
+        ts: Number(e.timestamp),
+        sym: String(e.symbol),
+        entry: Number(e.entry),
+        orderId: (e.mexcResponse && e.mexcResponse.data && e.mexcResponse.data.orderId != null)
+                  ? String(e.mexcResponse.data.orderId) : null,
+        matched: false,
+      }));
+    const out = { bot: [], manual: [] };
+    for (const p of (Array.isArray(positions) ? positions : [])) {
+      const psym = bareSym(p.symbol);
+      const popen = Number(p.openTime || 0);
+      const pPrice = Number(p.openAvgPrice || 0);
+      let match = null;
+      for (const f of botFires) {
+        if (f.matched) continue;
+        if (f.sym !== psym) continue;
+        if (Math.abs(f.ts - popen) > 10_000) continue;
+        const priceOk = pPrice > 0 && f.entry > 0
+          ? (Math.abs(f.entry - pPrice) / pPrice) < 0.0005
+          : true;
+        if (!priceOk) continue;
+        match = f;
+        break;
+      }
+      if (match) { match.matched = true; out.bot.push(p); }
+      else { out.manual.push(p); }
+    }
+    return out;
+  }
+
+  // Aggregate stats over a bag of closed positions.
+  function _summarizeTrades(positions) {
+    const wins = positions.filter(p => Number(p.closeProfit) > 0).length;
+    const losses = positions.filter(p => Number(p.closeProfit) < 0).length;
+    const totalPnl = positions.reduce((a, p) => a + Number(p.closeProfit || 0), 0);
+    const totalFee = positions.reduce((a, p) => a + Number(p.fee || 0), 0);
+    const n = positions.length;
+    return {
+      n, wins, losses,
+      winRate: (wins + losses) ? wins / (wins + losses) : 0,
+      totalPnl, totalFee,
+      avgPnl: n ? totalPnl / n : 0,
+      avgWin:    wins   ? positions.filter(p => Number(p.closeProfit) > 0).reduce((a, p) => a + Number(p.closeProfit), 0) / wins : 0,
+      avgLoss:   losses ? positions.filter(p => Number(p.closeProfit) < 0).reduce((a, p) => a + Number(p.closeProfit), 0) / losses : 0,
+    };
+  }
+
+  // Console helper: pull recent closed positions from MEXC, classify each
+  // as bot vs manual via the journal, print a comparison table.
+  // Invoke from the browser devtools: `await compareTradeStyle(7)` for last 7d.
+  async function compareTradeStyle(days) {
+    const r = await fetchMexcPositionHistory({ days: days || 7 });
+    if (!r.ok) { try { console.error('[compareTradeStyle] history fetch failed:', r); } catch (e) {} return r; }
+    const journ = (typeof journal !== 'undefined' && Array.isArray(journal)) ? journal : [];
+    const split = _classifyTradesAgainstJournal(r.positions, journ);
+    const bot = _summarizeTrades(split.bot);
+    const manual = _summarizeTrades(split.manual);
+    const fmt = (s, label) => ({
+      who: label,
+      trades: s.n,
+      wins: s.wins,
+      losses: s.losses,
+      'win %': (s.winRate * 100).toFixed(1) + '%',
+      'net $': '$' + s.totalPnl.toFixed(4),
+      'avg/trade $': '$' + s.avgPnl.toFixed(4),
+      'avg win $': '$' + s.avgWin.toFixed(4),
+      'avg loss $': '$' + s.avgLoss.toFixed(4),
+      'total fee $': '$' + s.totalFee.toFixed(4),
+    });
+    try {
+      console.log(`\n══════════ Trade-style comparison (last ${days || 7}d) ══════════`);
+      console.table([ fmt(bot, '🤖 BOT'), fmt(manual, '👤 MANUAL') ]);
+      console.log(`Closed positions: ${r.positions.length}  ·  Bot ${bot.n}  ·  Manual ${manual.n}\n`);
+    } catch (e) {}
+    return { bot, manual, raw: split };
+  }
+
   async function fetchMexcOpenPositions() {
     const apiKey = getMexcApiKey();
     const apiSecret = getMexcApiSecret();
