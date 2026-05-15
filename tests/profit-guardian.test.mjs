@@ -179,17 +179,17 @@ describe('_trailingTakeProfit — high-lev runners (arm at +14% margin, exit on 
     app.setAssetLeverage('SOL', 200);
   }
 
-  test('thresholds: arm at 14% NET margin, trail by 2%', () => {
+  test('thresholds: arm at 27% NET margin, trail by 2%', () => {
     const { app } = loadApp();
-    assert.equal(app.TRAIL_ARM_NET_MARGIN_PCT, 14);
+    assert.equal(app.TRAIL_ARM_NET_MARGIN_PCT, 27);
     assert.equal(app.TRAIL_FROM_PEAK_MARGIN_PCT, 2);
   });
 
-  test('does not arm when peak margin is below 14% NET', async () => {
+  test('does not arm when peak margin is below 27% NET', async () => {
     const { app, sandbox } = loadApp();
     liveSetupHighLev(app, sandbox);
     // Long entry 100, mark 100.05 → +0.05% price × 200× = +10% gross → -6% net
-    // (after 16% fee burden). Below the +14% arm threshold.
+    // (after 16% fee burden). Below the +27% arm threshold.
     openLong(app, 'SOL', 100, 100.05);
     const closeBodies = [];
     sandbox.fetch = async (url, init) => {
@@ -203,20 +203,20 @@ describe('_trailingTakeProfit — high-lev runners (arm at +14% margin, exit on 
     };
     Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
     await app._trailingTakeProfit();
-    assert.equal(app._trailState.SOL?.armed, false, 'must not arm below +14% NET margin');
+    assert.equal(app._trailState.SOL?.armed, false, 'must not arm below +27% NET margin');
     assert.equal(closeBodies.length, 0, 'no close call');
   });
 
-  test('arms when long position touches +14% NET margin (= +0.15% price at 200×)', async () => {
+  test('arms when long position touches +27% NET margin (= +0.215% price at 200×)', async () => {
     const { app, sandbox } = loadApp();
     liveSetupHighLev(app, sandbox);
-    // Long entry 100, mark 100.20 → +0.20% price × 200× = +40% gross → +24% net.
-    openLong(app, 'SOL', 100, 100.20);
+    // Long entry 100, mark 100.22 → +0.22% price × 200× = +44% gross → +28% net.
+    openLong(app, 'SOL', 100, 100.22);
     Object.keys(app._trailState).forEach(k => delete app._trailState[k]);
     sandbox.fetch = async () => ({ ok: true, status: 200, text: async () => '{"success":true,"code":0}' });
     await app._trailingTakeProfit();
-    assert.equal(app._trailState.SOL.armed, true, 'should arm — peak NET margin clears +14%');
-    assert.ok(app._trailState.SOL.peakNetMarginPct >= 14, `peak ≥ 14%, got ${app._trailState.SOL.peakNetMarginPct}`);
+    assert.equal(app._trailState.SOL.armed, true, 'should arm — peak NET margin clears +27%');
+    assert.ok(app._trailState.SOL.peakNetMarginPct >= 27, `peak ≥ 27%, got ${app._trailState.SOL.peakNetMarginPct}`);
   });
 
   test('armed long retraces 2% from peak → market close (side=2 type=5)', async () => {

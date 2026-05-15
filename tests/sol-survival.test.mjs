@@ -63,15 +63,15 @@ describe('_highLevLevels mechanical SL/TP override', () => {
     assert.ok(Math.abs(actualSlPct - expectedSlPct) < 0.01, `SL should be ~${expectedSlPct}% from entry, got ${actualSlPct.toFixed(3)}%`);
   });
 
-  test('high-lev tp = NET 15% ceiling (≈0.155% price at 200×) — user spec for fast turnover', () => {
+  test('high-lev tp = NET 30% ceiling (≈0.23% price at 200×) — user spec 25-30% only', () => {
     const { app, sandbox } = loadApp();
     const sol = setupSol(app, 200);
     const raw = rawSug('bull', 0.8);
     const out = app._highLevLevels(sol, raw);
     assert.ok(typeof out.tp === 'number' && out.tp > out.entry, 'high-lev tp must be a visible TP above entry for bull');
     const tpPricePct = ((out.tp - out.entry) / out.entry) * 100;
-    // NET 15% + 16% fees = 31% gross margin / 200× = 0.155% price.
-    assert.ok(Math.abs(tpPricePct - 0.155) < 0.005, `ceiling ≈ 0.155% price at 200×, got ${tpPricePct.toFixed(4)}%`);
+    // NET 30% + 16% fees = 46% gross margin / 200× = 0.23% price.
+    assert.ok(Math.abs(tpPricePct - 0.23) < 0.005, `ceiling ≈ 0.23% price at 200×, got ${tpPricePct.toFixed(4)}%`);
     // Diagnostic fields preserved.
     assert.ok(typeof out._diagTp === 'number', '_diagTp present for diagnostics');
     assert.ok(typeof out._diagTpPct === 'number', '_diagTpPct present for diagnostics');

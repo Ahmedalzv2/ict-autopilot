@@ -4205,14 +4205,14 @@
   //
   // Quick-take target is NET of round-trip fees. Gross TP price has fees
   // added back so the actual fill yields the configured net %.
-  //   200× + 14% net + 16% fees = 30% gross margin = 0.15% price
-  //   100× + 14% net + 8%  fees = 22% gross margin = 0.22% price
+  //   200× + 27% net + 16% fees = 43% gross margin = 0.215% price
+  //   100× + 27% net + 8%  fees = 35% gross margin = 0.35%  price
   // High-lev path no longer uses this constant for the actual TP — it
   // ships a far-out ceiling and trail-manages the exit (see
   // TRAIL_ARM_NET_MARGIN_PCT). This value is now: (a) the diagnostic
   // "would-be" target shown in the UI, and (b) the fixed TP for the
   // low-lev path. User-driven choice: faster turnover, more trades.
-  const QUICK_TAKE_NET_MARGIN_PCT = 14;
+  const QUICK_TAKE_NET_MARGIN_PCT = 27;
   // Legacy alias preserved so any external code reading the constant still
   // works; semantically it now means the NET target.
   const QUICK_TAKE_MARGIN_PCT = QUICK_TAKE_NET_MARGIN_PCT;
@@ -5008,17 +5008,17 @@
   //
   // Backtest evidence in tests/backtest-scalp.mjs (config "TRAIL").
   // ─────────────────────────────────────────────────────────────────────
-  const TRAIL_ARM_NET_MARGIN_PCT      = 14;   // peak NET margin % required to arm
+  const TRAIL_ARM_NET_MARGIN_PCT      = 27;   // peak NET margin % required to arm
   const TRAIL_FROM_PEAK_MARGIN_PCT    = 2;    // pull-back from peak that triggers close
-  // Visible TP on the MEXC order body. User spec: "TP at 10-20% NET margin,
-  // take it, take the next trade." Set to +15% NET margin (midpoint of
-  // requested range) — at 200× that's +0.155% price (≈ entry × 1.00155
-  // for long, × 0.99845 for short). MEXC will close the position the
-  // instant this level prints, no waiting for trail pullback. The trail
-  // still runs as a wick-catcher: if price spikes to +14% peak then
-  // retraces 2% before hitting the +15% ceiling, trail locks in the
-  // partial win at ~+12%.
-  const TRAIL_CEILING_NET_MARGIN_PCT  = 15;
+  // Visible TP on the MEXC order body. User spec: "TP at 25-30% NET margin
+  // only." Ceiling = +30% NET (upper bound), arm = +27% NET so any trail
+  // exit lands ≥ +25%. At 200× that's +0.23% price (≈ entry × 1.0023 for
+  // long, × 0.9977 for short). MEXC closes the position the instant the
+  // ceiling prints, no waiting for trail pullback. The trail still runs
+  // as a wick-catcher: if price spikes to +27% peak then retraces 2%
+  // before hitting the +30% ceiling, trail locks in the partial win at
+  // ~+25%. All exits via this surface fall in [25, 30] NET margin.
+  const TRAIL_CEILING_NET_MARGIN_PCT  = 30;
   const _trailState = {};                // { [sym]: { peakNetMarginPct, armed } }
   const _trailClosed = {};               // { [sym]: { ts, peakPct, exitPct, sent } }
 
