@@ -77,10 +77,12 @@ if (MEXC_INTERVAL_MIN > 1) {
   }
 }
 
+// GOLD on MEXC trades as XAUT_USDT (Tether Gold perpetual). The bare label
+// "GOLD" used in the dashboard is just our UI alias.
 const CONTRACT_SYM = {
   SOL: 'SOL_USDT',
   SILVER: 'SILVER_USDT',
-  GOLD: 'GOLD_USDT',
+  GOLD: 'XAUT_USDT',
   BTC: 'BTC_USDT',
   ETH: 'ETH_USDT',
   BNB: 'BNB_USDT',
