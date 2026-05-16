@@ -153,9 +153,9 @@ function aggregateKlines(klines1m, intervalMins) {
 // Apply the same fee-aware high-lev levels the live bot uses. At lev<100 we
 // fall through to the conviction-ladder sl/tp baked into _suggestedEntryForTf
 // (RR=1.5 from BPR/iFVG/OB/FVG depending on source).
-function applyLevels(sug, lev, tpNetPct) {
+function applyLevels(sug, lev, tpNetPct, slCoef = 0.7) {
   if (lev < 100) return sug;
-  const slPct = (100 / lev) * 0.7;
+  const slPct = (100 / lev) * slCoef;
   const feePctMargin = 0.08 * lev;
   const grossTpMarginPct = tpNetPct + feePctMargin;
   const tpPct = grossTpMarginPct / lev;
@@ -301,11 +301,11 @@ function simulateSignalCancel(klines, fireIdx, sug) {
 // the live force-fire path does (sl = price × (1 - slPct), etc.) — without
 // this the SL distance balloons when actualEntry drifts from sug.entry,
 // producing impossible >100% margin losses (more than liquidation).
-function simulateMarketEntry(klines, fireIdx, sug, lev, tpNetPct) {
+function simulateMarketEntry(klines, fireIdx, sug, lev, tpNetPct, slCoef = 0.7) {
   const next = klines[fireIdx + 1];
   if (!next) return { result: 'expired', exitIdx: fireIdx + 1, exit: sug.entry, filled: false, fillIdx: -1 };
   const actualEntry = next.o;
-  const slPct = (100 / lev) * 0.7 / 100;             // 0.35% at 200×
+  const slPct = (100 / lev) * slCoef / 100;          // 0.35% at 200× with default coef
   const tpPct = (tpNetPct + 0.08 * lev) / lev / 100; // includes round-trip fee
   const dir = sug.dir;
   const sl = dir === 'bull' ? actualEntry * (1 - slPct) : actualEntry * (1 + slPct);
@@ -321,6 +321,7 @@ function runConfig(klines, app, cfg, tf = '1m') {
   const tpNetPct = cfg.tpNetPct ?? 10;
   const proximityPct = cfg.proximityPct ?? HIGH_LEV_PROXIMITY_PCT;
   const cancelTtlBars = cfg.cancelTtlBars ?? 0;
+  const slCoef = cfg.slCoef ?? 0.7;
 
   for (let i = WINDOW; i < klines.length - 1; i++) {
     if (klines[i].t < cursorTs) continue;
@@ -336,7 +337,7 @@ function runConfig(klines, app, cfg, tf = '1m') {
 
     if (cfg.confluenceOnly && rawSug.source === 'fvg-edge') continue;
 
-    const sug = applyLevels(rawSug, lev, tpNetPct);
+    const sug = applyLevels(rawSug, lev, tpNetPct, slCoef);
 
     const livePrice = klines[i].c;
     const distPct = Math.abs((livePrice - sug.entry) / sug.entry) * 100;
@@ -353,7 +354,7 @@ function runConfig(klines, app, cfg, tf = '1m') {
       } else {
         const actualEntry = next.o;
         // Re-anchor SL to actual fill price (mirrors live force-fire math).
-        const slPct = (100 / lev) * 0.7 / 100;
+        const slPct = (100 / lev) * slCoef / 100;
         const newSl = sug.dir === 'bull' ? actualEntry * (1 - slPct) : actualEntry * (1 + slPct);
         out = { ...simulateTrail(klines, i + 1, { ...sug, entry: actualEntry, sl: newSl }, lev, cfg.trail.armPct, cfg.trail.trailPct, cfg.trail.ceilingPct), actualEntry };
       }
@@ -370,7 +371,7 @@ function runConfig(klines, app, cfg, tf = '1m') {
     } else if (cfg.trail) {
       out = simulateTrail(klines, i, sug, lev, cfg.trail.armPct, cfg.trail.trailPct, cfg.trail.ceilingPct);
     } else if (cfg.marketEntry) {
-      out = simulateMarketEntry(klines, i, sug, lev, tpNetPct);
+      out = simulateMarketEntry(klines, i, sug, lev, tpNetPct, slCoef);
     } else if (cfg.signalCancel) {
       out = simulateSignalCancel(klines, i, sug);
     } else {
@@ -475,6 +476,29 @@ function fmt(s) {
     'I · Fixed +50% TP':                      { leverage: 200, tpNetPct: 50, cancelTtlBars: 2 },
     'J · Fixed +100% TP':                     { leverage: 200, tpNetPct: 100, cancelTtlBars: 2 },
     'K · TRAIL 30/5':                         { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
+    // SL-tightening sweep on the OOS leader (K). slCoef × (100/lev)% =
+    // price SL. 0.7 = 0.35% (default), 0.4 = 0.20%, 0.3 = 0.15%, 0.2 = 0.10%.
+    // Each step cuts loss-per-stop-out roughly in half. Hypothesis: at 0.10%
+    // the break-even win rate (~64%) crosses our observed 60-70% band, so
+    // EV flips positive — IF win rate doesn't collapse from noise stops.
+    'L · TRAIL 30/5  SL 0.20%':               { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.4 },
+    'M · TRAIL 30/5  SL 0.15%':               { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.3 },
+    'N · TRAIL 30/5  SL 0.10%':               { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2 },
+    // Same sweep on TRAIL 14/2 (3m winner before adding higher TPs).
+    'O · TRAIL 14/2  SL 0.20%':               { leverage: 200, trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.4 },
+    'P · TRAIL 14/2  SL 0.15%':               { leverage: 200, trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.3 },
+    'Q · TRAIL 14/2  SL 0.10%':               { leverage: 200, trail: { armPct: 14, trailPct: 2, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2 },
+    // Signal selectivity on the OOS leader (K). The pre-existing backtester
+    // flags drop noisy signals before fire: confluenceOnly cuts plain fvg-edge
+    // entries (keeps BPR/iFVG/OB+FVG/FVG+sweep); phaseGate skips consolidation
+    // and reversal-suspect phases. Hypothesis: 60-70% of K's signals are
+    // fvg-edge — filtering them lifts win rate enough to flip EV positive,
+    // assuming the remaining high-conviction setups actually behave as ICT
+    // theory claims.
+    'R · K + confluenceOnly':                 { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, confluenceOnly: true },
+    'S · K + phaseGate':                      { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, phaseGate: true },
+    'T · K + both filters':                   { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, confluenceOnly: true, phaseGate: true },
+    'U · A + both filters':                   { leverage: 200, trail: { armPct: 20, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2, confluenceOnly: true, phaseGate: true },
   };
 
   // Per-TF result accumulator for the cross-TF summary table.
