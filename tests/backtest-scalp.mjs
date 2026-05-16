@@ -13,6 +13,13 @@
 // Usage:
 //   node tests/backtest-scalp.mjs --asset=SILVER --days=14
 //   node tests/backtest-scalp.mjs --asset=SOL --days=30 --verbose
+//   node tests/backtest-scalp.mjs --asset=SILVER --tf=5m       (single TF)
+//   node tests/backtest-scalp.mjs --asset=SILVER --tf=all      (1m + 3m + 5m, default)
+//
+// MEXC contract only ships 1m as the finest native interval. 3m bars are
+// aggregated client-side from 1m OHLCV (open=first 1m open, high=max, low=min,
+// close=last 1m close, vol=sum). 5m bars same way. This is the same data the
+// live bot would see if we built a 3m/5m feed off the 1m websocket.
 //
 // Data is cached under tests/.backtest-cache/ for 6h.
 
@@ -33,10 +40,21 @@ const DAYS = Number(args.days || 14);
 const ASSET = String(args.asset || 'SILVER').toUpperCase();
 const VERBOSE = Boolean(args.verbose);
 const WINDOW = 200;          // candles fed to _analyzeKlines per tick
-const SIM_HORIZON = 60;      // candles to walk forward looking for TP/SL
+let   SIM_HORIZON = 60;      // candles to walk forward looking for TP/SL (mutated per-TF below to keep ~1h wall-clock)
 const LEVERAGE = 200;        // trio default
 const MARGIN_USD = 0.20;     // per fire
 const HIGH_LEV_PROXIMITY_PCT = 0.50;
+
+const TF_MINUTES = { '1m': 1, '3m': 3, '5m': 5 };
+const TF_REQUESTED = (() => {
+  const raw = args.tf ? String(args.tf).toLowerCase() : 'all';
+  if (raw === 'all') return ['1m', '3m', '5m'];
+  if (!TF_MINUTES[raw]) {
+    console.error(`Unknown --tf "${raw}". Use 1m, 3m, 5m, or all.`);
+    process.exit(1);
+  }
+  return [raw];
+})();
 
 const CONTRACT_SYM = {
   SOL: 'SOL_USDT',
@@ -108,6 +126,28 @@ async function loadKlines(symbol, days) {
   const klines = Array.from(byTs.values()).sort((a, b) => a.t - b.t);
   writeFileSync(cacheFile, JSON.stringify({ fetchedAt: Date.now(), klines }));
   return klines;
+}
+
+// Roll 1m OHLCV bars into N-minute bars. Bucket boundary is floor(t/Nms)*Nms
+// (UTC-aligned), matching what an exchange-side N-minute kline would emit.
+// Partial buckets at the edges are kept — close-of-last-1m-bar is the close.
+function aggregateKlines(klines1m, intervalMins) {
+  if (intervalMins === 1) return klines1m;
+  const bucketMs = intervalMins * 60 * 1000;
+  const buckets = new Map();
+  for (const k of klines1m) {
+    const start = Math.floor(k.t / bucketMs) * bucketMs;
+    const b = buckets.get(start);
+    if (!b) {
+      buckets.set(start, { t: start, o: k.o, h: k.h, l: k.l, c: k.c, v: k.v });
+    } else {
+      b.h = Math.max(b.h, k.h);
+      b.l = Math.min(b.l, k.l);
+      b.c = k.c;
+      b.v += k.v;
+    }
+  }
+  return Array.from(buckets.values()).sort((a, b) => a.t - b.t);
 }
 
 // Apply the same fee-aware high-lev levels the live bot uses. At lev<100 we
@@ -274,7 +314,7 @@ function simulateMarketEntry(klines, fireIdx, sug, lev, tpNetPct) {
   return { ...fwd, filled: true, fillIdx: fireIdx + 1, actualEntry };
 }
 
-function runConfig(klines, app, cfg) {
+function runConfig(klines, app, cfg, tf = '1m') {
   const trades = [];
   let cursorTs = 0;
   const lev = cfg.leverage ?? LEVERAGE;
@@ -291,7 +331,7 @@ function runConfig(klines, app, cfg) {
 
     if (cfg.phaseGate && (analysis.phase === 'consolidation' || analysis.phase === 'reversal-suspect')) continue;
 
-    const rawSug = app._suggestedEntryForTf(analysis, '1m');
+    const rawSug = app._suggestedEntryForTf(analysis, tf);
     if (!rawSug) continue;
 
     if (cfg.confluenceOnly && rawSug.source === 'fvg-edge') continue;
@@ -402,18 +442,14 @@ function fmt(s) {
 
 (async function main() {
   console.log(`\n═══ Scalp back-test: ${ASSET} (${CONTRACT_SYM}) ═══`);
-  console.log(`Days: ${DAYS} · Leverage: ${LEVERAGE}× · Margin/trade: $${MARGIN_USD.toFixed(2)} · Horizon: ${SIM_HORIZON}m\n`);
+  console.log(`Days: ${DAYS} · Leverage: ${LEVERAGE}× · Margin/trade: $${MARGIN_USD.toFixed(2)} · TFs: ${TF_REQUESTED.join(', ')}\n`);
 
-  const klines = await loadKlines(CONTRACT_SYM, DAYS);
-  if (klines.length < WINDOW + SIM_HORIZON + 100) {
-    console.error(`Only ${klines.length} candles — not enough to back-test. MEXC may be missing data for ${CONTRACT_SYM}.`);
+  const klines1m = await loadKlines(CONTRACT_SYM, DAYS);
+  if (klines1m.length < WINDOW + 60 + 100) {
+    console.error(`Only ${klines1m.length} candles — not enough to back-test. MEXC may be missing data for ${CONTRACT_SYM}.`);
     process.exit(1);
   }
-  console.log(`\nLoaded ${klines.length} 1m candles (${(klines.length/1440).toFixed(1)} days)`);
-  const splitIdx = Math.floor(klines.length * 0.7);
-  const isKlines = klines.slice(0, splitIdx);
-  const oosKlines = klines.slice(splitIdx - WINDOW);  // overlap by WINDOW so OOS first candle has warmup
-  console.log(`Split: ${(isKlines.length/1440).toFixed(1)}d IS  /  ${(oosKlines.length/1440).toFixed(1)}d OOS (with warmup)\n`);
+  console.log(`\nLoaded ${klines1m.length} 1m candles (${(klines1m.length/1440).toFixed(1)} days)`);
 
   const { app } = loadApp();
 
@@ -431,25 +467,99 @@ function fmt(s) {
     'E · TRAIL 9/5 (even faster)':            { leverage: 200, trail: { armPct: 9, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
     // What we used to ship before today.
     'F · Fixed +20% TP':                      { leverage: 200, tpNetPct: 20, cancelTtlBars: 2 },
+    // Higher TP targets — needed because SL at 200× = -86% margin, so
+    // a +14-20% TP requires ~85% win rate to break even. These configs
+    // give the upside enough room to compensate for the asymmetric loss.
+    'G · TRAIL 50/10 (higher target)':        { leverage: 200, trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2 },
+    'H · TRAIL 100/20 (big runner)':          { leverage: 200, trail: { armPct: 100, trailPct: 20, ceilingPct: 200 }, cancelTtlBars: 2 },
+    'I · Fixed +50% TP':                      { leverage: 200, tpNetPct: 50, cancelTtlBars: 2 },
+    'J · Fixed +100% TP':                     { leverage: 200, tpNetPct: 100, cancelTtlBars: 2 },
+    'K · TRAIL 30/5':                         { leverage: 200, trail: { armPct: 30, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
   };
 
-  console.log('─'.repeat(96));
-  console.log('CONFIG                              IS / OOS results');
-  console.log('─'.repeat(96));
+  // Per-TF result accumulator for the cross-TF summary table.
+  const tfSummary = {};
 
-  const results = {};
-  for (const [label, cfg] of Object.entries(configs)) {
-    const is = runConfig(isKlines, app, cfg);
-    const oos = runConfig(oosKlines, app, cfg);
-    results[label] = { is, oos };
-    console.log(`${label.padEnd(36)}`);
-    console.log(`  IS  : ${fmt(is)}`);
-    console.log(`  OOS : ${fmt(oos)}`);
-    if (is.expectancyPct > 0 && oos.expectancyPct < is.expectancyPct * 0.5) {
-      console.log(`  ⚠  OOS expectancy < 50% of IS — overfit-suspect per "All that Glitters"`);
+  for (const tf of TF_REQUESTED) {
+    const intervalMins = TF_MINUTES[tf];
+    const klines = aggregateKlines(klines1m, intervalMins);
+    // Keep ~1h forward search regardless of TF (60 min / intervalMins bars).
+    SIM_HORIZON = Math.max(12, Math.round(60 / intervalMins));
+    const splitIdx = Math.floor(klines.length * 0.7);
+    const isKlines = klines.slice(0, splitIdx);
+    const oosKlines = klines.slice(splitIdx - WINDOW);  // overlap by WINDOW so OOS first candle has warmup
+    const barsPerDay = 1440 / intervalMins;
+
+    console.log('═'.repeat(96));
+    console.log(`TF ${tf}  (${klines.length} bars · IS ${(isKlines.length/barsPerDay).toFixed(1)}d / OOS ${(oosKlines.length/barsPerDay).toFixed(1)}d · horizon ${SIM_HORIZON} bars = ~60min)`);
+    console.log('═'.repeat(96));
+
+    const results = {};
+    for (const [label, cfg] of Object.entries(configs)) {
+      const is = runConfig(isKlines, app, cfg, tf);
+      const oos = runConfig(oosKlines, app, cfg, tf);
+      results[label] = { is, oos };
+      console.log(`${label.padEnd(36)}`);
+      console.log(`  IS  : ${fmt(is)}`);
+      console.log(`  OOS : ${fmt(oos)}`);
+      if (is.expectancyPct > 0 && oos.expectancyPct < is.expectancyPct * 0.5) {
+        console.log(`  ⚠  OOS expectancy < 50% of IS — overfit-suspect per "All that Glitters"`);
+      }
+      if (oos.expectancyPct < 0) {
+        console.log(`  ✗  OOS expectancy NEGATIVE — strategy loses money out-of-sample`);
+      }
+      console.log('');
     }
-    if (oos.expectancyPct < 0) {
-      console.log(`  ✗  OOS expectancy NEGATIVE — strategy loses money out-of-sample`);
+    tfSummary[tf] = results;
+
+    if (VERBOSE) {
+      for (const [label, r] of Object.entries(results)) {
+        console.log(`\n=== ${tf} · ${label} OOS sample trades ===`);
+        for (const t of r.oos._trades.slice(0, 10)) {
+          const d = new Date(t.t).toISOString().slice(11, 16);
+          console.log(`  ${d} ${t.dir.padEnd(4)} ${t.source.padEnd(9)} → ${t.result.padEnd(7)} ${(t.netMarginPct>=0?'+':'')}${t.netMarginPct.toFixed(1)}% margin (${t.holdBars}b hold)`);
+        }
+      }
+    }
+  }
+
+  // Cross-TF comparison table. OOS expectancy is the headline number — it's
+  // the per-trade net % of margin after fees, computed on data the tuner
+  // never saw. Best OOS expectancy per config wins. Net $ is included so we
+  // can see whether higher per-trade expectancy survives lower trade counts.
+  if (TF_REQUESTED.length > 1) {
+    console.log('═'.repeat(96));
+    console.log('CROSS-TF COMPARISON  (OOS only — unseen-data results)');
+    console.log('═'.repeat(96));
+    const configLabels = Object.keys(tfSummary[TF_REQUESTED[0]]);
+    const colW = 26;
+    console.log('CONFIG'.padEnd(36) + TF_REQUESTED.map(tf => tf.padEnd(colW)).join(''));
+    console.log('─'.repeat(36 + colW * TF_REQUESTED.length));
+    for (const label of configLabels) {
+      const row = label.padEnd(36) + TF_REQUESTED.map(tf => {
+        const oos = tfSummary[tf][label].oos;
+        const exp = (oos.expectancyPct >= 0 ? '+' : '') + oos.expectancyPct.toFixed(2);
+        const net = (oos.netUsd >= 0 ? '+$' : '-$') + Math.abs(oos.netUsd).toFixed(2);
+        return `exp ${exp}% · ${oos.filled}f · ${net}`.padEnd(colW);
+      }).join('');
+      console.log(row);
+    }
+    // Pick the best (TF, config) by OOS expectancy among configs with > 0
+    // fills (anything else is unobserved). Net $ tiebreak — higher beats lower.
+    let best = null;
+    for (const tf of TF_REQUESTED) {
+      for (const label of configLabels) {
+        const oos = tfSummary[tf][label].oos;
+        if (oos.filled === 0) continue;
+        if (!best || oos.expectancyPct > best.exp || (oos.expectancyPct === best.exp && oos.netUsd > best.net)) {
+          best = { tf, label, exp: oos.expectancyPct, net: oos.netUsd, fills: oos.filled };
+        }
+      }
+    }
+    if (best) {
+      console.log('');
+      const expStr = (best.exp >= 0 ? '+' : '') + best.exp.toFixed(2);
+      console.log(`★ Best OOS: ${best.tf}  ·  ${best.label}  ·  exp ${expStr}%/trade  ·  ${best.fills} fills  ·  net ${(best.net>=0?'+$':'-$')+Math.abs(best.net).toFixed(2)}`);
     }
     console.log('');
   }
@@ -459,19 +569,10 @@ function fmt(s) {
   console.log('─'.repeat(96));
   console.log(`• Fees modelled: 0.02% maker (entry, limit) + 0.06% taker (exit, stop) = 0.08% round-trip`);
   console.log(`• At ${LEVERAGE}× that's ${(0.08*LEVERAGE).toFixed(0)}% of margin in fees per round-trip`);
+  console.log(`• 3m / 5m bars aggregated from MEXC 1m feed (MEXC contract has no native 3m interval)`);
   console.log(`• TP target: NET +10% margin (gross ${(10+0.08*LEVERAGE).toFixed(0)}% margin = ${((10+0.08*LEVERAGE)/LEVERAGE).toFixed(2)}% price)`);
   console.log(`• SL: mechanical 0.35% price (= ${(0.35*LEVERAGE).toFixed(0)}% margin loss + ${(0.08*LEVERAGE).toFixed(0)}% fees on exit)`);
   console.log(`• Win nets +10% margin, loss nets -${(0.35*LEVERAGE + 0.08*LEVERAGE).toFixed(0)}% margin → break-even win rate ${(((0.35*LEVERAGE + 0.08*LEVERAGE)/(10 + 0.35*LEVERAGE + 0.08*LEVERAGE))*100).toFixed(0)}%`);
   console.log(`• Same-bar TP+SL hit = treated as loss (conservative; matches live worst-case)`);
   console.log('');
-
-  if (VERBOSE) {
-    for (const [label, r] of Object.entries(results)) {
-      console.log(`\n=== ${label} OOS sample trades ===`);
-      for (const t of r.oos._trades.slice(0, 10)) {
-        const d = new Date(t.t).toISOString().slice(11, 16);
-        console.log(`  ${d} ${t.dir.padEnd(4)} ${t.source.padEnd(9)} → ${t.result.padEnd(7)} ${(t.netMarginPct>=0?'+':'')}${t.netMarginPct.toFixed(1)}% margin (${t.holdBars}m hold)`);
-      }
-    }
-  }
 })().catch((e) => { console.error(e); process.exit(1); });
