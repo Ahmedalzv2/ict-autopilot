@@ -332,9 +332,8 @@ function runConfig(klines, app, cfg, tf = '1m') {
 
     if (cfg.killZone) {
       const h = new Date(klines[i].t).getUTCHours();
-      const london = h >= 7 && h < 10;
-      const nyAm = h >= 12 && h < 15;
-      if (!london && !nyAm) continue;
+      const ranges = Array.isArray(cfg.killZone) ? cfg.killZone : [[7, 10], [12, 15]];
+      if (!ranges.some(([s, e]) => h >= s && h < e)) continue;
     }
 
     const window = klines.slice(Math.max(0, i - WINDOW + 1), i + 1);
@@ -528,6 +527,21 @@ function fmt(s) {
     // Leverage diagnostic — does dropping fee drag from 16% to 4% matter
     // once SL/TP geometry is already R:R-positive? Run on Y at 50× to check.
     'BB · Y @ 50× leverage':                  {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2, confluenceOnly: true, phaseGate: true, leverage: 50 },
+    // Iteration 3: AA (TRAIL 50/10 + SL 0.10% + filters + killZone) hit OOS
+    // -0.99%/trade, basically flat. These configs push the levers harder.
+    // Bigger trail target lets winners ride further; narrower kill-zone keeps
+    // only the cleanest 2 hours; tighter SL cuts loss size per stop-out.
+    'CC · TRAIL 100/20 + AA':                 {trail: { armPct: 100, trailPct: 20, ceilingPct: 400 }, cancelTtlBars: 2, slCoef: 0.2, confluenceOnly: true, phaseGate: true, killZone: true },
+    'DD · TRAIL 200/40 + AA':                 {trail: { armPct: 200, trailPct: 40, ceilingPct: 600 }, cancelTtlBars: 2, slCoef: 0.2, confluenceOnly: true, phaseGate: true, killZone: true },
+    // NY AM only (13-15 UTC) — the cleanest 2 hours per ICT lore.
+    'EE · AA + NY-AM-only':                   {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2, confluenceOnly: true, phaseGate: true, killZone: [[13, 15]] },
+    'FF · CC + NY-AM-only':                   {trail: { armPct: 100, trailPct: 20, ceilingPct: 400 }, cancelTtlBars: 2, slCoef: 0.2, confluenceOnly: true, phaseGate: true, killZone: [[13, 15]] },
+    // Tighter SL (0.07% price = 14% margin loss) — smaller losses per stop-out.
+    'GG · AA + SL 0.07%':                     {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.14, confluenceOnly: true, phaseGate: true, killZone: true },
+    'HH · CC + SL 0.07%':                     {trail: { armPct: 100, trailPct: 20, ceilingPct: 400 }, cancelTtlBars: 2, slCoef: 0.14, confluenceOnly: true, phaseGate: true, killZone: true },
+    // Direction-of-cancel test: drop confluenceOnly (let fvg-edge fire) — does
+    // filter set lose too many real trades?
+    'II · AA - confluenceOnly':               {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2, slCoef: 0.2, phaseGate: true, killZone: true },
   };
 
   // Per-TF result accumulator for the cross-TF summary table.
