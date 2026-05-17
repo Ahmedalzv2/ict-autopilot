@@ -40,9 +40,9 @@ Resulting policy:
   opt in via `setScalpAutoFire(true)`.
 - **Leverage**: floor 10×, cap 25× universally. Dropdown ladder is
   `[10, 15, 20, 25]`. Default per-asset is 10×. Margin sizing is a
-  separate concern (decided later). The high-leverage survival code
-  path (`_isHighLeverage`, `LEVERAGE_HIGH_THRESHOLD = 100`) is now
-  unreachable in production — flagged for removal in a follow-up PR.
+  separate concern (decided later). The old high-leverage survival /
+  trailing-TP / hold-time-kill machinery is deleted — all orders now
+  ship plain LIMIT (type=1) with a structural SL.
 - One-at-a-time gate + 60s per-asset cooldown remain on the force-fire
   path so the user can't accidentally double-fire by mashing buttons.
 

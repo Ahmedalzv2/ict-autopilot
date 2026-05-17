@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp, forceLeverage } from './harness.mjs';
+import { loadApp } from './harness.mjs';
 
 describe('Trade-mode policy (v6 — post-90d-OOS research)', () => {
   test('DEFAULT_TRADE_MODES still flags SOL/SILVER/US100/GOLD as futures', () => {
@@ -43,21 +43,6 @@ describe('getAssetLeverage / setAssetLeverage per-asset cap (10–25× post-rese
       assert.equal(app.setAssetLeverage(sym, 10), 10);
       assert.equal(app.setAssetLeverage(sym, 0), 10, `${sym} clamps low to 10×`);
     }
-  });
-
-  test('No asset reaches LEVERAGE_HIGH_THRESHOLD via normal API (survival mode unreachable)', () => {
-    const { app } = loadApp();
-    for (const sym of ['SILVER', 'SOL', 'GOLD', 'BTC', 'ETH']) {
-      app.setAssetLeverage(sym, 100);
-      assert.equal(app._isHighLeverage(sym), false, `${sym} at clamped max should NOT be high-lev`);
-    }
-  });
-
-  test('forceLeverage test helper bypasses the cap to exercise survival-mode code', () => {
-    const { app } = loadApp();
-    forceLeverage(app, 'SOL', 200);
-    assert.equal(app.getAssetLeverage('SOL'), 200);
-    assert.equal(app._isHighLeverage('SOL'), true);
   });
 
   test('Unknown asset falls back to generic default (def=10, max=25)', () => {

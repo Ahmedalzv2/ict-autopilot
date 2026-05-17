@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp, forceLeverage } from './harness.mjs';
+import { loadApp } from './harness.mjs';
 
 describe('Policy v4 — GOLD joins SOL + SILVER as default auto-exec futures', () => {
   test('DEFAULT_TRADE_MODES has GOLD = futures', () => {
@@ -38,10 +38,9 @@ describe('Policy v4 — GOLD joins SOL + SILVER as default auto-exec futures', (
 });
 
 describe('getFireStatus — at-a-glance trigger state', () => {
-  function bootLive(app, leverage) {
+  function bootLive(app) {
     app.loadTradeModes();
     app.setLiveTradingEnabled(true);
-    if (leverage) forceLeverage(app, 'SOL', leverage);
     const sol = app.ASSETS.find(a => a.symbol === 'SOL');
     sol.price = 100;
     return sol;
@@ -82,12 +81,13 @@ describe('getFireStatus — at-a-glance trigger state', () => {
     assert.match(s.label, /LIVE OFF/);
   });
 
-  test('SOL @ 200× scalp 5m within proximity → READY', () => {
+  test('SOL scalp 1m within proximity → READY', () => {
     const { app } = loadApp();
-    const sol = bootLive(app, 200);
+    const sol = bootLive(app);
+    app.setScalpTf('SOL', '1m');
     sol.bias = 'BULLISH';
     sol.tfEntries = {
-      '5m': {
+      '1m': {
         dir: 'bull', entryReady: true, score: 4,
         fvgZone: { dir: 'bull', lo: 99.95, hi: 100.05, mid: 100.00 },
       },
@@ -97,28 +97,13 @@ describe('getFireStatus — at-a-glance trigger state', () => {
     assert.match(s.label, /READY/);
   });
 
-  test('SOL @ 200× scalp 5m 0.4% away → READY (inside widened 0.50% gate)', () => {
+  test('SOL scalp 1m far → WAITING', () => {
     const { app } = loadApp();
-    const sol = bootLive(app, 200);
+    const sol = bootLive(app);
+    app.setScalpTf('SOL', '1m');
     sol.bias = 'BULLISH';
     sol.tfEntries = {
-      '5m': {
-        dir: 'bull', entryReady: true, score: 4,
-        // FVG mid at ~100.4 → 0.4% above current price 100; inside the new 0.50% gate
-        fvgZone: { dir: 'bull', lo: 100.35, hi: 100.45, mid: 100.40 },
-      },
-    };
-    const s = app.getFireStatus(sol);
-    assert.equal(s.state, 'ready');
-    assert.match(s.label, /READY/);
-  });
-
-  test('SOL @ 200× scalp 5m far → WAITING', () => {
-    const { app } = loadApp();
-    const sol = bootLive(app, 200);
-    sol.bias = 'BULLISH';
-    sol.tfEntries = {
-      '5m': {
+      '1m': {
         dir: 'bull', entryReady: true, score: 4,
         fvgZone: { dir: 'bull', lo: 110, hi: 110.1, mid: 110.05 },
       },
@@ -128,20 +113,12 @@ describe('getFireStatus — at-a-glance trigger state', () => {
     assert.match(s.label, /WAITING/);
   });
 
-  test('SOL @ 200× HTF mode → blocked with HTF+HIGH-LEV warning', () => {
+  test('no 1m setup yet → blocked NO SETUP', () => {
     const { app } = loadApp();
-    const sol = bootLive(app, 200);
-    app.setScalpTf('SOL', 'htf');
-    const s = app.getFireStatus(sol);
-    assert.equal(s.state, 'blocked');
-    assert.match(s.label, /HTF/);
-  });
-
-  test('no 5m setup yet → blocked NO SETUP', () => {
-    const { app } = loadApp();
-    const sol = bootLive(app, 200);
+    const sol = bootLive(app);
+    app.setScalpTf('SOL', '1m');
     sol.bias = 'BULLISH';
-    sol.tfEntries = { '5m': { dir: null, entryReady: false, score: 0 } };
+    sol.tfEntries = { '1m': { dir: null, entryReady: false, score: 0 } };
     const s = app.getFireStatus(sol);
     assert.equal(s.state, 'blocked');
     assert.match(s.label, /SETUP/);
@@ -149,7 +126,7 @@ describe('getFireStatus — at-a-glance trigger state', () => {
 
   test('asset.price = 0 (first sync gap) → blocked NO PRICE', () => {
     const { app } = loadApp();
-    const sol = bootLive(app, 200);
+    const sol = bootLive(app);
     sol.price = 0;
     const s = app.getFireStatus(sol);
     assert.equal(s.state, 'blocked');

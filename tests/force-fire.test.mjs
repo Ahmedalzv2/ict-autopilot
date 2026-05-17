@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp, forceLeverage } from './harness.mjs';
+import { loadApp } from './harness.mjs';
 
 describe('forceFireAsset — manual fire bypasses proximity', () => {
   function bootSilverLive(app) {
@@ -39,39 +39,19 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     assert.equal(r.reason, 'no-price');
   });
 
-  test('high-lev asset: SL/TP use mechanical buffer (≈0.35% at 200×)', async () => {
+  test('SL/TP use the flat 0.4% mechanical default', async () => {
     const { app, sandbox } = loadApp();
     const s = bootSilverLive(app);
-    forceLeverage(app, 'SILVER', 200);   // becomes high-lev
-    s.price = 80; s.bias = 'BULLISH';
-    sandbox.localStorage.setItem('ict_calc_account', '10');
-    sandbox.localStorage.setItem('ict_calc_risk', '100');
-    const r = await app.forceFireAsset('SILVER');
-    assert.equal(r.source, 'force');
-    assert.equal(r.side, 'LONG');
-    assert.equal(r.entry, 80, 'fires at LIVE price, not stale FVG mid');
-    const slPct = ((80 - r.sl) / 80) * 100;
-    assert.ok(Math.abs(slPct - 0.35) < 0.01, `expected SL ≈ 0.35% at 200×, got ${slPct.toFixed(3)}%`);
-    // High-lev force-fires ship with TP at NET 14% / GROSS 30% margin
-    // (~0.15% price at 200×). MEXC fires the close the instant this prints.
-    const tpPct = ((r.tp - 80) / 80) * 100;
-    assert.ok(Math.abs(tpPct - 0.15) < 0.005, `ceiling TP ≈ 0.15% price at 200×, got ${tpPct.toFixed(4)}%`);
-  });
-
-  test('low-lev asset: SL/TP use the flat 0.4% mechanical default', async () => {
-    const { app, sandbox } = loadApp();
-    const s = bootSilverLive(app);
-    app.setAssetLeverage('SILVER', 10);  // not high-lev
     s.price = 80; s.bias = 'BEARISH';
     sandbox.localStorage.setItem('ict_calc_account', '10');
     sandbox.localStorage.setItem('ict_calc_risk', '100');
     const r = await app.forceFireAsset('SILVER');
     assert.equal(r.side, 'SHORT');
     const slPct = ((r.sl - 80) / 80) * 100;
-    assert.ok(Math.abs(slPct - 0.40) < 0.01, `expected SL ≈ 0.40% for low-lev, got ${slPct.toFixed(3)}%`);
+    assert.ok(Math.abs(slPct - 0.40) < 0.01, `expected SL ≈ 0.40%, got ${slPct.toFixed(3)}%`);
   });
 
-  test('bullish bias → LONG; bearish bias → SHORT (high-lev: ceiling TP, trail-managed)', async () => {
+  test('bullish bias → LONG with SL below + TP above; bearish flipped', async () => {
     const { app, sandbox } = loadApp();
     const s = bootSilverLive(app);
     s.price = 80;
@@ -82,7 +62,7 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     const r1 = await app.forceFireAsset('SILVER');
     assert.equal(r1.side, 'LONG');
     assert.ok(r1.sl < r1.entry, 'long SL below entry');
-    assert.ok(r1.tp > r1.entry, 'long ceiling TP above entry (visible in MEXC UI)');
+    assert.ok(r1.tp > r1.entry, 'long TP above entry');
 
     delete app._pendingFires.SILVER;
 
@@ -90,27 +70,7 @@ describe('forceFireAsset — manual fire bypasses proximity', () => {
     const r2 = await app.forceFireAsset('SILVER');
     assert.equal(r2.side, 'SHORT');
     assert.ok(r2.sl > r2.entry, 'short SL above entry');
-    assert.ok(r2.tp < r2.entry, 'short ceiling TP below entry');
-  });
-
-  test('low-lev still ships fixed TP (bullish → tp above entry; bearish → tp below)', async () => {
-    const { app, sandbox } = loadApp();
-    const s = bootSilverLive(app);
-    app.setAssetLeverage('SILVER', 10);  // low-lev path keeps the legacy TP
-    s.price = 80;
-    sandbox.localStorage.setItem('ict_calc_account', '10');
-    sandbox.localStorage.setItem('ict_calc_risk', '100');
-
-    s.bias = 'BULLISH';
-    const r1 = await app.forceFireAsset('SILVER');
-    assert.equal(r1.side, 'LONG');
-    assert.ok(r1.tp > r1.entry, 'low-lev long TP above entry');
-
-    delete app._pendingFires.SILVER;
-    s.bias = 'BEARISH';
-    const r2 = await app.forceFireAsset('SILVER');
-    assert.equal(r2.side, 'SHORT');
-    assert.ok(r2.tp < r2.entry, 'low-lev short TP below entry');
+    assert.ok(r2.tp < r2.entry, 'short TP below entry');
   });
 
   test('dry-run mode logs the order to the journal without touching network', async () => {

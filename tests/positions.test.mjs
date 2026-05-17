@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp, forceLeverage } from './harness.mjs';
+import { loadApp } from './harness.mjs';
 
 function withConnected(app, sandbox) {
   app.saveMexcKeys('k', 's');
@@ -205,9 +205,9 @@ describe('getFireStatus — IN POSITION state', () => {
   test('IN POSITION takes priority over READY (do not advertise re-fire on top of an open trade)', () => {
     const { app } = loadApp();
     app.loadTradeModes();
-    forceLeverage(app, 'SOL', 200);
     app.setLiveTradingEnabled(true);
     const sol = app.ASSETS.find(a => a.symbol === 'SOL');
+    app.setScalpTf('SOL', '1m');
     sol.price = 100;
     sol.bias = 'BULLISH';
     sol.tfEntries = {
@@ -216,9 +216,8 @@ describe('getFireStatus — IN POSITION state', () => {
         fvgZone: { dir: 'bull', lo: 99.95, hi: 100.05, mid: 100.00 },
       },
     };
-    // Without a position, this would be 'ready'. With a position, it should be 'in-position'.
     app._openPositions = {
-      SOL: [{ positionType: 1, holdVol: 1, holdAvgPrice: 100, leverage: 200, unrealised: 0 }],
+      SOL: [{ positionType: 1, holdVol: 1, holdAvgPrice: 100, leverage: 25, unrealised: 0 }],
     };
     const s = app.getFireStatus(sol);
     assert.equal(s.state, 'in-position');
@@ -244,29 +243,6 @@ describe('getFireStatus — IN POSITION state', () => {
     const s = app.getFireStatus(silver);
     assert.equal(s.state, 'blocked');
     assert.match(s.label, /WAITING ON SOL/);
-  });
-
-  test('High-lev trio: SOL in position does NOT block SILVER badge (READY)', () => {
-    // Pin wall clock to a Thursday so SILVER's CME weekend gate doesn't fire.
-    const { app } = loadApp({ now: new Date('2026-05-07T15:00:00Z') });
-    app.loadTradeModes();
-    forceLeverage(app, 'SILVER', 200);  // high-lev → independent fires
-    app.setLiveTradingEnabled(true);
-    const silver = app.ASSETS.find(a => a.symbol === 'SILVER');
-    silver.price = 32.5;
-    silver.bias = 'BULLISH';
-    silver.tfEntries = {
-      // High-lev default scalp TF is now '5m' (1m was failing).
-      '5m': {
-        dir: 'bull', entryReady: true, score: 4,
-        fvgZone: { dir: 'bull', lo: 32.48, hi: 32.52, mid: 32.50 },
-      },
-    };
-    app._openPositions = {
-      SOL: [{ positionType: 1, holdVol: 1, holdAvgPrice: 100, leverage: 200, unrealised: 0 }],
-    };
-    const s = app.getFireStatus(silver);
-    assert.notEqual(s.state, 'blocked', 'high-lev SILVER fires independently of SOL position');
   });
 
   test('SILVER own position still shows IN POSITION (not WAITING ON SILVER)', () => {

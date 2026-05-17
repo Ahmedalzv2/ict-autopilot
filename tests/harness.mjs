@@ -69,11 +69,10 @@ const EXPORTS = [
   'computeMexcOrderQty', 'getAssetLeverage', 'setAssetLeverage', 'ASSET_LEVERAGE_SPEC',
   'ASSET_LEVERAGE_DEFAULT',
   'toggleLiveTradingKillSwitch',
-  '_isHighLeverage', '_highLevLevels', 'LEVERAGE_HIGH_THRESHOLD',
   'QUICK_TAKE_NET_MARGIN_PCT', 'QUICK_TAKE_MARGIN_PCT',
   'MEXC_MAKER_FEE_PCT', 'MEXC_TAKER_FEE_PCT', '_roundTripFeePctMargin',
   '_fastRefreshAssetEntry', '_fastRefreshTick', 'FAST_REFRESH_INTERVAL_MS',
-  '_scalpProximityPct', 'SCALP_PROXIMITY_PCT', 'SCALP_PROXIMITY_PCT_HIGH_LEV',
+  'SCALP_PROXIMITY_PCT',
   '_classifyConnTest', '_MEXC_FIX_HINTS',
   'forceFireAsset', '_recordFireResult', '_refreshLiveTradingModalIfOpen',
   '_markPendingFire', '_clearPendingFire', '_isPendingFire', 'PENDING_FIRE_LOCK_MS',
@@ -81,9 +80,6 @@ const EXPORTS = [
   'fetchMexcOpenPositions', '_positionsTick', 'closeMexcPosition', 'POSITIONS_REFRESH_INTERVAL_MS',
   'fetchMexcPositionHistory', '_pairOrdersIntoTrades', '_classifyTradesAgainstJournal', '_summarizeTrades', 'compareTradeStyle',
   '_profitGuardian', 'BREAK_EVEN_TRIGGER_PCT', 'BREAK_EVEN_CLOSE_PCT',
-  '_trailingTakeProfit', '_trailState', '_trailClosed',
-  'TRAIL_ARM_NET_MARGIN_PCT', 'TRAIL_FROM_PEAK_MARGIN_PCT',
-  '_holdTimeKill', '_holdKillClosed', 'MAX_POSITION_HOLD_SEC',
   'placeMexcFuturesOrder', 'testMexcConnection', 'testFireSilver',
   // scalp mode
   'getScalpTf', 'setScalpTf',
@@ -284,15 +280,3 @@ export function gstDate(hour, minute = 0, second = 0) {
   return new Date(2024, 5, 15, hour, minute, second);
 }
 
-/**
- * Production caps leverage at 25× (post-90d-OOS policy). The high-lev /
- * survival-mode code paths remain in the source for the moment but are
- * unreachable through the normal API. Tests that exercise those paths use
- * this helper to bump the spec cap before setting leverage.
- */
-export function forceLeverage(app, symbol, lev) {
-  const spec = app.ASSET_LEVERAGE_SPEC[symbol];
-  if (spec) spec.max = Math.max(spec.max, lev);
-  else app.ASSET_LEVERAGE_DEFAULT.max = Math.max(app.ASSET_LEVERAGE_DEFAULT.max, lev);
-  return app.setAssetLeverage(symbol, lev);
-}

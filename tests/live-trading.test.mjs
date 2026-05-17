@@ -361,14 +361,13 @@ describe('placeMexcFuturesOrder', () => {
     ctx.app.setMexcWorkerUrl('https://my.workers.dev');
     ctx.app.setLiveTradingEnabled(true);
     ctx.app.setLiveTradingDryRun(false);
-    // High-lev (200×) ships POST_ONLY LIMIT (type=2) so we earn the maker
-    // rebate. Price = entry (FVG mid). SL/TP rounded to MEXC scale. Caller
-    // passes qty in underlying units (0.46 oz / 0.01 contractSize = 46 ct).
-    const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.655, 75.503, 75.901, 0.46, 200);
+    // Plain LIMIT (type=1). Price = entry. SL/TP rounded to MEXC scale.
+    // Caller passes qty in underlying units (0.46 oz / 0.01 contractSize = 46 ct).
+    const r = await ctx.app.placeMexcFuturesOrder(silver(), 'SHORT', 75.655, 75.503, 75.901, 0.46, 25);
     assert.equal(r.sent, true);
     const orderCall = calls.find(c => String(c.url).includes('/order/submit'));
     const body = JSON.parse(orderCall.init.body);
-    assert.equal(body.type, 2, 'high-lev = POST_ONLY maker limit (type 2)');
+    assert.equal(body.type, 1, 'plain LIMIT order');
     assert.equal(body.price, 75.66, 'limit price = entry, rounded to 2 decimals');
     assert.equal(body.stopLossPrice, 75.50, 'sl rounded to 2 decimals');
     assert.equal(body.takeProfitPrice, 75.90, 'tp rounded to 2 decimals');
