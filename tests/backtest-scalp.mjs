@@ -144,16 +144,37 @@ async function loadKlines(symbol, days) {
       console.error(`--cache="${p}" not found.`);
       process.exit(1);
     }
-    const raw = JSON.parse(readFileSync(p, 'utf8'));
-    const klines = Array.isArray(raw) ? raw : raw.klines;
-    if (!Array.isArray(klines) || klines.length === 0) {
-      console.error(`--cache="${p}" contains no klines.`);
-      process.exit(1);
+    return loadCacheFile(p);
+  }
+
+  // Auto-discover committed fixtures so backtests run hermetically once
+  // a snapshot has been dumped + pushed. Prefer the exact (days, interval)
+  // match, then the same interval at a wider days window (so a 90d fixture
+  // still serves --days=14 queries — we just slice).
+  const fixturesDir = path.join(__dirname, 'fixtures');
+  if (existsSync(fixturesDir)) {
+    const candidates = [
+      `${ASSET}-${days}d-${MEXC_INTERVAL}.json`,
+      `${ASSET}-${days}d.json`,
+    ];
+    for (const name of candidates) {
+      const p = path.join(fixturesDir, name);
+      if (existsSync(p)) return loadCacheFile(p);
     }
-    const first = new Date(klines[0].t).toISOString().slice(0, 10);
-    const last  = new Date(klines[klines.length - 1].t).toISOString().slice(0, 10);
-    console.log(`(offline cache: ${klines.length} candles · ${first} → ${last})`);
-    return klines;
+    // Wider-window fallback — any fixture for this asset+interval with ≥days coverage.
+    const widerDays = [365, 180, 120, 90, 60, 30].filter((d) => d >= days);
+    for (const d of widerDays) {
+      const p = path.join(fixturesDir, `${ASSET}-${d}d-${MEXC_INTERVAL}.json`);
+      if (existsSync(p)) {
+        const full = loadCacheFile(p);
+        const cutoff = Date.now() - days * 86400 * 1000;
+        const sliced = full.filter((k) => k.t >= cutoff);
+        if (sliced.length) {
+          console.log(`(sliced to last ${days}d: ${sliced.length} candles)`);
+          return sliced;
+        }
+      }
+    }
   }
 
   const tag = MEXC_INTERVAL_MIN > 1 ? `-${MEXC_INTERVAL}` : '';
@@ -191,6 +212,19 @@ async function loadKlines(symbol, days) {
     writeFileSync(out, JSON.stringify(klines));
     console.log(`(dumped ${klines.length} candles → ${out})`);
   }
+  return klines;
+}
+
+function loadCacheFile(p) {
+  const raw = JSON.parse(readFileSync(p, 'utf8'));
+  const klines = Array.isArray(raw) ? raw : raw.klines;
+  if (!Array.isArray(klines) || klines.length === 0) {
+    console.error(`"${p}" contains no klines.`);
+    process.exit(1);
+  }
+  const first = new Date(klines[0].t).toISOString().slice(0, 10);
+  const last  = new Date(klines[klines.length - 1].t).toISOString().slice(0, 10);
+  console.log(`(fixture: ${klines.length} candles · ${first} → ${last} · ${path.relative(process.cwd(), p)})`);
   return klines;
 }
 
