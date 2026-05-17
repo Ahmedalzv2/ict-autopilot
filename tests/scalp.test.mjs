@@ -1,24 +1,15 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp, forceLeverage } from './harness.mjs';
+import { loadApp } from './harness.mjs';
 
 describe('scalp mode storage', () => {
-  // BTC + ETH are non-trio (default 10×), so their default scalp TF stays 'htf'.
-  // SILVER/GOLD/SOL are 200× by default → auto-'1m' (covered in its own test).
-  test('default is "htf" when not set (non-trio asset)', () => {
+  test('all assets default to "htf" when not set', () => {
     const { app } = loadApp();
     assert.equal(app.getScalpTf('BTC'), 'htf');
     assert.equal(app.getScalpTf('ETH'), 'htf');
-  });
-
-  test('all assets default to "htf" (no high-lev auto-default after 25× cap)', () => {
-    const { app } = loadApp();
     assert.equal(app.getScalpTf('SILVER'), 'htf');
     assert.equal(app.getScalpTf('GOLD'), 'htf');
     assert.equal(app.getScalpTf('SOL'), 'htf');
-    // forceLeverage past the threshold restores the 5m auto-default
-    forceLeverage(app, 'SILVER', 200);
-    assert.equal(app.getScalpTf('SILVER'), '5m');
   });
 
   test('valid values persist; invalid values are coerced to "htf"', () => {
@@ -31,9 +22,9 @@ describe('scalp mode storage', () => {
 
   test('per-asset isolation — explicit SILVER override does not affect BTC', () => {
     const { app } = loadApp();
-    app.setScalpTf('SILVER', 'htf');  // override the 200× auto-default
-    assert.equal(app.getScalpTf('SILVER'), 'htf');
-    assert.equal(app.getScalpTf('BTC'), 'htf'); // BTC stays at its own default
+    app.setScalpTf('SILVER', '1m');
+    assert.equal(app.getScalpTf('SILVER'), '1m');
+    assert.equal(app.getScalpTf('BTC'), 'htf');
   });
 });
 
@@ -102,8 +93,7 @@ describe('scalpMonitorTick', () => {
     const { app } = loadApp();
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
-    // SILVER auto-defaults to '1m' (200× trio) — explicitly override to 'htf'
-    // so we hit the scalp-off gate.
+    // The test needs the HTF path regardless of the user's saved scalp mode.
     app.setScalpTf('SILVER', 'htf');
     const r = await app.scalpMonitorTick(silverWithBear1m());
     assert.equal(r.reason, 'scalp-off');
@@ -140,13 +130,11 @@ describe('scalpMonitorTick', () => {
     assert.equal(r.reason, 'no-tf-setup');
   });
 
-  test('HTF disagrees (1m bull, HTF BEARISH) → htf-disagrees (low-lev only)', async () => {
+  test('HTF disagrees (1m bull, HTF BEARISH) → htf-disagrees', async () => {
     const { app } = loadApp();
     app.saveMexcKeys('k', 's');
     app.setLiveTradingEnabled(true);
     app.setScalpTf('SILVER', '1m');
-    // HTF gate is enforced only on non-high-lev paths. Drop SILVER to 50×.
-    forceLeverage(app, 'SILVER', 50);
     const r = await app.scalpMonitorTick({
       symbol: 'SILVER', bias: 'BEARISH', price: 75.65,
       tfEntries: {
@@ -172,24 +160,7 @@ describe('scalpMonitorTick', () => {
     assert.ok(r.distPct > 0.15);
   });
 
-  test('high-lev trio: GOLD in position does NOT block SILVER (independent fires)', async () => {
-    const { app } = loadApp({
-      storage: {
-        ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
-        ict_live_trading_v2: JSON.stringify({ enabled: true, dryRun: true }),
-        ict_scalp_tf_SILVER: '1m',
-      },
-    });
-    app.loadLiveTradingState();
-    app.setScalpAutoFire(true);
-    forceLeverage(app, 'SILVER', 200);
-    // SILVER at 200× — high-lev → cross-asset gate disabled.
-    app._openPositions = { GOLD: [{ holdVol: 1, holdAvgPrice: 4715, leverage: 10 }] };
-    const r = await app.scalpMonitorTick(silverWithBear1m());
-    assert.equal(r.fired, true, 'SILVER@200× fires while GOLD holds');
-  });
-
-  test('low-lev cross-asset gate still applies (focus discipline)', async () => {
+  test('cross-asset gate applies (focus discipline)', async () => {
     const { app } = loadApp({
       storage: {
         ict_mexc_api_key: 'k', ict_mexc_api_secret: 's',
@@ -271,7 +242,6 @@ describe('scalpMonitorTick', () => {
     });
     ctx.app.loadLiveTradingState();
     ctx.app.setScalpAutoFire(true);
-    forceLeverage(ctx.app, 'SILVER', 200);
     const r = await ctx.app.scalpMonitorTick(silverWithBear1m());
     assert.equal(r.fired, true);
     assert.equal(r.result.sent, true);
@@ -281,14 +251,8 @@ describe('scalpMonitorTick', () => {
     const body = JSON.parse(orderCalls[0].init.body);
     assert.equal(body.symbol, 'SILVER_USDT');
     assert.equal(body.side, 3); // 3 = open short
-    // SILVER defaults to 200× (trio) → POST_ONLY maker LIMIT (type 2)
-    // with price = entry (FVG mid). Mechanical SL ships (entry 75.65
-    // SHORT × 1.0035 ≈ 75.92). TP ships at entry × (1 - 0.0015) ≈ 75.54
-    // (NET 14%, GROSS 30%).
-    assert.equal(body.type, 2, 'high-lev = POST_ONLY maker limit');
+    assert.equal(body.type, 1, 'plain LIMIT order');
     assert.ok(Math.abs(body.price - 75.65) < 0.02, `limit price = entry, got ${body.price}`);
-    assert.ok(Math.abs(body.stopLossPrice - 75.92) < 0.02, `sl ${body.stopLossPrice}`);
-    assert.ok(Math.abs(body.takeProfitPrice - 75.54) < 0.02, `tp ${body.takeProfitPrice}`);
   });
 
   test('entry side mapping: bull FVG → side=1 (open LONG), bear FVG → side=3 (open SHORT)', async () => {

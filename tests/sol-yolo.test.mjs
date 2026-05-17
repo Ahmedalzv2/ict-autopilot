@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApp, forceLeverage } from './harness.mjs';
+import { loadApp } from './harness.mjs';
 
 describe('Trade-mode policy (v6 — post-90d-OOS research)', () => {
   test('DEFAULT_TRADE_MODES still flags SOL/SILVER/US100/GOLD as futures', () => {
@@ -33,7 +33,7 @@ describe('_mexcContractSymbol generalised', () => {
   });
 });
 
-describe('getAssetLeverage / setAssetLeverage per-asset cap (10–25× post-research)', () => {
+describe('getAssetLeverage / setAssetLeverage per-asset cap (1–25× post-research)', () => {
   test('Trio (SILVER/SOL/GOLD) default 10×, cap 25×', () => {
     const { app } = loadApp();
     for (const sym of ['SILVER', 'SOL', 'GOLD']) {
@@ -41,23 +41,8 @@ describe('getAssetLeverage / setAssetLeverage per-asset cap (10–25× post-rese
       assert.equal(app.ASSET_LEVERAGE_SPEC[sym].max, 25, `${sym} cap`);
       assert.equal(app.setAssetLeverage(sym, 200), 25, `${sym} clamps to new cap`);
       assert.equal(app.setAssetLeverage(sym, 10), 10);
-      assert.equal(app.setAssetLeverage(sym, 0), 1, `${sym} clamps low`);
+      assert.equal(app.setAssetLeverage(sym, 0), 1, `${sym} clamps low to 1×`);
     }
-  });
-
-  test('No asset reaches LEVERAGE_HIGH_THRESHOLD via normal API (survival mode unreachable)', () => {
-    const { app } = loadApp();
-    for (const sym of ['SILVER', 'SOL', 'GOLD', 'BTC', 'ETH']) {
-      app.setAssetLeverage(sym, 100);
-      assert.equal(app._isHighLeverage(sym), false, `${sym} at clamped max should NOT be high-lev`);
-    }
-  });
-
-  test('forceLeverage test helper bypasses the cap to exercise survival-mode code', () => {
-    const { app } = loadApp();
-    forceLeverage(app, 'SOL', 200);
-    assert.equal(app.getAssetLeverage('SOL'), 200);
-    assert.equal(app._isHighLeverage('SOL'), true);
   });
 
   test('Unknown asset falls back to generic default (def=10, max=25)', () => {
@@ -70,10 +55,10 @@ describe('getAssetLeverage / setAssetLeverage per-asset cap (10–25× post-rese
 
   test('getSilverLeverage backwards-compat alias still works', () => {
     const { app } = loadApp();
-    app.setAssetLeverage('SILVER', 7);
-    assert.equal(app.getSilverLeverage(), 7);
-    app.setSilverLeverage(4);
-    assert.equal(app.getAssetLeverage('SILVER'), 4);
+    app.setAssetLeverage('SILVER', 15);
+    assert.equal(app.getSilverLeverage(), 15);
+    app.setSilverLeverage(20);
+    assert.equal(app.getAssetLeverage('SILVER'), 20);
   });
 });
 

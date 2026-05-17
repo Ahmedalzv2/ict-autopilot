@@ -16,6 +16,12 @@
 //   node tests/backtest-scalp.mjs --asset=SILVER --tf=5m       (single TF)
 //   node tests/backtest-scalp.mjs --asset=SILVER --tf=all      (1m + 3m + 5m, default)
 //
+// Offline replay (no MEXC fetch — for sandboxed runs):
+//   node tests/backtest-scalp.mjs --cache=path/to/silver.json --lev=25 --tf=all
+//   node tests/backtest-scalp.mjs --asset=SILVER --days=30 --dump=fixtures/silver-30d.json
+//     (run --dump once where you have network, then ship the file and replay it
+//      anywhere with --cache).
+//
 // MEXC contract only ships 1m as the finest native interval. 3m bars are
 // aggregated client-side from 1m OHLCV (open=first 1m open, high=max, low=min,
 // close=last 1m close, vol=sum). 5m bars same way. This is the same data the
@@ -45,7 +51,7 @@ const LEVERAGE = Number(args.lev) || 200;  // override via --lev=100 (etc.)
 const MARGIN_USD = 0.20;     // per fire
 const HIGH_LEV_PROXIMITY_PCT = 0.50;
 
-const TF_MINUTES = { '1m': 1, '3m': 3, '5m': 5, '15m': 15, '1h': 60 };
+const TF_MINUTES = { '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240 };
 const TF_REQUESTED = (() => {
   const raw = args.tf ? String(args.tf).toLowerCase() : 'all';
   if (raw === 'all') return ['1m', '3m', '5m'];
@@ -128,6 +134,49 @@ async function fetchKlineChunk(symbol, startSec, endSec) {
 }
 
 async function loadKlines(symbol, days) {
+  // --cache=path forces an offline replay from the given snapshot file.
+  // Accepts both the legacy wrapper { fetchedAt, klines: [...] } and a flat
+  // [{t,o,h,l,c,v}, ...] array. Use this when network access to MEXC is
+  // unavailable (sandbox / remote sessions / CI).
+  if (args.cache) {
+    const p = path.resolve(String(args.cache));
+    if (!existsSync(p)) {
+      console.error(`--cache="${p}" not found.`);
+      process.exit(1);
+    }
+    return loadCacheFile(p);
+  }
+
+  // Auto-discover committed fixtures so backtests run hermetically once
+  // a snapshot has been dumped + pushed. Prefer the exact (days, interval)
+  // match, then the same interval at a wider days window (so a 90d fixture
+  // still serves --days=14 queries — we just slice).
+  const fixturesDir = path.join(__dirname, 'fixtures');
+  if (existsSync(fixturesDir)) {
+    const candidates = [
+      `${ASSET}-${days}d-${MEXC_INTERVAL}.json`,
+      `${ASSET}-${days}d.json`,
+    ];
+    for (const name of candidates) {
+      const p = path.join(fixturesDir, name);
+      if (existsSync(p)) return loadCacheFile(p);
+    }
+    // Wider-window fallback — any fixture for this asset+interval with ≥days coverage.
+    const widerDays = [365, 180, 120, 90, 60, 30].filter((d) => d >= days);
+    for (const d of widerDays) {
+      const p = path.join(fixturesDir, `${ASSET}-${d}d-${MEXC_INTERVAL}.json`);
+      if (existsSync(p)) {
+        const full = loadCacheFile(p);
+        const cutoff = Date.now() - days * 86400 * 1000;
+        const sliced = full.filter((k) => k.t >= cutoff);
+        if (sliced.length) {
+          console.log(`(sliced to last ${days}d: ${sliced.length} candles)`);
+          return sliced;
+        }
+      }
+    }
+  }
+
   const tag = MEXC_INTERVAL_MIN > 1 ? `-${MEXC_INTERVAL}` : '';
   const cacheFile = path.join(CACHE_DIR, `${symbol}-${days}d${tag}.json`);
   if (existsSync(cacheFile)) {
@@ -155,6 +204,27 @@ async function loadKlines(symbol, days) {
   for (const c of chunks) for (const k of c) byTs.set(k.t, k);
   const klines = Array.from(byTs.values()).sort((a, b) => a.t - b.t);
   writeFileSync(cacheFile, JSON.stringify({ fetchedAt: Date.now(), klines }));
+  // --dump=path writes a flat snapshot suitable for committing + replaying
+  // later with --cache=path. Useful for capturing a known-good dataset on a
+  // machine that can reach MEXC, then shipping it to where backtests run.
+  if (args.dump) {
+    const out = path.resolve(String(args.dump));
+    writeFileSync(out, JSON.stringify(klines));
+    console.log(`(dumped ${klines.length} candles → ${out})`);
+  }
+  return klines;
+}
+
+function loadCacheFile(p) {
+  const raw = JSON.parse(readFileSync(p, 'utf8'));
+  const klines = Array.isArray(raw) ? raw : raw.klines;
+  if (!Array.isArray(klines) || klines.length === 0) {
+    console.error(`"${p}" contains no klines.`);
+    process.exit(1);
+  }
+  const first = new Date(klines[0].t).toISOString().slice(0, 10);
+  const last  = new Date(klines[klines.length - 1].t).toISOString().slice(0, 10);
+  console.log(`(fixture: ${klines.length} candles · ${first} → ${last} · ${path.relative(process.cwd(), p)})`);
   return klines;
 }
 
@@ -180,9 +250,7 @@ function aggregateKlines(klines1m, intervalMins) {
   return Array.from(buckets.values()).sort((a, b) => a.t - b.t);
 }
 
-// Apply the same fee-aware high-lev levels the live bot uses. At lev<100 we
-// fall through to the conviction-ladder sl/tp baked into _suggestedEntryForTf
-// (RR=1.5 from BPR/iFVG/OB/FVG depending on source).
+// Apply the same fee-aware mechanical levels used by the old scalp research.
 function applyLevels(sug, lev, tpNetPct, slCoef = 0.7, slPricePct = null, tpPricePct = null) {
   // SWING mode: explicit price-mode SL/TP (independent of leverage). Used by
   // the post-90d-OOS-research configs targeting GOLD/SILVER multi-day holds
@@ -386,11 +454,14 @@ function runConfig(klines, app, cfg, tf = '1m') {
     if (!analysis) continue;
 
     if (cfg.phaseGate && (analysis.phase === 'consolidation' || analysis.phase === 'reversal-suspect')) continue;
+    if (cfg.scoreMin != null && (analysis.score || 0) < cfg.scoreMin) continue;
 
     const rawSug = app._suggestedEntryForTf(analysis, tf);
     if (!rawSug) continue;
 
     if (cfg.confluenceOnly && rawSug.source === 'fvg-edge') continue;
+    if (cfg.dirOnly && rawSug.dir !== cfg.dirOnly) continue;
+    if (cfg.sourceOnly && !cfg.sourceOnly.includes(rawSug.source)) continue;
 
     const sug = applyLevels(rawSug, lev, tpNetPct, slCoef, slPricePct, tpPricePct);
 
@@ -524,9 +595,8 @@ function fmt(s) {
     'E · TRAIL 9/5 (even faster)':            {trail: { armPct: 9, trailPct: 5, ceilingPct: 200 }, cancelTtlBars: 2 },
     // What we used to ship before today.
     'F · Fixed +20% TP':                      {tpNetPct: 20, cancelTtlBars: 2 },
-    // Higher TP targets — needed because SL at 200× = -86% margin, so
-    // a +14-20% TP requires ~85% win rate to break even. These configs
-    // give the upside enough room to compensate for the asymmetric loss.
+    // Higher TP targets let upside compensate for fees, slippage, and
+    // asymmetric stop-outs in the old scalp research.
     'G · TRAIL 50/10 (higher target)':        {trail: { armPct: 50, trailPct: 10, ceilingPct: 200 }, cancelTtlBars: 2 },
     'H · TRAIL 100/20 (big runner)':          {trail: { armPct: 100, trailPct: 20, ceilingPct: 200 }, cancelTtlBars: 2 },
     'I · Fixed +50% TP':                      {tpNetPct: 50, cancelTtlBars: 2 },
@@ -603,6 +673,70 @@ function fmt(s) {
     'SW-E · 72h hold · SL 2.0 / TP 4.0':      {marketEntry: true, slPricePct: 2.00, tpPricePct: 4.0, simHorizonHours: 72, proximityPct: 2.0 },
     'SW-F · SW-D + killZone (London/NY)':     {marketEntry: true, slPricePct: 1.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, killZone: true },
     'SW-G · SW-C + confluenceOnly':           {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 24, proximityPct: 1.0, confluenceOnly: true },
+    // Iteration 4 (May 2026): grid-search around the SW-A (SILVER 30m/1h)
+    // and SW-C (ETH 1h) local maxima found in the May sweep. Goal: confirm
+    // 0.5/1.0 and 1.0/2.0 are actual maxima vs accidental cells.
+    'SW-A1 · 4h hold · SL 0.3 / TP 0.6':      {marketEntry: true, slPricePct: 0.30, tpPricePct: 0.6, simHorizonHours: 4,  proximityPct: 1.0 },
+    'SW-A2 · 4h hold · SL 0.7 / TP 1.4':      {marketEntry: true, slPricePct: 0.70, tpPricePct: 1.4, simHorizonHours: 4,  proximityPct: 1.0 },
+    'SW-A3 · 4h hold · SL 0.5 / TP 1.5 (3:1)':{marketEntry: true, slPricePct: 0.50, tpPricePct: 1.5, simHorizonHours: 4,  proximityPct: 1.0 },
+    'SW-C1 · 12h hold · SL 1.0 / TP 2.0':     {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 12, proximityPct: 1.0 },
+    'SW-C2 · 48h hold · SL 1.0 / TP 2.0':     {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 48, proximityPct: 1.0 },
+    'SW-C5 · 72h hold · SL 1.0 / TP 2.0':     {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 72, proximityPct: 1.0 },
+    'SW-C6 · 96h hold · SL 1.0 / TP 2.0':     {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 96, proximityPct: 1.0 },
+    'SW-C7 · 48h hold · SL 1.5 / TP 3.0':     {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0 },
+    'SW-C8 · 48h hold · SL 0.7 / TP 1.4':     {marketEntry: true, slPricePct: 0.70, tpPricePct: 1.4, simHorizonHours: 48, proximityPct: 1.0 },
+    'SW-C3 · 24h hold · SL 0.7 / TP 1.4':     {marketEntry: true, slPricePct: 0.70, tpPricePct: 1.4, simHorizonHours: 24, proximityPct: 1.0 },
+    'SW-C4 · 24h hold · SL 1.5 / TP 3.0':     {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0 },
+    // Iteration 6 (May 2026): the SW-C7 baseline is the only signal where
+    // both IS and OOS halves are profitable. Stack filters on top — fewer
+    // fires, higher win rate. Hypothesis: 2:1 R:R × 50%+ win = positive
+    // expectancy that survives both halves.
+    'SW-H · C7 + confluenceOnly':             {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, confluenceOnly: true },
+    'SW-I · C7 + confluence + phase':         {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, confluenceOnly: true, phaseGate: true },
+    'SW-J · C7 + confluence + phase + KZ':    {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, confluenceOnly: true, phaseGate: true, killZone: true },
+    'SW-K · C5 + confluence + phase + KZ':    {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 72, proximityPct: 1.0, confluenceOnly: true, phaseGate: true, killZone: true },
+    'SW-L · C7 NY-AM only':                   {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, killZone: [[13, 15]] },
+    'SW-M · C7 + phase only':                 {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true },
+    // Iteration 7: SW-M (SW-C7 + phaseGate) is the durable winner. Vary
+    // hold horizon + SL/TP to find the local maximum within the phase-gate
+    // signal space.
+    'SW-N · C5 + phase (72h 1.0/2.0)':        {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 72, proximityPct: 1.0, phaseGate: true },
+    'SW-O · C4 + phase (24h 1.5/3.0)':        {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true },
+    'SW-P · C2 + phase (48h 1.0/2.0)':        {marketEntry: true, slPricePct: 1.00, tpPricePct: 2.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true },
+    'SW-Q · phase 48h 2.0/4.0':               {marketEntry: true, slPricePct: 2.00, tpPricePct: 4.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true },
+    'SW-R · phase 96h 1.5/3.0':               {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 96, proximityPct: 1.0, phaseGate: true },
+    'SW-S · phase 48h 1.5/4.5 (3:1)':         {marketEntry: true, slPricePct: 1.50, tpPricePct: 4.5, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true },
+    // Iteration 8: signal-strength + direction filters on top of SW-O baseline.
+    'SW-T · O + scoreMin=3':                  {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, scoreMin: 3 },
+    'SW-U · O + scoreMin=4':                  {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, scoreMin: 4 },
+    'SW-V · O + longs only':                  {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bull' },
+    'SW-W · O + shorts only':                 {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    'SW-X · O asym 1.0/3.0 (3:1)':            {marketEntry: true, slPricePct: 1.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true },
+    'SW-Y · O asym 2.0/3.0 (1.5:1)':          {marketEntry: true, slPricePct: 2.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true },
+    'SW-Z · O + score=3 + longs':             {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, scoreMin: 3, dirOnly: 'bull' },
+    'SW-AA · O + score=4 + longs':            {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, scoreMin: 4, dirOnly: 'bull' },
+    // Iteration 9-10: shorts-only is the breakthrough on ETH/XRP/SILVER.
+    // Push further: TF-level analysis.score gate, premium-source-only (drop
+    // fvg-edge entirely), wider-SL shorts to absorb retraces.
+    'SW-BB · W + scoreMin=2':                 {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-CC · W + scoreMin=3':                 {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 3 },
+    'SW-DD · W + premium sources only':       {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', sourceOnly: ['bpr', 'ifvg', 'ob+fvg', 'fvg+sweep'] },
+    'SW-EE · W asym 2.0/3.0 short':           {marketEntry: true, slPricePct: 2.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    'SW-FF · W asym 1.0/3.0 short':           {marketEntry: true, slPricePct: 1.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    'SW-GG · W asym 1.5/4.5 short (3:1)':     {marketEntry: true, slPricePct: 1.50, tpPricePct: 4.5, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    'SW-HH · W + confluence (drop fvg-edge)': {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', confluenceOnly: true },
+    'SW-II · W 48h hold short':               {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    'SW-JJ · W 72h hold short':               {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 72, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear' },
+    // Iteration 11: stack SW-BB filter (shorts + phase + score>=2) with the
+    // best geometry / horizon variants from iteration 10. Hypothesis: each
+    // filter compounds — score filter raises win rate, longer hold catches
+    // more runners, wider SL absorbs noise.
+    'SW-KK · BB asym 2.0/3.0 (1.5:1)':        {marketEntry: true, slPricePct: 2.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-LL · BB asym 1.0/3.0 (3:1)':          {marketEntry: true, slPricePct: 1.00, tpPricePct: 3.0, simHorizonHours: 24, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-MM · BB 48h hold':                    {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-NN · BB 72h hold':                    {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 72, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-OO · BB 48h asym 2.0/3.0':            {marketEntry: true, slPricePct: 2.00, tpPricePct: 3.0, simHorizonHours: 48, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
+    'SW-PP · BB 12h hold':                    {marketEntry: true, slPricePct: 1.50, tpPricePct: 3.0, simHorizonHours: 12, proximityPct: 1.0, phaseGate: true, dirOnly: 'bear', scoreMin: 2 },
   };
 
   // Per-TF result accumulator for the cross-TF summary table.
