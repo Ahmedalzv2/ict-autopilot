@@ -86,6 +86,32 @@ Resulting policy:
 - Spot Watch: HTF-derived buy/sell zones for spot assets, quiet toasts
   on AT BUY / AT SELL transitions, sell-zone narrative.
 
+## Skill-specific operating notes
+
+These are patterns I learned the hard way during sessions; they override
+the built-in skill defaults when the two conflict.
+
+### `/loop`
+
+- **ScheduleWakeup is often unavailable** in this environment. Probe with
+  `ToolSearch query="select:ScheduleWakeup"` once. If absent, the loop
+  collapses to "iterate inline until natural stopping point, then stop."
+  Don't pretend you'll wake up later.
+- **Most `/loop` invocations here are CPU-bound** — backtest sweeps,
+  parameter searches, walk-forward validation. Default mode is: list the
+  iterations you plan, execute them all in this turn (parallel via
+  `run_in_background` when independent), commit after each meaningful
+  iteration so progress is durable, stop when a leader emerges or returns
+  diminish. Skip the ScheduleWakeup dance.
+- **Save progress after each iteration.** Long sweeps (12+ iterations
+  happened on the SW methodology search) need git commits per checkpoint
+  — never let one bash crash lose 30 minutes of compute. Each `git commit
+  -m "iter N: …"` is cheap insurance.
+- **Stop conditions** (any one is enough): a clear leader appears with
+  IS/OOS both positive, three iterations in a row don't move the leader,
+  or the search space is exhausted. Don't keep iterating just because the
+  skill suggests you could.
+
 ## Session handoff
 
 This file is the **durable** operating manual — rules that don't change
